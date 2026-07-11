@@ -369,3 +369,9 @@ MVPでは `MeshGeometryKernel` を提供し、対応しない精密CAD操作はc
 Foundation 段階では編集コアも Swift で実装しており、C++ Half-edge、Objective-C++ bridge、BVH、GPU picking、局所更新は未実装である。これは本書の目標設計を変更するものではなく、次の Repository Foundation / Editable Mesh 作業で置換可能な境界を維持する。
 
 保存形式と既知の制限は `FOUNDATION_PROTOTYPE.md` に記録する。
+
+### 17.1 Foundation runtime cache
+
+Foundation実装の`EditableMesh`は、永続データであるvertices/indicesと、ランタイム専用のadjacency、revision、topology identityを分離する。ランタイムキャッシュはCodableへ含めず、decode後に必要時再構築する。
+
+固定トポロジーのブラシ処理ではadjacencyを再利用する。頂点変更はmesh revisionを進め、Rendererはrevisionが変化した場合だけvertex bufferへ転送する。index bufferはtopology identityが変化した場合だけ更新する。現段階の法線再計算は全体処理のためvertex buffer転送も全体更新とし、局所法線と部分転送は後続最適化とする。

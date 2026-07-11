@@ -20,10 +20,9 @@ struct StrokeHistory {
         apply(command, to: &mesh, useAfter: true); undoStack.append(command)
     }
     private func apply(_ command: StrokeCommand, to mesh: inout EditableMesh, useAfter: Bool) {
-        for change in command.changes where mesh.vertices.indices.contains(change.index) {
-            mesh.vertices[change.index].position = useAfter ? change.after : change.before
-        }
-        mesh.recalculateNormals()
+        let positions = Dictionary(uniqueKeysWithValues: command.changes.map {
+            ($0.index, useAfter ? $0.after : $0.before)
+        })
+        _ = mesh.updatePositions(positions)
     }
 }
-
