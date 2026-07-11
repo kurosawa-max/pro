@@ -35,7 +35,7 @@ final class WorkspaceModel: ObservableObject {
 
     func endStroke() {
         guard let before = strokeBefore else { return }
-        let changes = before.keys.sorted().compactMap { index in
+        let changes: [VertexChange] = before.keys.sorted().compactMap { index -> VertexChange? in
             guard mesh.vertices.indices.contains(index), before[index] != mesh.vertices[index].position else { return nil }
             return VertexChange(index: index, before: before[index]!, after: mesh.vertices[index].position)
         }
