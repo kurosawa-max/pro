@@ -1,3 +1,4 @@
+import Foundation
 import MetalKit
 import simd
 
@@ -9,6 +10,8 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private var vertexBuffer: MTLBuffer?
     private var indexBuffer: MTLBuffer?
     private var indexCount = 0
+    private var uploadedRevision: UInt64?
+    private var uploadedTopologyID: UUID?
     var camera = CameraState()
     private(set) var viewProjection = matrix_identity_float4x4
 
@@ -33,9 +36,34 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     }
 
     func update(mesh: EditableMesh) {
-        vertexBuffer = device.makeBuffer(bytes: mesh.vertices, length: MemoryLayout<MeshVertex>.stride * mesh.vertices.count)
-        indexBuffer = device.makeBuffer(bytes: mesh.indices, length: MemoryLayout<UInt32>.stride * mesh.indices.count)
-        indexCount = mesh.indices.count
+        let vertexByteCount = MemoryLayout<MeshVertex>.stride * mesh.vertices.count
+        let topologyChanged = uploadedTopologyID != mesh.runtime.topologyID
+        if topologyChanged {
+            let indexByteCount = MemoryLayout<UInt32>.stride * mesh.indices.count
+            indexBuffer = makeOrReuse(buffer: indexBuffer, requiredLength: indexByteCount)
+            copy(mesh.indices, to: indexBuffer, byteCount: indexByteCount)
+            indexCount = mesh.indices.count
+            uploadedTopologyID = mesh.runtime.topologyID
+            uploadedRevision = nil
+        }
+        guard uploadedRevision != mesh.runtime.revision else { return }
+        vertexBuffer = makeOrReuse(buffer: vertexBuffer, requiredLength: vertexByteCount)
+        copy(mesh.vertices, to: vertexBuffer, byteCount: vertexByteCount)
+        uploadedRevision = mesh.runtime.revision
+    }
+
+    private func makeOrReuse(buffer: MTLBuffer?, requiredLength: Int) -> MTLBuffer? {
+        guard requiredLength > 0 else { return nil }
+        if let buffer, buffer.length >= requiredLength { return buffer }
+        return device.makeBuffer(length: requiredLength, options: .storageModeShared)
+    }
+
+    private func copy<Element>(_ values: [Element], to buffer: MTLBuffer?, byteCount: Int) {
+        guard let buffer, byteCount > 0 else { return }
+        values.withUnsafeBufferPointer { elements in
+            guard let source = elements.baseAddress else { return }
+            buffer.contents().copyMemory(from: source, byteCount: byteCount)
+        }
     }
 
     func draw(in view: MTKView) {

@@ -1,4 +1,11 @@
+import Foundation
 import CoreGraphics
+
+enum InputDevice: Equatable { case finger, pencil, indirect }
+
+enum CameraInputPolicy {
+    static func permitsCameraGesture(from device: InputDevice) -> Bool { device == .finger }
+}
 
 struct PencilSample: Equatable {
     var location: CGPoint
@@ -15,4 +22,3 @@ struct PencilSample: Equatable {
         self.timestamp = timestamp
     }
 }
-

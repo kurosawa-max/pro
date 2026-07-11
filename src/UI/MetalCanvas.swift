@@ -13,6 +13,7 @@ struct MetalCanvas: UIViewRepresentable {
         view.onPencilBegan = { [weak coordinator = context.coordinator] sample in coordinator?.pencilBegan(sample, in: view) }
         view.onPencilMoved = { [weak coordinator = context.coordinator] sample in coordinator?.pencilMoved(sample, in: view) }
         view.onPencilEnded = { [weak coordinator = context.coordinator] in coordinator?.model.endStroke() }
+        view.onPencilCancelled = { [weak coordinator = context.coordinator] in coordinator?.model.cancelStroke() }
         view.onHover = { [weak coordinator = context.coordinator] point in coordinator?.model.hoverLocation = point }
         context.coordinator.installGestures(on: view)
         renderer.update(mesh: model.mesh)
@@ -41,7 +42,11 @@ struct MetalCanvas: UIViewRepresentable {
             let orbit = UIPanGestureRecognizer(target: self, action: #selector(orbit(_:))); orbit.maximumNumberOfTouches = 1
             let pan = UIPanGestureRecognizer(target: self, action: #selector(pan(_:))); pan.minimumNumberOfTouches = 2
             let zoom = UIPinchGestureRecognizer(target: self, action: #selector(zoom(_:)))
-            [orbit, pan, zoom].forEach { $0.delegate = self; view.addGestureRecognizer($0) }
+            [orbit, pan, zoom].forEach {
+                $0.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+                $0.delegate = self
+                view.addGestureRecognizer($0)
+            }
         }
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 
@@ -69,6 +74,7 @@ final class SculptMTKView: MTKView {
     var onPencilBegan: ((PencilSample) -> Void)?
     var onPencilMoved: ((PencilSample) -> Void)?
     var onPencilEnded: (() -> Void)?
+    var onPencilCancelled: (() -> Void)?
     var onHover: ((CGPoint?) -> Void)?
 
     override init(frame: CGRect, device: MTLDevice? = nil) {
@@ -92,7 +98,9 @@ final class SculptMTKView: MTKView {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) { emit(touches, event: event, began: true) }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) { emit(touches, event: event, began: false) }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { if touches.contains(where: { $0.type == .pencil }) { onPencilEnded?() } }
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { touchesEnded(touches, with: event) }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if touches.contains(where: { $0.type == .pencil }) { onPencilCancelled?() }
+    }
 
     private func emit(_ touches: Set<UITouch>, event: UIEvent?, began: Bool) {
         for touch in touches where touch.type == .pencil {

@@ -1,0 +1,36 @@
+name: Xcode
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build for iPad Simulator
+        run: >-
+          xcodebuild build-for-testing
+          -project Forge3D.xcodeproj
+          -scheme Forge3D
+          -configuration Debug
+          -destination 'platform=iOS Simulator,OS=latest,name=iPad Pro 13-inch (M4)'
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Run XCTest
+        run: >-
+          xcodebuild test-without-building
+          -project Forge3D.xcodeproj
+          -scheme Forge3D
+          -configuration Debug
+          -destination 'platform=iOS Simulator,OS=latest,name=iPad Pro 13-inch (M4)'
+          CODE_SIGNING_ALLOWED=NO

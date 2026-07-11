@@ -11,5 +11,6 @@ struct Forge3DApp: App {
 }
 
 extension UTType {
-    static let forge3D = UTType(exportedAs: "com.forge3d.project", conformingTo: .data)
+    static let forge3DIdentifier = "com.forge3d.project"
+    static let forge3D = UTType(exportedAs: forge3DIdentifier, conformingTo: .data)
 }
