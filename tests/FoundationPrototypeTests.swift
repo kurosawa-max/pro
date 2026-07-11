@@ -4,6 +4,59 @@ import simd
 @testable import Forge3D
 
 final class FoundationPrototypeTests: XCTestCase {
+    func testBenchmarkPresetsProduceIncreasingValidNonDegenerateMeshes() throws {
+        var previousVertices = 0
+        var previousTriangles = 0
+        for preset in BenchmarkPreset.allCases {
+            let mesh = preset.makeMesh()
+            XCTAssertNoThrow(try mesh.validated())
+            XCTAssertEqual(mesh.vertices.count, preset.expectedVertexCount)
+            XCTAssertEqual(mesh.indices.count / 3, preset.expectedTriangleCount)
+            XCTAssertGreaterThan(mesh.vertices.count, previousVertices)
+            XCTAssertGreaterThan(mesh.indices.count / 3, previousTriangles)
+            XCTAssertTrue(mesh.vertices.allSatisfy { $0.position.allFinite && $0.normal.allFinite })
+            XCTAssertTrue(mesh.indices.allSatisfy { Int($0) < mesh.vertices.count })
+            let hasOnlyNonDegenerateTriangles = stride(from: 0, to: mesh.indices.count, by: 3).allSatisfy { triangle in
+                let a = mesh.vertices[Int(mesh.indices[triangle])].position
+                let b = mesh.vertices[Int(mesh.indices[triangle + 1])].position
+                let c = mesh.vertices[Int(mesh.indices[triangle + 2])].position
+                return simd_length(simd_cross(b - a, c - a)) * 0.5 > 0.000_001
+            }
+            XCTAssertTrue(hasOnlyNonDegenerateTriangles)
+            previousVertices = mesh.vertices.count
+            previousTriangles = mesh.indices.count / 3
+        }
+    }
+
+    func testPerformanceProfilerResetClearsSamplesAndPreservesCurrentMeshCounts() {
+        let profiler = PerformanceProfiler()
+        profiler.record(.picking, milliseconds: 4)
+        profiler.record(.frameInterval, milliseconds: 16)
+        profiler.updateMeshCounts(vertexCount: 162, triangleCount: 320)
+        XCTAssertEqual(profiler.snapshot()[.picking].sampleCount, 1)
+
+        profiler.reset(vertexCount: 2_562, triangleCount: 5_120)
+        let snapshot = profiler.snapshot()
+        XCTAssertEqual(snapshot.vertexCount, 2_562)
+        XCTAssertEqual(snapshot.triangleCount, 5_120)
+        XCTAssertEqual(snapshot.framesPerSecond, 0)
+        XCTAssertTrue(snapshot.framesPerSecond.isFinite)
+        for metric in PerformanceMetric.allCases {
+            XCTAssertEqual(snapshot[metric].sampleCount, 0)
+            XCTAssertEqual(snapshot[metric].latestMilliseconds, 0)
+            XCTAssertEqual(snapshot[metric].averageMilliseconds, 0)
+            XCTAssertTrue(snapshot[metric].averageMilliseconds.isFinite)
+        }
+    }
+
+    func testBenchmarkCompileModeMatchesBuildConfiguration() {
+        #if DEBUG
+        XCTAssertTrue(BenchmarkFeature.isCompiled)
+        #else
+        XCTAssertFalse(BenchmarkFeature.isCompiled)
+        #endif
+    }
+
     func testRollingAverageDropsSamplesBeyondCapacity() {
         var average = RollingAverage(capacity: 2)
         average.append(1)
@@ -215,6 +268,40 @@ final class FoundationPrototypeTests: XCTestCase {
         XCTAssertEqual(model.mesh, original)
         XCTAssertFalse(model.isStrokeActive)
         XCTAssertEqual(model.undoCount, 0)
+    }
+
+    @MainActor
+    func testBenchmarkSwitchClearsUndoRedoAndKeepsDefaultStartupMesh() {
+        let model = WorkspaceModel()
+        XCTAssertEqual(model.mesh.vertices.count, 642)
+        XCTAssertEqual(model.mesh.indices.count / 3, 1_280)
+        model.beginStroke()
+        let sample = PencilSample(location: .zero, force: 1, maximumForce: 1, altitude: 1, azimuth: 0, timestamp: 0)
+        model.updateStroke(sample: sample, ray: Ray(origin: SIMD3<Float>(0, 0, 3), direction: SIMD3<Float>(0, 0, -1)))
+        model.endStroke()
+        XCTAssertGreaterThan(model.undoCount, 0)
+        model.undo()
+        XCTAssertGreaterThan(model.redoCount, 0)
+
+        model.loadBenchmarkPreset(.small)
+        XCTAssertEqual(model.undoCount, 0)
+        XCTAssertEqual(model.redoCount, 0)
+        XCTAssertEqual(model.benchmarkDisplayName, "Small")
+        XCTAssertEqual(model.mesh.vertices.count, BenchmarkPreset.small.expectedVertexCount)
+    }
+
+    @MainActor
+    func testBenchmarkSwitchSafelyCancelsActiveStroke() throws {
+        let model = WorkspaceModel()
+        let previousTopologyID = model.mesh.runtime.topologyID
+        model.beginStroke()
+        XCTAssertTrue(model.isStrokeActive)
+        model.loadBenchmarkPreset(.medium)
+        XCTAssertFalse(model.isStrokeActive)
+        XCTAssertEqual(model.undoCount, 0)
+        XCTAssertEqual(model.redoCount, 0)
+        XCTAssertNoThrow(try model.mesh.validated())
+        XCTAssertNotEqual(model.mesh.runtime.topologyID, previousTopologyID)
     }
 
     func testPencilSampleNormalizesPressureAndKeepsTilt() {

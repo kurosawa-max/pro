@@ -23,6 +23,10 @@ struct ContentView: View {
                 PerformanceHUD(profiler: model.profiler)
                     .padding(.top, 8)
                     .padding(.trailing, 8)
+                BenchmarkPanel(model: model)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.top, 8)
+                    .padding(.leading, 8)
                 #endif
             }
             .navigationTitle("Forge3D")

@@ -16,6 +16,9 @@ final class WorkspaceModel: ObservableObject {
     @Published var brushSettings = BrushSettings()
     @Published var hoverLocation: CGPoint?
     @Published var status = "Ready"
+    #if DEBUG
+    @Published private(set) var benchmarkPreset: BenchmarkPreset?
+    #endif
 
     private var history = StrokeHistory()
     private var strokeBefore: [Int: SIMD3<Float>]?
@@ -72,6 +75,9 @@ final class WorkspaceModel: ObservableObject {
         do {
             let project = try ProjectCodec.decode(data)
             mesh = project.mesh; camera = project.camera; history = StrokeHistory(); status = "Project loaded"
+            #if DEBUG
+            benchmarkPreset = nil
+            #endif
             profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
         } catch { status = "Open failed: \(error.localizedDescription)" }
     }
@@ -80,4 +86,22 @@ final class WorkspaceModel: ObservableObject {
 
     var isStrokeActive: Bool { strokeBefore != nil }
     var undoCount: Int { history.undoStack.count }
+    var redoCount: Int { history.redoStack.count }
+
+    #if DEBUG
+    func loadBenchmarkPreset(_ preset: BenchmarkPreset) {
+        cancelStroke()
+        history = StrokeHistory()
+        mesh = preset.makeMesh()
+        benchmarkPreset = preset
+        profiler?.reset(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
+        status = "Benchmark: \(preset.rawValue)"
+    }
+
+    func resetPerformanceMetrics() {
+        profiler?.reset(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
+    }
+
+    var benchmarkDisplayName: String { benchmarkPreset?.rawValue ?? "Default" }
+    #endif
 }
