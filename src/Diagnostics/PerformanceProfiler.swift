@@ -165,6 +165,16 @@ final class PerformanceProfiler {
         #endif
     }
 
+    func sampleCount(for metric: PerformanceMetric) -> Int {
+        #if DEBUG
+        lock.lock()
+        defer { lock.unlock() }
+        return metrics[metric]?.sampleCount ?? 0
+        #else
+        return 0
+        #endif
+    }
+
     func snapshot() -> PerformanceSnapshot {
         #if DEBUG
         lock.lock()

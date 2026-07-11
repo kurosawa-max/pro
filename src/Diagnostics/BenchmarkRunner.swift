@@ -86,6 +86,8 @@ struct BenchmarkReport: Codable, Equatable {
 
 @MainActor
 final class BenchmarkRunner {
+    static let uploadAcknowledgementPoll = Duration.milliseconds(5)
+    static let uploadAcknowledgementTimeout = Duration.milliseconds(500)
     static let fixedRay = Ray(origin: SIMD3<Float>(0, 0, 3), direction: SIMD3<Float>(0, 0, -1))
     static let center = SIMD3<Float>(0, 0, 1)
     static let normal = SIMD3<Float>(0, 0, 1)
@@ -114,7 +116,8 @@ final class BenchmarkRunner {
                 for iteration in 0..<(configuration.warmUpIterations + configuration.measuredIterations) {
                     if isCancelled || Task.isCancelled { return nil }
                     if iteration == configuration.warmUpIterations { profiler.reset(benchmarkCase.metric) }
-                    execute(benchmarkCase, mesh: &mesh, profiler: profiler, installMesh: installMesh)
+                    guard await execute(benchmarkCase, preset: preset, mesh: &mesh,
+                                        profiler: profiler, installMesh: installMesh) else { return nil }
                     await Task.yield()
                 }
                 let sample = profiler.snapshot()[benchmarkCase.metric]
@@ -130,8 +133,8 @@ final class BenchmarkRunner {
             buildConfiguration: "Debug", configuration: configuration, presets: presetResults)
     }
 
-    private func execute(_ item: BenchmarkCase, mesh: inout EditableMesh, profiler: PerformanceProfiler,
-                         installMesh: (EditableMesh) -> Void) {
+    private func execute(_ item: BenchmarkCase, preset: BenchmarkPreset, mesh: inout EditableMesh,
+                         profiler: PerformanceProfiler, installMesh: (EditableMesh) -> Void) async -> Bool {
         switch item {
         case .picking: _ = MeshPicker.hit(ray: Self.fixedRay, mesh: mesh, profiler: profiler)
         case .draw: _ = SculptBrush.apply(kind: .draw, center: Self.center, normal: Self.normal, drag: Self.drag, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler)
@@ -139,10 +142,34 @@ final class BenchmarkRunner {
         case .grab: _ = SculptBrush.apply(kind: .grab, center: Self.center, normal: Self.normal, drag: Self.drag, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler)
         case .normalRebuild: mesh.recalculateNormals(profiler: profiler)
         case .vertexUpload:
-            _ = mesh.updatePositions([0: mesh.vertices[0].position + SIMD3<Float>(0.000_001, 0, 0)], profiler: nil); installMesh(mesh)
+            let before = profiler.sampleCount(for: .vertexUpload)
+            _ = mesh.updatePositions([0: mesh.vertices[0].position + SIMD3<Float>(0.000_001, 0, 0)], profiler: nil)
+            installMesh(mesh)
+            return await waitForSample(.vertexUpload, after: before, profiler: profiler)
         case .indexUpload:
-            mesh = BenchmarkPreset(rawValue: mesh.vertices.count == BenchmarkPreset.small.expectedVertexCount ? "Medium" : "Small")?.makeMesh() ?? BenchmarkPreset.small.makeMesh(); installMesh(mesh)
+            let before = profiler.sampleCount(for: .indexUpload)
+            mesh = Self.makeIndexUploadMesh(for: preset)
+            installMesh(mesh)
+            return await waitForSample(.indexUpload, after: before, profiler: profiler)
         }
+        return true
+    }
+
+    static func makeIndexUploadMesh(for preset: BenchmarkPreset) -> EditableMesh {
+        preset.makeMesh()
+    }
+
+    private func waitForSample(_ metric: PerformanceMetric, after previousCount: Int,
+                               profiler: PerformanceProfiler) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: Self.uploadAcknowledgementTimeout)
+        while clock.now < deadline {
+            if isCancelled || Task.isCancelled { return false }
+            if profiler.sampleCount(for: metric) == previousCount + 1 { return true }
+            do { try await Task.sleep(for: Self.uploadAcknowledgementPoll) }
+            catch { return false }
+        }
+        return false
     }
 
     private static var environment: String {

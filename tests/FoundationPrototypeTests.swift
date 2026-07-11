@@ -337,17 +337,51 @@ final class FoundationPrototypeTests: XCTestCase {
 
     @MainActor
     func testAutomatedRunnerProducesEveryPresetAndExcludesWarmup() async {
-        let report = await BenchmarkRunner().run(profiler: PerformanceProfiler(), configuration: BenchmarkRunConfiguration(warmUpIterations: 1, measuredIterations: 2), progress: { _, _ in }, installMesh: { _ in })
+        let profiler = PerformanceProfiler()
+        let report = await BenchmarkRunner().run(profiler: profiler, configuration: BenchmarkRunConfiguration(warmUpIterations: 1, measuredIterations: 2), progress: { _, _ in }, installMesh: { _ in
+            profiler.record(.vertexUpload, milliseconds: 1)
+            profiler.record(.indexUpload, milliseconds: 1)
+        })
         XCTAssertEqual(report?.presets.map(\.presetName), BenchmarkPreset.allCases.map(\.rawValue))
         XCTAssertEqual(report?.presets.count, 3)
         XCTAssertEqual(report?.presets.first?.cases.first { $0.caseName == BenchmarkCase.picking.rawValue }?.sampleCount, 2)
+        for preset in report?.presets ?? [] {
+            XCTAssertEqual(preset.cases.first { $0.caseName == BenchmarkCase.vertexUpload.rawValue }?.sampleCount, 2)
+            XCTAssertEqual(preset.cases.first { $0.caseName == BenchmarkCase.indexUpload.rawValue }?.sampleCount, 2)
+        }
+    }
+
+    @MainActor
+    func testIndexUploadMeshesMatchEveryPresetScaleAndRefreshTopology() {
+        for preset in BenchmarkPreset.allCases {
+            let first = BenchmarkRunner.makeIndexUploadMesh(for: preset)
+            let second = BenchmarkRunner.makeIndexUploadMesh(for: preset)
+            XCTAssertEqual(first.vertices.count, preset.expectedVertexCount)
+            XCTAssertEqual(first.indices.count / 3, preset.expectedTriangleCount)
+            XCTAssertEqual(second.vertices.count, preset.expectedVertexCount)
+            XCTAssertEqual(second.indices.count / 3, preset.expectedTriangleCount)
+            XCTAssertNotEqual(first.runtime.topologyID, second.runtime.topologyID)
+        }
+        let large = BenchmarkRunner.makeIndexUploadMesh(for: .large)
+        XCTAssertEqual(large.vertices.count, BenchmarkPreset.large.expectedVertexCount)
+        XCTAssertEqual(large.indices.count / 3, BenchmarkPreset.large.expectedTriangleCount)
+    }
+
+    @MainActor
+    func testUploadAcknowledgementTimeoutDoesNotProduceSuccessfulReport() async {
+        let report = await BenchmarkRunner().run(profiler: PerformanceProfiler(),
+            configuration: BenchmarkRunConfiguration(warmUpIterations: 0, measuredIterations: 1),
+            progress: { _, _ in }, installMesh: { _ in })
+        XCTAssertNil(report)
     }
 
     @MainActor
     func testAutomatedBenchmarkCancellationRestoresWorkspaceState() async {
         let model = WorkspaceModel(); let originalMesh = model.mesh; let originalCamera = model.camera; let originalSettings = model.brushSettings
-        model.runAllBenchmarks(); model.cancelBenchmarks()
-        for _ in 0..<100 where model.isBenchmarkRunning { await Task.yield() }
+        model.runAllBenchmarks()
+        for _ in 0..<10_000 where model.isBenchmarkRunning && model.benchmarkProgress < (5.0 / 21.0) { await Task.yield() }
+        model.cancelBenchmarks()
+        for _ in 0..<1_000 where model.isBenchmarkRunning { await Task.yield() }
         XCTAssertFalse(model.isBenchmarkRunning); XCTAssertEqual(model.mesh, originalMesh); XCTAssertEqual(model.camera, originalCamera)
         XCTAssertEqual(model.brushSettings.radius, originalSettings.radius); XCTAssertEqual(model.undoCount, 0); XCTAssertEqual(model.redoCount, 0)
     }
