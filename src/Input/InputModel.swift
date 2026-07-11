@@ -1,3 +1,4 @@
+import Foundation
 import CoreGraphics
 
 enum InputDevice: Equatable { case finger, pencil, indirect }
