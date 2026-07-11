@@ -1,0 +1,15 @@
+# Xcode build products and per-user workspace state
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Swift Package Manager artifacts, if introduced later
+.build/
+Packages/
+
+# macOS and editor files
+.DS_Store
+*.swp
+*~

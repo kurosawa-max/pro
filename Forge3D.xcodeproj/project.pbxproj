@@ -1,0 +1,107 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* Forge3DApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001; };
+		A10000000000000000000002 /* WorkspaceModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002; };
+		A10000000000000000000003 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003; };
+		A10000000000000000000004 /* MetalCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004; };
+		A10000000000000000000005 /* InputModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005; };
+		A10000000000000000000006 /* MetalRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006; };
+		A10000000000000000000007 /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007; };
+		A10000000000000000000008 /* Mesh.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000008; };
+		A10000000000000000000009 /* Picking.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009; };
+		A1000000000000000000000A /* SculptBrush.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000A; };
+		A1000000000000000000000B /* StrokeHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000B; };
+		A1000000000000000000000C /* ProjectDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000C; };
+		A1000000000000000000000D /* BinarySTLExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000D; };
+		A1000000000000000000000E /* FoundationPrototypeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000E; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		C10000000000000000000001 = {isa = PBXContainerItemProxy; containerPortal = F10000000000000000000001; proxyType = 1; remoteGlobalIDString = D10000000000000000000001; remoteInfo = Forge3D; };
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		B10000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = src/App/Forge3DApp.swift; sourceTree = "<group>"; };
+		B10000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = src/App/WorkspaceModel.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = src/UI/ContentView.swift; sourceTree = "<group>"; };
+		B10000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = src/UI/MetalCanvas.swift; sourceTree = "<group>"; };
+		B10000000000000000000005 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = src/Input/InputModel.swift; sourceTree = "<group>"; };
+		B10000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = src/Renderer/MetalRenderer.swift; sourceTree = "<group>"; };
+		B10000000000000000000007 = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = src/Renderer/Shaders.metal; sourceTree = "<group>"; };
+		B10000000000000000000008 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = src/GeometryCore/Mesh.swift; sourceTree = "<group>"; };
+		B10000000000000000000009 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = src/GeometryCore/Picking.swift; sourceTree = "<group>"; };
+		B1000000000000000000000A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = src/SculptCore/SculptBrush.swift; sourceTree = "<group>"; };
+		B1000000000000000000000B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = src/Undo/StrokeHistory.swift; sourceTree = "<group>"; };
+		B1000000000000000000000C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = src/FileIO/ProjectDocument.swift; sourceTree = "<group>"; };
+		B1000000000000000000000D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = src/Export/BinarySTLExporter.swift; sourceTree = "<group>"; };
+		B1000000000000000000000E = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tests/FoundationPrototypeTests.swift; sourceTree = "<group>"; };
+		B1000000000000000000000F = {isa = PBXFileReference; explicitFileType = wrapper.application; path = Forge3D.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000010 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = Forge3DTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E10000000000000000000001 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		E10000000000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		F20000000000000000000001 = {isa = PBXGroup; children = (
+			B10000000000000000000001, B10000000000000000000002, B10000000000000000000003, B10000000000000000000004,
+			B10000000000000000000005, B10000000000000000000006, B10000000000000000000007, B10000000000000000000008,
+			B10000000000000000000009, B1000000000000000000000A, B1000000000000000000000B, B1000000000000000000000C,
+			B1000000000000000000000D, B1000000000000000000000E, F20000000000000000000002,
+		); sourceTree = "<group>"; };
+		F20000000000000000000002 = {isa = PBXGroup; children = (B1000000000000000000000F, B10000000000000000000010); name = Products; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		D10000000000000000000001 = {isa = PBXNativeTarget; buildConfigurationList = F50000000000000000000002; buildPhases = (E10000000000000000000003, E10000000000000000000001, E10000000000000000000005); buildRules = (); dependencies = (); name = Forge3D; productName = Forge3D; productReference = B1000000000000000000000F; productType = "com.apple.product-type.application"; };
+		D10000000000000000000002 = {isa = PBXNativeTarget; buildConfigurationList = F50000000000000000000003; buildPhases = (E10000000000000000000004, E10000000000000000000002, E10000000000000000000006); buildRules = (); dependencies = (C20000000000000000000001); name = Forge3DTests; productName = Forge3DTests; productReference = B10000000000000000000010; productType = "com.apple.product-type.bundle.unit-test"; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F10000000000000000000001 = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 1600; LastUpgradeCheck = 1600; TargetAttributes = {D10000000000000000000001 = {CreatedOnToolsVersion = 16.0; }; D10000000000000000000002 = {CreatedOnToolsVersion = 16.0; TestTargetID = D10000000000000000000001; };};}; buildConfigurationList = F50000000000000000000001; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = F20000000000000000000001; productRefGroup = F20000000000000000000002; projectDirPath = ""; projectRoot = ""; targets = (D10000000000000000000001, D10000000000000000000002); };
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E10000000000000000000005 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		E10000000000000000000006 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E10000000000000000000003 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+			A10000000000000000000001, A10000000000000000000002, A10000000000000000000003, A10000000000000000000004,
+			A10000000000000000000005, A10000000000000000000006, A10000000000000000000007, A10000000000000000000008,
+			A10000000000000000000009, A1000000000000000000000A, A1000000000000000000000B, A1000000000000000000000C,
+			A1000000000000000000000D,
+		); runOnlyForDeploymentPostprocessing = 0; };
+		E10000000000000000000004 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000000E); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		C20000000000000000000001 = {isa = PBXTargetDependency; target = D10000000000000000000001; targetProxy = C10000000000000000000001; };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		F30000000000000000000001 = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; SWIFT_VERSION = 5.0; IPHONEOS_DEPLOYMENT_TARGET = 17.0;}; name = Debug; };
+		F30000000000000000000002 = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; SWIFT_VERSION = 5.0; IPHONEOS_DEPLOYMENT_TARGET = 17.0;}; name = Release; };
+		F30000000000000000000003 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = Forge3D; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.graphics-design"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UIRequiresFullScreen = YES; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = com.forge3d.prototype; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; SWIFT_EMIT_LOC_STRINGS = YES; TARGETED_DEVICE_FAMILY = 2;}; name = Debug; };
+		F30000000000000000000004 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = Forge3D; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.graphics-design"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UIRequiresFullScreen = YES; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = com.forge3d.prototype; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; SWIFT_COMPILATION_MODE = wholemodule; TARGETED_DEVICE_FAMILY = 2;}; name = Release; };
+		F30000000000000000000005 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.forge3d.prototype.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 2; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Forge3D.app/Forge3D";}; name = Debug; };
+		F30000000000000000000006 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.forge3d.prototype.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 2; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Forge3D.app/Forge3D";}; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		F50000000000000000000001 = {isa = XCConfigurationList; buildConfigurations = (F30000000000000000000001, F30000000000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		F50000000000000000000002 = {isa = XCConfigurationList; buildConfigurations = (F30000000000000000000003, F30000000000000000000004); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		F50000000000000000000003 = {isa = XCConfigurationList; buildConfigurations = (F30000000000000000000005, F30000000000000000000006); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = F10000000000000000000001;
+}
