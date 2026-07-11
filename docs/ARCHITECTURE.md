@@ -375,3 +375,9 @@ Foundation 段階では編集コアも Swift で実装しており、C++ Half-ed
 Foundation実装の`EditableMesh`は、永続データであるvertices/indicesと、ランタイム専用のadjacency、revision、topology identityを分離する。ランタイムキャッシュはCodableへ含めず、decode後に必要時再構築する。
 
 固定トポロジーのブラシ処理ではadjacencyを再利用する。頂点変更はmesh revisionを進め、Rendererはrevisionが変化した場合だけvertex bufferへ転送する。index bufferはtopology identityが変化した場合だけ更新する。現段階の法線再計算は全体処理のためvertex buffer転送も全体更新とし、局所法線と部分転送は後続最適化とする。
+
+### 17.2 Performance Diagnostics
+
+最適化判断に先立ち、`src/Diagnostics`の共通Profiler境界でPicking、Sculpt、法線再計算、Metal buffer upload、draw CPU時間、frame interval、mesh規模を計測する。Geometry/Sculpt/Rendererは計測結果を保持せず、Profilerへ区間を通知するだけとする。
+
+計測とHUDはDebug限定で、Releaseでは時計取得・lock・サンプル保存をコンパイルしない。詳細な指標定義と計測オーバーヘッドは`PERFORMANCE_INSTRUMENTATION.md`に記録する。計測値が得られる前に特定の最適化を優先すると断定しない。

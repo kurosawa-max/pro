@@ -5,6 +5,11 @@ import simd
 
 @MainActor
 final class WorkspaceModel: ObservableObject {
+    #if DEBUG
+    let profiler: PerformanceProfiler? = PerformanceProfiler()
+    #else
+    let profiler: PerformanceProfiler? = nil
+    #endif
     @Published var mesh = EditableMesh.icosphere()
     @Published var camera = CameraState()
     @Published var brush = BrushKind.draw
@@ -16,6 +21,10 @@ final class WorkspaceModel: ObservableObject {
     private var strokeBefore: [Int: SIMD3<Float>]?
     private var lastHit: SIMD3<Float>?
 
+    init() {
+        profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
+    }
+
     func beginStroke() {
         if strokeBefore != nil { cancelStroke() }
         strokeBefore = [:]
@@ -23,10 +32,11 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func updateStroke(sample: PencilSample, ray: Ray) {
-        guard let hit = MeshPicker.hit(ray: ray, mesh: mesh) else { return }
+        guard let hit = MeshPicker.hit(ray: ray, mesh: mesh, profiler: profiler) else { return }
         let drag = lastHit.map { hit.position - $0 } ?? .zero
         let mutations = SculptBrush.apply(kind: brush, center: hit.position, normal: hit.normal, drag: drag,
-                                          pressure: max(sample.pressure, 0.05), settings: brushSettings, mesh: &mesh)
+                                          pressure: max(sample.pressure, 0.05), settings: brushSettings,
+                                          mesh: &mesh, profiler: profiler)
         for mutation in mutations where strokeBefore?[mutation.index] == nil {
             strokeBefore?[mutation.index] = mutation.before
         }
@@ -44,13 +54,13 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func cancelStroke() {
-        if let before = strokeBefore { _ = mesh.updatePositions(before) }
+        if let before = strokeBefore { _ = mesh.updatePositions(before, profiler: profiler) }
         strokeBefore = nil
         lastHit = nil
     }
 
-    func undo() { history.undo(mesh: &mesh) }
-    func redo() { history.redo(mesh: &mesh) }
+    func undo() { history.undo(mesh: &mesh, profiler: profiler) }
+    func redo() { history.redo(mesh: &mesh, profiler: profiler) }
 
     func projectData() throws -> Data {
         try ProjectCodec.encode(ForgeProject(mesh: mesh, camera: camera,
@@ -62,6 +72,7 @@ final class WorkspaceModel: ObservableObject {
         do {
             let project = try ProjectCodec.decode(data)
             mesh = project.mesh; camera = project.camera; history = StrokeHistory(); status = "Project loaded"
+            profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
         } catch { status = "Open failed: \(error.localizedDescription)" }
     }
 

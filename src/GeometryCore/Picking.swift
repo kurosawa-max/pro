@@ -19,7 +19,18 @@ private struct TriangleIntersection {
 }
 
 enum MeshPicker {
-    static func hit(ray: Ray, mesh: EditableMesh, culling: FaceCulling = .none) -> MeshHit? {
+    static func hit(
+        ray: Ray,
+        mesh: EditableMesh,
+        culling: FaceCulling = .none,
+        profiler: PerformanceProfiler? = nil
+    ) -> MeshHit? {
+        PerformanceProfiler.measure(profiler, metric: .picking) {
+            hitUnmeasured(ray: ray, mesh: mesh, culling: culling)
+        }
+    }
+
+    private static func hitUnmeasured(ray: Ray, mesh: EditableMesh, culling: FaceCulling) -> MeshHit? {
         guard ray.origin.allFinite, ray.direction.allFinite else { return nil }
         var nearest: MeshHit?
         for triangle in stride(from: 0, to: mesh.indices.count, by: 3) {

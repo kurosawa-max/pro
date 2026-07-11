@@ -11,7 +11,7 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
+            ZStack(alignment: .topTrailing) {
                 MetalCanvas(model: model).ignoresSafeArea(edges: .bottom)
                 if let p = model.hoverLocation {
                     Circle().stroke(.white.opacity(0.9), lineWidth: 2)
@@ -19,6 +19,11 @@ struct ContentView: View {
                         .position(p).allowsHitTesting(false)
                 }
                 VStack { Spacer(); controls.padding() }
+                #if DEBUG
+                PerformanceHUD(profiler: model.profiler)
+                    .padding(.top, 8)
+                    .padding(.trailing, 8)
+                #endif
             }
             .navigationTitle("Forge3D")
             .navigationBarTitleDisplayMode(.inline)

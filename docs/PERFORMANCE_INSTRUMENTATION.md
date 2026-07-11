@@ -1,0 +1,47 @@
+# Performance Instrumentation
+
+**Status:** Debug-only foundation  
+**Sample window:** 60 samples
+
+## Purpose
+
+最適化前のForge3D Foundation Prototypeについて、処理時間とメッシュ規模を同じ基準で観測する。計測結果が得られる前にBVH、局所法線更新、GPU Compute等の採否を決めない。
+
+## Diagnostics boundary
+
+`src/Diagnostics/PerformanceProfiler.swift`に次を集約する。
+
+- `PerformanceMetric`: 計測対象の識別子
+- `RollingAverage`: 直近60サンプルのlatest/average
+- `PerformanceSample`: 1指標の表示値
+- `PerformanceSnapshot`: HUD向けの不変スナップショット
+- `PerformanceProfiler`: 時計、記録、frame boundary、mesh counts
+
+Geometry、Sculpt、RendererはProfilerの計測境界を呼ぶが、サンプル保持や表示ロジックを持たない。Profilerはプロジェクト保存モデルへ含めない。
+
+## Metrics
+
+| Metric | Meaning |
+|---|---|
+| Picking ms | CPU ray/triangle picking 1回 |
+| Sculpt ms | `SculptBrush.apply` 1回。内部の法線再計算を含む |
+| Normal rebuild ms | 頂点法線の全体再計算1回 |
+| Vertex upload ms | Metal vertex buffer確保/再利用とCPU copy |
+| Index upload ms | topology変更時のindex buffer確保/再利用とCPU copy |
+| Frame ms | 1回のdraw callbackにおけるCPU command encoding時間。GPU完了時間ではない |
+| FPS | draw callback間隔の60サンプル平均から算出 |
+| Vertices / Triangles | 現在メッシュの要素数 |
+
+## Debug and Release
+
+計時、lock、サンプル保持、frame timestamp取得は`#if DEBUG`内だけに存在する。ReleaseではProfilerを生成せず、`measure`はoperationを直接実行し、HUDもコンパイルされない。`PerformanceProfiler.isInstrumentationCompiled`をDebug/Release双方で静的に検証可能にする。
+
+GitHub ActionsではRelease simulator buildを先に実行し、条件コンパイルされたRelease経路もコンパイル可能であることを確認した後、Debug buildとXCTestを実行する。
+
+## HUD
+
+画面右上の`Perf`ボタンで開閉する。展開時は各時間の`latest / average`、Vertices、Triangles、FPSを表示し、0.5秒周期でSnapshotだけを読み取る。
+
+## Known overhead
+
+Debug時は各計測区間につき時計取得2回と短いlock、60サンプルの更新が発生する。HUD表示時は0.5秒ごとにSnapshotを作る。メッシュ全体の追加コピー、GPU同期待ち、ファイル保存は行わない。Debug計測値は製品Release性能そのものではない。

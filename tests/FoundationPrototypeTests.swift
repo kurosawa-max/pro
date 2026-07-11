@@ -4,6 +4,42 @@ import simd
 @testable import Forge3D
 
 final class FoundationPrototypeTests: XCTestCase {
+    func testRollingAverageDropsSamplesBeyondCapacity() {
+        var average = RollingAverage(capacity: 2)
+        average.append(1)
+        average.append(2)
+        average.append(3)
+        XCTAssertEqual(average.sampleCount, 2)
+        XCTAssertEqual(average.latest, 3)
+        XCTAssertEqual(average.average, 2.5, accuracy: 0.000_001)
+    }
+
+    func testRollingAverageCalculatesMeanAndEmptyValueIsFinite() {
+        var average = RollingAverage(capacity: 60)
+        XCTAssertEqual(average.average, 0)
+        XCTAssertTrue(average.average.isFinite)
+        average.append(2)
+        average.append(4)
+        average.append(6)
+        XCTAssertEqual(average.average, 4, accuracy: 0.000_001)
+    }
+
+    func testPerformanceSnapshotReportsMeshCountsAndSafeEmptyFPS() {
+        let snapshot = PerformanceSnapshot(vertexCount: 642, triangleCount: 1_280)
+        XCTAssertEqual(snapshot.vertexCount, 642)
+        XCTAssertEqual(snapshot.triangleCount, 1_280)
+        XCTAssertEqual(snapshot.framesPerSecond, 0)
+        XCTAssertTrue(snapshot.framesPerSecond.isFinite)
+    }
+
+    func testInstrumentationCompileModeMatchesBuildConfiguration() {
+        #if DEBUG
+        XCTAssertTrue(PerformanceProfiler.isInstrumentationCompiled)
+        #else
+        XCTAssertFalse(PerformanceProfiler.isInstrumentationCompiled)
+        #endif
+    }
+
     func testForgeProjectTypeIdentifierAndExtension() {
         XCTAssertEqual(UTType.forge3D.identifier, "com.forge3d.project")
         XCTAssertEqual(UTType.forge3D.preferredFilenameExtension, "forge3d")
