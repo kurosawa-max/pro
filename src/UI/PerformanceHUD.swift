@@ -28,7 +28,7 @@ struct PerformanceHUD: View {
                         metricRow("Normal ms", snapshot[.normalRebuild])
                         metricRow("Vertex upload ms", snapshot[.vertexUpload])
                         metricRow("Index upload ms", snapshot[.indexUpload])
-                        metricRow("Frame ms", snapshot[.frameCPU])
+                        metricRow("Frame CPU ms", snapshot[.frameCPU])
                         valueRow("FPS", snapshot.framesPerSecond)
                         Text("latest / avg (60)")
                             .font(.system(size: 9, design: .monospaced))
