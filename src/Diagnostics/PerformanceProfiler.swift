@@ -82,14 +82,16 @@ final class PerformanceProfiler {
 
     #if DEBUG
     private let lock = NSLock()
-    private var metrics = Dictionary(
-        uniqueKeysWithValues: PerformanceMetric.allCases.map {
-            ($0, RollingAverage(capacity: rollingSampleCapacity))
-        }
-    )
+    private var metrics = PerformanceProfiler.emptyMetrics()
     private var vertexCount = 0
     private var triangleCount = 0
     private var previousFrameTimestamp: CFTimeInterval?
+
+    private static func emptyMetrics() -> [PerformanceMetric: RollingAverage] {
+        Dictionary(uniqueKeysWithValues: PerformanceMetric.allCases.map {
+            ($0, RollingAverage(capacity: rollingSampleCapacity))
+        })
+    }
     #endif
 
     @inline(__always)
@@ -133,6 +135,17 @@ final class PerformanceProfiler {
     func updateMeshCounts(vertexCount: Int, triangleCount: Int) {
         #if DEBUG
         lock.lock()
+        self.vertexCount = max(vertexCount, 0)
+        self.triangleCount = max(triangleCount, 0)
+        lock.unlock()
+        #endif
+    }
+
+    func reset(vertexCount: Int, triangleCount: Int) {
+        #if DEBUG
+        lock.lock()
+        metrics = Self.emptyMetrics()
+        previousFrameTimestamp = nil
         self.vertexCount = max(vertexCount, 0)
         self.triangleCount = max(triangleCount, 0)
         lock.unlock()
