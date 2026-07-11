@@ -6,6 +6,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
+    private let profiler: PerformanceProfiler?
     private var depthState: MTLDepthStencilState
     private var vertexBuffer: MTLBuffer?
     private var indexBuffer: MTLBuffer?
@@ -15,9 +16,9 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     var camera = CameraState()
     private(set) var viewProjection = matrix_identity_float4x4
 
-    init?(view: MTKView) {
+    init?(view: MTKView, profiler: PerformanceProfiler?) {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
-        self.device = device; self.queue = queue
+        self.device = device; self.queue = queue; self.profiler = profiler
         view.device = device; view.depthStencilPixelFormat = .depth32Float; view.colorPixelFormat = .bgra8Unorm_srgb
         view.clearColor = MTLClearColor(red: 0.025, green: 0.035, blue: 0.055, alpha: 1)
         guard let library = device.makeDefaultLibrary(),
@@ -36,20 +37,25 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     }
 
     func update(mesh: EditableMesh) {
+        profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
         let vertexByteCount = MemoryLayout<MeshVertex>.stride * mesh.vertices.count
         let topologyChanged = uploadedTopologyID != mesh.runtime.topologyID
         if topologyChanged {
-            let indexByteCount = MemoryLayout<UInt32>.stride * mesh.indices.count
-            indexBuffer = makeOrReuse(buffer: indexBuffer, requiredLength: indexByteCount)
-            copy(mesh.indices, to: indexBuffer, byteCount: indexByteCount)
-            indexCount = mesh.indices.count
-            uploadedTopologyID = mesh.runtime.topologyID
-            uploadedRevision = nil
+            PerformanceProfiler.measure(profiler, metric: .indexUpload) {
+                let indexByteCount = MemoryLayout<UInt32>.stride * mesh.indices.count
+                indexBuffer = makeOrReuse(buffer: indexBuffer, requiredLength: indexByteCount)
+                copy(mesh.indices, to: indexBuffer, byteCount: indexByteCount)
+                indexCount = mesh.indices.count
+                uploadedTopologyID = mesh.runtime.topologyID
+                uploadedRevision = nil
+            }
         }
         guard uploadedRevision != mesh.runtime.revision else { return }
-        vertexBuffer = makeOrReuse(buffer: vertexBuffer, requiredLength: vertexByteCount)
-        copy(mesh.vertices, to: vertexBuffer, byteCount: vertexByteCount)
-        uploadedRevision = mesh.runtime.revision
+        PerformanceProfiler.measure(profiler, metric: .vertexUpload) {
+            vertexBuffer = makeOrReuse(buffer: vertexBuffer, requiredLength: vertexByteCount)
+            copy(mesh.vertices, to: vertexBuffer, byteCount: vertexByteCount)
+            uploadedRevision = mesh.runtime.revision
+        }
     }
 
     private func makeOrReuse(buffer: MTLBuffer?, requiredLength: Int) -> MTLBuffer? {
@@ -67,6 +73,13 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     }
 
     func draw(in view: MTKView) {
+        profiler?.recordFrameBoundary()
+        PerformanceProfiler.measure(profiler, metric: .frameCPU) {
+            drawFrame(in: view)
+        }
+    }
+
+    private func drawFrame(in view: MTKView) {
         guard let pass = view.currentRenderPassDescriptor, let drawable = view.currentDrawable,
               let command = queue.makeCommandBuffer(), let encoder = command.makeRenderCommandEncoder(descriptor: pass),
               let vertexBuffer, let indexBuffer else { return }

@@ -7,7 +7,7 @@ struct MetalCanvas: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
     func makeUIView(context: Context) -> SculptMTKView {
         let view = SculptMTKView(frame: .zero)
-        guard let renderer = MetalRenderer(view: view) else { return view }
+        guard let renderer = MetalRenderer(view: view, profiler: model.profiler) else { return view }
         context.coordinator.renderer = renderer
         view.delegate = renderer; view.preferredFramesPerSecond = 60; view.isPaused = false
         view.onPencilBegan = { [weak coordinator = context.coordinator] sample in coordinator?.pencilBegan(sample, in: view) }

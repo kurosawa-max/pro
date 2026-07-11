@@ -112,7 +112,10 @@ struct EditableMesh: Codable, Equatable {
 
     var hasCachedAdjacency: Bool { adjacencyCache != nil }
 
-    mutating func updatePositions(_ updates: [Int: SIMD3<Float>]) -> [VertexMutation] {
+    mutating func updatePositions(
+        _ updates: [Int: SIMD3<Float>],
+        profiler: PerformanceProfiler? = nil
+    ) -> [VertexMutation] {
         var mutations: [VertexMutation] = []
         mutations.reserveCapacity(updates.count)
         for (index, position) in updates.sorted(by: { $0.key < $1.key })
@@ -122,12 +125,21 @@ struct EditableMesh: Codable, Equatable {
             mutations.append(VertexMutation(index: index, before: before, after: position))
         }
         guard !mutations.isEmpty else { return [] }
-        recalculateNormals(recordChange: false)
+        recalculateNormals(recordChange: false, profiler: profiler)
         recordVertexChange(indices: mutations.map(\.index))
         return mutations
     }
 
-    mutating func recalculateNormals(recordChange: Bool = true) {
+    mutating func recalculateNormals(
+        recordChange: Bool = true,
+        profiler: PerformanceProfiler? = nil
+    ) {
+        PerformanceProfiler.measure(profiler, metric: .normalRebuild) {
+            recalculateNormalsUnmeasured(recordChange: recordChange)
+        }
+    }
+
+    private mutating func recalculateNormalsUnmeasured(recordChange: Bool) {
         guard indices.count.isMultiple(of: 3) else { return }
         for i in vertices.indices { vertices[i].normal = .zero }
         for triangle in stride(from: 0, to: indices.count, by: 3) {

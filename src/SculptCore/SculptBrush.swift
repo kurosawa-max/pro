@@ -15,7 +15,26 @@ enum SculptBrush {
         drag: SIMD3<Float>,
         pressure: Float,
         settings: BrushSettings,
-        mesh: inout EditableMesh
+        mesh: inout EditableMesh,
+        profiler: PerformanceProfiler? = nil
+    ) -> [VertexMutation] {
+        PerformanceProfiler.measure(profiler, metric: .sculpt) {
+            applyUnmeasured(
+                kind: kind, center: center, normal: normal, drag: drag,
+                pressure: pressure, settings: settings, mesh: &mesh, profiler: profiler
+            )
+        }
+    }
+
+    private static func applyUnmeasured(
+        kind: BrushKind,
+        center: SIMD3<Float>,
+        normal: SIMD3<Float>,
+        drag: SIMD3<Float>,
+        pressure: Float,
+        settings: BrushSettings,
+        mesh: inout EditableMesh,
+        profiler: PerformanceProfiler?
     ) -> [VertexMutation] {
         guard center.allFinite, normal.allFinite, drag.allFinite else { return [] }
         let radius = max(settings.radius, 0.000_1)
@@ -49,7 +68,7 @@ enum SculptBrush {
 
             if candidate.allFinite { updates[index] = candidate }
         }
-        return mesh.updatePositions(updates)
+        return mesh.updatePositions(updates, profiler: profiler)
     }
 
     private static func limited(_ value: SIMD3<Float>, maximum: Float) -> SIMD3<Float> {
