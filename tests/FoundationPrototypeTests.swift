@@ -394,6 +394,91 @@ final class FoundationPrototypeTests: XCTestCase {
         #endif
     }
 
+    func testAABBInclusionUnionAndRayVariants() {
+        var box = AxisAlignedBoundingBox(); XCTAssertFalse(box.isFinite)
+        box.include(SIMD3<Float>(-1, -2, -3)); box.include(SIMD3<Float>(1, 2, 3))
+        XCTAssertTrue(box.contains(.zero)); XCTAssertEqual(box.center, .zero)
+        XCTAssertEqual(box.extent, SIMD3<Float>(2, 4, 6)); XCTAssertEqual(box.surfaceArea, 88)
+        var other = AxisAlignedBoundingBox(); other.include(SIMD3<Float>(-2, 0, 0)); other.include(SIMD3<Float>(0, 1, 1)); box.include(other)
+        XCTAssertTrue(box.contains(other))
+        XCTAssertNotNil(box.rayNearDistance(Ray(origin: SIMD3<Float>(-4, 0, 0), direction: SIMD3<Float>(1, 0, 0))))
+        XCTAssertNotNil(box.rayNearDistance(Ray(origin: SIMD3<Float>(4, 0, 0), direction: SIMD3<Float>(-1, 0, 0))))
+        XCTAssertNotNil(box.rayNearDistance(Ray(origin: .zero, direction: SIMD3<Float>(0, 1, 0))))
+        XCTAssertNil(box.rayNearDistance(Ray(origin: SIMD3<Float>(4, 4, 4), direction: SIMD3<Float>(0, 1, 0))))
+        XCTAssertNotNil(box.rayNearDistance(Ray(origin: SIMD3<Float>(-2, 0, 0), direction: SIMD3<Float>(1, 0, 0))))
+        XCTAssertNil(box.rayNearDistance(Ray(origin: SIMD3<Float>(.nan, 0, 0), direction: SIMD3<Float>(1, 0, 0))))
+        XCTAssertNil(box.rayNearDistance(Ray(origin: .zero, direction: SIMD3<Float>(.infinity, 0, 0))))
+    }
+
+    func testBVHBuildHandlesEmptySingleDegenerateAndCoincidentCentroids() throws {
+        XCTAssertTrue(try MeshBVH(mesh: EditableMesh(vertices: [], indices: [])).isEmpty)
+        let single = pickingTriangle(); let singleBVH = try MeshBVH(mesh: single)
+        XCTAssertEqual(singleBVH.triangles.count, 1); XCTAssertEqual(singleBVH.nodes.count, 1)
+        let degenerate = EditableMesh(vertices: [MeshVertex(position: .zero, normal: SIMD3<Float>(0, 1, 0)), MeshVertex(position: .zero, normal: SIMD3<Float>(0, 1, 0)), MeshVertex(position: .zero, normal: SIMD3<Float>(0, 1, 0))], indices: [0, 1, 2])
+        XCTAssertNoThrow(try MeshBVH(mesh: degenerate))
+        let coincident = EditableMesh(vertices: single.vertices, indices: Array(repeating: [UInt32(0), 1, 2], count: 9).flatMap { $0 })
+        let coincidentBVH = try MeshBVH(mesh: coincident)
+        XCTAssertEqual(coincidentBVH.triangles.count, 9)
+        XCTAssertEqual(coincidentBVH.nodes.count, 1)
+    }
+
+    func testBVHStoresEveryTriangleOnceAndBoundsHierarchyIsValid() throws {
+        let mesh = EditableMesh.icosphere(subdivisions: 2), bvh = try MeshBVH(mesh: mesh)
+        XCTAssertEqual(bvh.triangles.map(\.triangleStart).sorted(), Array(stride(from: 0, to: mesh.indices.count, by: 3)))
+        XCTAssertEqual(Set(bvh.triangles.map(\.triangleStart)).count, mesh.indices.count / 3)
+        XCTAssertTrue(bvh.nodes[0].bounds.isFinite)
+        for node in bvh.nodes where !node.isLeaf {
+            XCTAssertTrue(node.left >= 0 && node.right >= 0)
+            XCTAssertTrue(node.bounds.contains(bvh.nodes[node.left].bounds))
+            XCTAssertTrue(node.bounds.contains(bvh.nodes[node.right].bounds))
+        }
+        XCTAssertTrue(bvh.nodes.filter(\.isLeaf).allSatisfy { $0.count <= MeshBVH.leafThreshold })
+        func depth(_ index: Int) -> Int {
+            let node = bvh.nodes[index]
+            return node.isLeaf ? 1 : 1 + max(depth(node.left), depth(node.right))
+        }
+        XCTAssertLessThanOrEqual(depth(0), MeshBVH.maximumDepth + 1)
+    }
+
+    func testBVHPickingMatchesLinearAcrossPresetsAndRays() {
+        let rays = [
+            Ray(origin: SIMD3<Float>(0, 0, 3), direction: SIMD3<Float>(0, 0, -1)),
+            Ray(origin: SIMD3<Float>(3, 0, 0), direction: SIMD3<Float>(-1, 0, 0)),
+            Ray(origin: SIMD3<Float>(0, 0, 3), direction: simd_normalize(SIMD3<Float>(0.3, 0.1, -3))),
+            Ray(origin: SIMD3<Float>(0, 0, 3), direction: SIMD3<Float>(0, 1, 0)),
+            Ray(origin: .zero, direction: SIMD3<Float>(0, 0, 1)),
+        ]
+        for preset in BenchmarkPreset.allCases {
+            let mesh = preset.makeMesh(), cache = MeshBVHCache()
+            for ray in rays { assertEquivalent(linear: MeshPicker.hitLinear(ray: ray, mesh: mesh), bvh: MeshPicker.hit(ray: ray, mesh: mesh, cache: cache)) }
+        }
+    }
+
+    func testBVHCacheReusesRefitsAndRebuilds() {
+        var mesh = EditableMesh.icosphere(subdivisions: 1); let cache = MeshBVHCache()
+        XCTAssertNotNil(MeshPicker.hit(ray: Ray(origin: SIMD3<Float>(0, 0, 3), direction: SIMD3<Float>(0, 0, -1)), mesh: mesh, cache: cache))
+        XCTAssertEqual(cache.buildCount, 1)
+        _ = cache.index(for: mesh); XCTAssertEqual(cache.reuseCount, 1)
+        let oldRoot = cache.bvh?.nodes.first?.bounds
+        _ = mesh.updatePositions([0: mesh.vertices[0].position * 1.2])
+        _ = cache.index(for: mesh); XCTAssertEqual(cache.refitCount, 1); XCTAssertNotEqual(cache.bvh?.nodes.first?.bounds, oldRoot)
+        assertEquivalent(linear: MeshPicker.hitLinear(ray: Ray(origin: SIMD3<Float>(0, 0, 3), direction: SIMD3<Float>(0, 0, -1)), mesh: mesh), bvh: MeshPicker.hit(ray: Ray(origin: SIMD3<Float>(0, 0, 3), direction: SIMD3<Float>(0, 0, -1)), mesh: mesh, cache: cache))
+        let replacement = EditableMesh.icosphere(subdivisions: 2); _ = cache.index(for: replacement)
+        XCTAssertEqual(cache.buildCount, 2); XCTAssertEqual(cache.topologyID, replacement.runtime.topologyID)
+    }
+
+    private func assertEquivalent(linear: MeshHit?, bvh: MeshHit?, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(linear != nil, bvh != nil, file: file, line: line)
+        guard let linear, let bvh else { return }
+        XCTAssertEqual(linear.triangleStart, bvh.triangleStart, file: file, line: line)
+        XCTAssertEqual(linear.distance, bvh.distance, accuracy: 0.000_01, file: file, line: line)
+        for axis in 0..<3 {
+            XCTAssertEqual(linear.position[axis], bvh.position[axis], accuracy: 0.000_01, file: file, line: line)
+            XCTAssertEqual(linear.barycentric[axis], bvh.barycentric[axis], accuracy: 0.000_01, file: file, line: line)
+            XCTAssertEqual(linear.normal[axis], bvh.normal[axis], accuracy: 0.000_01, file: file, line: line)
+        }
+    }
+
     private func pickingTriangle() -> EditableMesh {
         EditableMesh(
             vertices: [
