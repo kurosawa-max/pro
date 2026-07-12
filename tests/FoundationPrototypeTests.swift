@@ -311,6 +311,89 @@ final class FoundationPrototypeTests: XCTestCase {
         XCTAssertEqual(sample.azimuth, 1.2, accuracy: 0.001)
     }
 
+    func testRollingAverageProvidesBoundedStatistics() {
+        var values = RollingAverage(capacity: 3)
+        [1.0, 2.0, 6.0, 4.0].forEach { values.append($0) }
+        XCTAssertEqual(values.sampleCount, 3); XCTAssertEqual(values.latest, 4)
+        XCTAssertEqual(values.average, 4); XCTAssertEqual(values.minimum, 2); XCTAssertEqual(values.maximum, 6)
+        let empty = RollingAverage()
+        XCTAssertTrue([empty.latest, empty.average, empty.minimum, empty.maximum].allSatisfy(\.isFinite))
+    }
+
+    @MainActor
+    func testAutomatedBenchmarkCasesAndConfigurationAreDeterministic() {
+        XCTAssertEqual(BenchmarkCase.allCases.map(\.rawValue), ["Picking", "Draw brush", "Smooth brush", "Grab brush", "Normal rebuild", "Vertex buffer upload", "Index buffer upload"])
+        XCTAssertEqual(BenchmarkRunConfiguration.standard.warmUpIterations, 10)
+        XCTAssertEqual(BenchmarkRunConfiguration.standard.measuredIterations, 60)
+        XCTAssertEqual(BenchmarkRunner.fixedRay.origin, SIMD3<Float>(0, 0, 3))
+    }
+
+    func testBenchmarkReportJSONRoundTripAndTextFields() throws {
+        let item = BenchmarkCaseResult(caseName: "Picking", sampleCount: 60, latestMilliseconds: 1, averageMilliseconds: 2, minimumMilliseconds: 0.5, maximumMilliseconds: 4)
+        let report = BenchmarkReport(executedAt: Date(timeIntervalSince1970: 0), environment: "Simulator", buildConfiguration: "Debug", configuration: .standard, presets: [BenchmarkPresetResult(presetName: "Small", vertexCount: 162, triangleCount: 320, cases: [item])])
+        XCTAssertEqual(try JSONDecoder().decode(BenchmarkReport.self, from: JSONEncoder().encode(report)), report)
+        for required in ["Small", "162 vertices", "320 triangles", "Picking", "latest", "avg", "min", "max", "Simulator", "Debug"] { XCTAssertTrue(report.plainText.contains(required)) }
+    }
+
+    @MainActor
+    func testAutomatedRunnerProducesEveryPresetAndExcludesWarmup() async {
+        let profiler = PerformanceProfiler()
+        let report = await BenchmarkRunner().run(profiler: profiler, configuration: BenchmarkRunConfiguration(warmUpIterations: 1, measuredIterations: 2), progress: { _, _ in }, installMesh: { _ in
+            profiler.record(.vertexUpload, milliseconds: 1)
+            profiler.record(.indexUpload, milliseconds: 1)
+        })
+        XCTAssertEqual(report?.presets.map(\.presetName), BenchmarkPreset.allCases.map(\.rawValue))
+        XCTAssertEqual(report?.presets.count, 3)
+        XCTAssertEqual(report?.presets.first?.cases.first { $0.caseName == BenchmarkCase.picking.rawValue }?.sampleCount, 2)
+        for preset in report?.presets ?? [] {
+            XCTAssertEqual(preset.cases.first { $0.caseName == BenchmarkCase.vertexUpload.rawValue }?.sampleCount, 2)
+            XCTAssertEqual(preset.cases.first { $0.caseName == BenchmarkCase.indexUpload.rawValue }?.sampleCount, 2)
+        }
+    }
+
+    @MainActor
+    func testIndexUploadMeshesMatchEveryPresetScaleAndRefreshTopology() {
+        for preset in BenchmarkPreset.allCases {
+            let first = BenchmarkRunner.makeIndexUploadMesh(for: preset)
+            let second = BenchmarkRunner.makeIndexUploadMesh(for: preset)
+            XCTAssertEqual(first.vertices.count, preset.expectedVertexCount)
+            XCTAssertEqual(first.indices.count / 3, preset.expectedTriangleCount)
+            XCTAssertEqual(second.vertices.count, preset.expectedVertexCount)
+            XCTAssertEqual(second.indices.count / 3, preset.expectedTriangleCount)
+            XCTAssertNotEqual(first.runtime.topologyID, second.runtime.topologyID)
+        }
+        let large = BenchmarkRunner.makeIndexUploadMesh(for: .large)
+        XCTAssertEqual(large.vertices.count, BenchmarkPreset.large.expectedVertexCount)
+        XCTAssertEqual(large.indices.count / 3, BenchmarkPreset.large.expectedTriangleCount)
+    }
+
+    @MainActor
+    func testUploadAcknowledgementTimeoutDoesNotProduceSuccessfulReport() async {
+        let report = await BenchmarkRunner().run(profiler: PerformanceProfiler(),
+            configuration: BenchmarkRunConfiguration(warmUpIterations: 0, measuredIterations: 1),
+            progress: { _, _ in }, installMesh: { _ in })
+        XCTAssertNil(report)
+    }
+
+    @MainActor
+    func testAutomatedBenchmarkCancellationRestoresWorkspaceState() async {
+        let model = WorkspaceModel(); let originalMesh = model.mesh; let originalCamera = model.camera; let originalSettings = model.brushSettings
+        model.runAllBenchmarks()
+        for _ in 0..<10_000 where model.isBenchmarkRunning && model.benchmarkProgress < (5.0 / 21.0) { await Task.yield() }
+        model.cancelBenchmarks()
+        for _ in 0..<1_000 where model.isBenchmarkRunning { await Task.yield() }
+        XCTAssertFalse(model.isBenchmarkRunning); XCTAssertEqual(model.mesh, originalMesh); XCTAssertEqual(model.camera, originalCamera)
+        XCTAssertEqual(model.brushSettings.radius, originalSettings.radius); XCTAssertEqual(model.undoCount, 0); XCTAssertEqual(model.redoCount, 0)
+    }
+
+    func testAutomatedBenchmarkReleaseBoundary() {
+        #if DEBUG
+        XCTAssertTrue(AutomatedBenchmarkFeature.isCompiled)
+        #else
+        XCTAssertFalse(AutomatedBenchmarkFeature.isCompiled)
+        #endif
+    }
+
     private func pickingTriangle() -> EditableMesh {
         EditableMesh(
             vertices: [

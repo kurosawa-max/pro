@@ -1,5 +1,6 @@
 #if DEBUG
 import SwiftUI
+import UIKit
 
 struct BenchmarkPanel: View {
     @ObservedObject var model: WorkspaceModel
@@ -34,6 +35,24 @@ struct BenchmarkPanel: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
+
+                    if model.isBenchmarkRunning {
+                        ProgressView(value: model.benchmarkProgress)
+                        Button("Cancel", role: .cancel) { model.cancelBenchmarks() }
+                            .buttonStyle(.bordered).controlSize(.mini)
+                    } else {
+                        Button("Run All Benchmarks", systemImage: "play.fill") { model.runAllBenchmarks() }
+                            .buttonStyle(.borderedProminent).controlSize(.mini)
+                    }
+
+                    if let report = model.lastBenchmarkReport {
+                        Text("Last: \(report.presets.count) presets / \(report.presets.flatMap(\.cases).count) cases")
+                        HStack {
+                            Button("Copy Text") { UIPasteboard.general.string = report.plainText }
+                            Button("Copy JSON") { UIPasteboard.general.string = report.json }
+                        }
+                        .buttonStyle(.bordered).controlSize(.mini)
+                    }
                 }
                 .font(.system(size: 10, design: .monospaced))
                 .padding(8)

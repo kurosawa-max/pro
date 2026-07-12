@@ -18,6 +18,11 @@ final class WorkspaceModel: ObservableObject {
     @Published var status = "Ready"
     #if DEBUG
     @Published private(set) var benchmarkPreset: BenchmarkPreset?
+    @Published private(set) var isBenchmarkRunning = false
+    @Published private(set) var benchmarkProgress = 0.0
+    @Published private(set) var lastBenchmarkReport: BenchmarkReport?
+    private var benchmarkTask: Task<Void, Never>?
+    private var benchmarkRunner: BenchmarkRunner?
     #endif
 
     private var history = StrokeHistory()
@@ -103,5 +108,32 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var benchmarkDisplayName: String { benchmarkPreset?.rawValue ?? "Default" }
+
+    func runAllBenchmarks() {
+        guard !isBenchmarkRunning, let profiler else { return }
+        cancelStroke()
+        let originalMesh = mesh, originalCamera = camera, originalBrush = brush
+        let originalSettings = brushSettings, originalPreset = benchmarkPreset, originalHistory = history
+        let runner = BenchmarkRunner(); benchmarkRunner = runner
+        isBenchmarkRunning = true; benchmarkProgress = 0; lastBenchmarkReport = nil
+        benchmarkTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.mesh = originalMesh; self.camera = originalCamera; self.brush = originalBrush
+                self.brushSettings = originalSettings; self.benchmarkPreset = originalPreset; self.history = originalHistory
+                self.profiler?.reset(vertexCount: originalMesh.vertices.count, triangleCount: originalMesh.indices.count / 3)
+                self.isBenchmarkRunning = false; self.benchmarkRunner = nil; self.benchmarkTask = nil
+            }
+            let report = await runner.run(profiler: profiler, progress: { completed, total in
+                self.benchmarkProgress = Double(completed) / Double(max(total, 1))
+            }, installMesh: { self.mesh = $0 })
+            if let report { self.lastBenchmarkReport = report }
+        }
+    }
+
+    func cancelBenchmarks() {
+        benchmarkRunner?.cancel()
+        benchmarkTask?.cancel()
+    }
     #endif
 }

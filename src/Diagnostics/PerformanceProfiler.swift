@@ -45,12 +45,17 @@ struct RollingAverage: Equatable {
         let result = total / Double(sampleCount)
         return result.isFinite ? result : 0
     }
+
+    var minimum: Double { samples.min() ?? 0 }
+    var maximum: Double { samples.max() ?? 0 }
 }
 
 struct PerformanceSample: Equatable {
     var latestMilliseconds = 0.0
     var averageMilliseconds = 0.0
     var sampleCount = 0
+    var minimumMilliseconds = 0.0
+    var maximumMilliseconds = 0.0
 }
 
 struct PerformanceSnapshot: Equatable {
@@ -152,6 +157,24 @@ final class PerformanceProfiler {
         #endif
     }
 
+    func reset(_ metric: PerformanceMetric) {
+        #if DEBUG
+        lock.lock()
+        metrics[metric] = RollingAverage(capacity: Self.rollingSampleCapacity)
+        lock.unlock()
+        #endif
+    }
+
+    func sampleCount(for metric: PerformanceMetric) -> Int {
+        #if DEBUG
+        lock.lock()
+        defer { lock.unlock() }
+        return metrics[metric]?.sampleCount ?? 0
+        #else
+        return 0
+        #endif
+    }
+
     func snapshot() -> PerformanceSnapshot {
         #if DEBUG
         lock.lock()
@@ -160,7 +183,9 @@ final class PerformanceProfiler {
             PerformanceSample(
                 latestMilliseconds: $0.latest,
                 averageMilliseconds: $0.average,
-                sampleCount: $0.sampleCount
+                sampleCount: $0.sampleCount,
+                minimumMilliseconds: $0.minimum,
+                maximumMilliseconds: $0.maximum
             )
         }
         return PerformanceSnapshot(vertexCount: vertexCount, triangleCount: triangleCount, samples: samples)
