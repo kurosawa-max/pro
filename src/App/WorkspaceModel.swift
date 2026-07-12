@@ -12,6 +12,7 @@ final class WorkspaceModel: ObservableObject {
     #endif
     @Published var mesh = EditableMesh.icosphere()
     @Published var camera = CameraState()
+    @Published private(set) var objectTransform = ObjectTransform.identity
     @Published var brush = BrushKind.draw
     @Published var brushSettings = BrushSettings()
     @Published var hoverLocation: CGPoint?
@@ -41,10 +42,14 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func updateStroke(sample: PencilSample, ray: Ray) {
-        guard let hit = MeshPicker.hit(ray: ray, mesh: mesh, profiler: profiler, cache: pickingCache) else { return }
+        guard let localRay = objectTransform.localRay(fromWorld: ray),
+              let hit = MeshPicker.hit(ray: localRay, mesh: mesh, profiler: profiler, cache: pickingCache) else { return }
         let drag = lastHit.map { hit.position - $0 } ?? .zero
+        var localSettings = brushSettings
+        let maximumScale = max(abs(objectTransform.scale.x), abs(objectTransform.scale.y), abs(objectTransform.scale.z))
+        localSettings.radius = brushSettings.radius / max(maximumScale, ObjectTransform.minimumScaleMagnitude)
         let mutations = SculptBrush.apply(kind: brush, center: hit.position, normal: hit.normal, drag: drag,
-                                          pressure: max(sample.pressure, 0.05), settings: brushSettings,
+                                          pressure: max(sample.pressure, 0.05), settings: localSettings,
                                           mesh: &mesh, profiler: profiler)
         for mutation in mutations where strokeBefore?[mutation.index] == nil {
             strokeBefore?[mutation.index] = mutation.before
@@ -72,7 +77,7 @@ final class WorkspaceModel: ObservableObject {
     func redo() { history.redo(mesh: &mesh, profiler: profiler) }
 
     func projectData() throws -> Data {
-        try ProjectCodec.encode(ForgeProject(mesh: mesh, camera: camera,
+        try ProjectCodec.encode(ForgeProject(mesh: mesh, camera: camera, transform: objectTransform,
                                              metadata: ["generator": "Forge3D Foundation Prototype"]))
     }
 
@@ -80,7 +85,8 @@ final class WorkspaceModel: ObservableObject {
         cancelStroke()
         do {
             let project = try ProjectCodec.decode(data)
-            mesh = project.mesh; camera = project.camera; history = StrokeHistory(); status = "Project loaded"
+            mesh = project.mesh; camera = project.camera; objectTransform = project.transform.sanitized()
+            history = StrokeHistory(); status = "Project loaded"
             #if DEBUG
             benchmarkPreset = nil
             #endif
@@ -94,11 +100,35 @@ final class WorkspaceModel: ObservableObject {
     var undoCount: Int { history.undoStack.count }
     var redoCount: Int { history.redoStack.count }
 
+    func updateTransform(_ value: ObjectTransform) {
+        #if DEBUG
+        guard !isBenchmarkRunning else { return }
+        #endif
+        cancelStroke()
+        objectTransform = value.sanitized()
+        status = "Transform updated"
+    }
+
+    func updateTranslation(_ value: SIMD3<Float>) {
+        var transform = objectTransform; transform.translation = value; updateTransform(transform)
+    }
+
+    func updateRotationDegrees(_ value: SIMD3<Float>) {
+        var transform = objectTransform; transform.rotation = ObjectTransform.rotation(degrees: value); updateTransform(transform)
+    }
+
+    func updateScale(_ value: SIMD3<Float>) {
+        var transform = objectTransform; transform.scale = value; updateTransform(transform)
+    }
+
+    func resetTransform() { updateTransform(.identity) }
+
     #if DEBUG
     func loadBenchmarkPreset(_ preset: BenchmarkPreset) {
         cancelStroke()
         history = StrokeHistory()
         mesh = preset.makeMesh()
+        objectTransform = .identity
         benchmarkPreset = preset
         profiler?.reset(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
         status = "Benchmark: \(preset.rawValue)"
@@ -115,13 +145,16 @@ final class WorkspaceModel: ObservableObject {
         cancelStroke()
         let originalMesh = mesh, originalCamera = camera, originalBrush = brush
         let originalSettings = brushSettings, originalPreset = benchmarkPreset, originalHistory = history
+        let originalTransform = objectTransform
         let runner = BenchmarkRunner(); benchmarkRunner = runner
+        objectTransform = .identity
         isBenchmarkRunning = true; benchmarkProgress = 0; lastBenchmarkReport = nil
         benchmarkTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
                 self.mesh = originalMesh; self.camera = originalCamera; self.brush = originalBrush
                 self.brushSettings = originalSettings; self.benchmarkPreset = originalPreset; self.history = originalHistory
+                self.objectTransform = originalTransform
                 self.profiler?.reset(vertexCount: originalMesh.vertices.count, triangleCount: originalMesh.indices.count / 3)
                 self.isBenchmarkRunning = false; self.benchmarkRunner = nil; self.benchmarkTask = nil
             }

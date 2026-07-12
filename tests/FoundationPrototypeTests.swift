@@ -377,12 +377,17 @@ final class FoundationPrototypeTests: XCTestCase {
 
     @MainActor
     func testAutomatedBenchmarkCancellationRestoresWorkspaceState() async {
-        let model = WorkspaceModel(); let originalMesh = model.mesh; let originalCamera = model.camera; let originalSettings = model.brushSettings
+        let model = WorkspaceModel()
+        model.updateTransform(ObjectTransform(translation: SIMD3<Float>(1, 2, 3), scale: SIMD3<Float>(2, 1, 0.5)))
+        let originalMesh = model.mesh; let originalCamera = model.camera; let originalSettings = model.brushSettings
+        let originalTransform = model.objectTransform
         model.runAllBenchmarks()
+        XCTAssertTrue(model.objectTransform.isIdentity)
         for _ in 0..<10_000 where model.isBenchmarkRunning && model.benchmarkProgress < (5.0 / 21.0) { await Task.yield() }
         model.cancelBenchmarks()
         for _ in 0..<1_000 where model.isBenchmarkRunning { await Task.yield() }
         XCTAssertFalse(model.isBenchmarkRunning); XCTAssertEqual(model.mesh, originalMesh); XCTAssertEqual(model.camera, originalCamera)
+        XCTAssertEqual(model.objectTransform, originalTransform)
         XCTAssertEqual(model.brushSettings.radius, originalSettings.radius); XCTAssertEqual(model.undoCount, 0); XCTAssertEqual(model.redoCount, 0)
     }
 
@@ -477,6 +482,114 @@ final class FoundationPrototypeTests: XCTestCase {
             XCTAssertEqual(linear.barycentric[axis], bvh.barycentric[axis], accuracy: 0.000_01, file: file, line: line)
             XCTAssertEqual(linear.normal[axis], bvh.normal[axis], accuracy: 0.000_01, file: file, line: line)
         }
+    }
+
+    func testObjectTransformIdentityTranslationRotationAndScaleMatrices() {
+        XCTAssertTrue(ObjectTransform.identity.isIdentity)
+        assertMatrix(ObjectTransform.identity.modelMatrix, equals: matrix_identity_float4x4)
+        let translation = ObjectTransform(translation: SIMD3<Float>(1, 2, 3))
+        XCTAssertEqual(translation.worldPosition(fromLocal: .zero), SIMD3<Float>(1, 2, 3))
+        let rotation = ObjectTransform(rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(0, 90, 0)))
+        let rotated = rotation.worldDirection(fromLocal: SIMD3<Float>(0, 0, 1))
+        XCTAssertEqual(rotated.x, 1, accuracy: 0.000_1)
+        let uniform = ObjectTransform(scale: SIMD3<Float>(repeating: 2))
+        XCTAssertEqual(uniform.worldPosition(fromLocal: SIMD3<Float>(1, 1, 1)), SIMD3<Float>(2, 2, 2))
+        let nonUniform = ObjectTransform(scale: SIMD3<Float>(2, 3, 4))
+        XCTAssertEqual(nonUniform.worldPosition(fromLocal: SIMD3<Float>(1, 1, 1)), SIMD3<Float>(2, 3, 4))
+    }
+
+    func testObjectTransformInverseRoundTripAndNormalMatrixAreFinite() {
+        let transform = ObjectTransform(translation: SIMD3<Float>(2, -1, 4),
+            rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(25, 40, -15)), scale: SIMD3<Float>(2, 0.5, 3))
+        let local = SIMD3<Float>(0.2, -0.7, 1.1)
+        let roundTrip = transform.localPosition(fromWorld: transform.worldPosition(fromLocal: local))
+        for axis in 0..<3 { XCTAssertEqual(roundTrip[axis], local[axis], accuracy: 0.000_1) }
+        let normal = transform.worldNormal(fromLocal: simd_normalize(SIMD3<Float>(1, 2, 3)))
+        XCTAssertTrue(normal.allFinite); XCTAssertEqual(simd_length(normal), 1, accuracy: 0.000_1)
+        for column in 0..<3 { XCTAssertTrue(transform.normalMatrix[column].allFinite) }
+    }
+
+    func testObjectTransformSanitizesZeroExtremeAndNonFiniteValues() {
+        let value = ObjectTransform(translation: SIMD3<Float>(.nan, 1, 2), rotation: SIMD4<Float>(.nan, 0, 0, 0),
+                                    scale: SIMD3<Float>(0, .infinity, -Float.greatestFiniteMagnitude))
+        XCTAssertTrue(value.isFinite)
+        XCTAssertEqual(value.translation, .zero)
+        XCTAssertEqual(abs(value.scale.x), ObjectTransform.minimumScaleMagnitude)
+        XCTAssertEqual(value.scale.y, 1)
+        XCTAssertEqual(abs(value.scale.z), ObjectTransform.maximumScaleMagnitude)
+        let column = value.modelMatrix.columns.0
+        XCTAssertTrue(column.x.isFinite && column.y.isFinite && column.z.isFinite && column.w.isFinite)
+    }
+
+    func testTransformedWorldRayPickingMatchesLocalPicking() {
+        let mesh = EditableMesh.icosphere(subdivisions: 2)
+        let localRay = Ray(origin: SIMD3<Float>(0, 0, 3), direction: SIMD3<Float>(0, 0, -1))
+        let expected = MeshPicker.hit(ray: localRay, mesh: mesh)
+        for transform in [
+            ObjectTransform.identity,
+            ObjectTransform(translation: SIMD3<Float>(2, -1, 0.5)),
+            ObjectTransform(rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(20, 35, 10))),
+            ObjectTransform(scale: SIMD3<Float>(repeating: 2)),
+            ObjectTransform(scale: SIMD3<Float>(2, 0.75, 1.5)),
+        ] {
+            let worldRay = Ray(origin: transform.worldPosition(fromLocal: localRay.origin),
+                               direction: transform.worldDirection(fromLocal: localRay.direction))
+            guard let converted = transform.localRay(fromWorld: worldRay) else { return XCTFail("Ray conversion failed") }
+            let actual = MeshPicker.hit(ray: converted, mesh: mesh)
+            XCTAssertEqual(actual?.triangleStart, expected?.triangleStart)
+            XCTAssertEqual(actual?.distance ?? -1, expected?.distance ?? -1, accuracy: 0.000_1)
+        }
+    }
+
+    @MainActor
+    func testTransformChangesDoNotMutateMeshRevisionOrUploadMetrics() {
+        let model = WorkspaceModel(), topology = model.mesh.runtime.topologyID, revision = model.mesh.runtime.revision
+        let before = model.profiler?.snapshot()
+        model.updateTransform(ObjectTransform(translation: SIMD3<Float>(1, 2, 3), scale: SIMD3<Float>(2, 3, 4)))
+        XCTAssertEqual(model.mesh.runtime.topologyID, topology); XCTAssertEqual(model.mesh.runtime.revision, revision)
+        XCTAssertEqual(model.profiler?.snapshot()[.vertexUpload].sampleCount, before?[.vertexUpload].sampleCount)
+        XCTAssertEqual(model.profiler?.snapshot()[.indexUpload].sampleCount, before?[.indexUpload].sampleCount)
+    }
+
+    @MainActor
+    func testTransformedWorkspaceSculptEditsLocalMeshForAllBrushes() {
+        for kind in BrushKind.allCases {
+            let model = WorkspaceModel(); model.brush = kind
+            let transform = ObjectTransform(translation: SIMD3<Float>(2, 0, 0),
+                rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(0, 25, 0)), scale: SIMD3<Float>(1.5, 0.8, 1.2))
+            model.updateTransform(transform)
+            let origin = transform.worldPosition(fromLocal: SIMD3<Float>(0, 0, 3))
+            let direction = transform.worldDirection(fromLocal: SIMD3<Float>(0, 0, -1))
+            let revision = model.mesh.runtime.revision
+            model.beginStroke()
+            model.updateStroke(sample: PencilSample(location: .zero, force: 1, maximumForce: 1, altitude: 1, azimuth: 0, timestamp: 0),
+                               ray: Ray(origin: origin, direction: direction))
+            let movedOrigin = transform.worldPosition(fromLocal: SIMD3<Float>(0.05, 0, 3))
+            model.updateStroke(sample: PencilSample(location: .zero, force: 1, maximumForce: 1, altitude: 1, azimuth: 0, timestamp: 1),
+                               ray: Ray(origin: movedOrigin, direction: direction))
+            model.endStroke()
+            XCTAssertGreaterThan(model.mesh.runtime.revision, revision)
+            XCTAssertEqual(model.objectTransform, transform)
+        }
+    }
+
+    func testProjectTransformRoundTripAndLegacyIdentityFallback() throws {
+        let transform = ObjectTransform(translation: SIMD3<Float>(1, 2, 3),
+            rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(10, 20, 30)), scale: SIMD3<Float>(2, 3, 4))
+        let project = ForgeProject(mesh: .icosphere(subdivisions: 0), camera: CameraState(), transform: transform)
+        let data = try ProjectCodec.encode(project)
+        XCTAssertEqual(try ProjectCodec.decode(data).transform, transform)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "transform")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertTrue(try ProjectCodec.decode(legacy).transform.isIdentity)
+    }
+
+    private func assertMatrix(_ lhs: simd_float4x4, equals rhs: simd_float4x4,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        for column in 0..<4 { for row in 0..<4 {
+            XCTAssertEqual(lhs[column][row], rhs[column][row], accuracy: 0.000_01, file: file, line: line)
+        } }
     }
 
     private func pickingTriangle() -> EditableMesh {

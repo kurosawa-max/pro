@@ -2,7 +2,7 @@
 using namespace metal;
 
 struct MeshVertex { float3 position; float3 normal; };
-struct Uniforms { float4x4 viewProjection; float4x4 model; };
+struct Uniforms { float4x4 viewProjection; float4x4 model; float3x3 normalMatrix; };
 struct VertexOut { float4 position [[position]]; float3 normal; float3 worldPosition; };
 
 vertex VertexOut meshVertex(uint id [[vertex_id]], constant MeshVertex *vertices [[buffer(0)]],
@@ -11,7 +11,7 @@ vertex VertexOut meshVertex(uint id [[vertex_id]], constant MeshVertex *vertices
     float4 world = uniforms.model * float4(vertices[id].position, 1.0);
     out.position = uniforms.viewProjection * world;
     out.worldPosition = world.xyz;
-    out.normal = normalize((uniforms.model * float4(vertices[id].normal, 0.0)).xyz);
+    out.normal = normalize(uniforms.normalMatrix * vertices[id].normal);
     return out;
 }
 

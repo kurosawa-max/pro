@@ -9,6 +9,7 @@ struct MetalCanvas: UIViewRepresentable {
         let view = SculptMTKView(frame: .zero)
         guard let renderer = MetalRenderer(view: view, profiler: model.profiler) else { return view }
         context.coordinator.renderer = renderer
+        renderer.objectTransform = model.objectTransform
         view.delegate = renderer; view.preferredFramesPerSecond = 60; view.isPaused = false
         view.onPencilBegan = { [weak coordinator = context.coordinator] sample in coordinator?.pencilBegan(sample, in: view) }
         view.onPencilMoved = { [weak coordinator = context.coordinator] sample in coordinator?.pencilMoved(sample, in: view) }
@@ -23,6 +24,7 @@ struct MetalCanvas: UIViewRepresentable {
     func updateUIView(_ view: SculptMTKView, context: Context) {
         context.coordinator.model = model
         context.coordinator.renderer?.camera = model.camera
+        context.coordinator.renderer?.objectTransform = model.objectTransform
         context.coordinator.renderer?.update(mesh: model.mesh)
     }
 
