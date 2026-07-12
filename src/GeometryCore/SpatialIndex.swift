@@ -5,7 +5,10 @@ struct AxisAlignedBoundingBox: Equatable {
     private(set) var minimum = SIMD3<Float>(repeating: .infinity)
     private(set) var maximum = SIMD3<Float>(repeating: -.infinity)
 
-    var isFinite: Bool { minimum.allFinite && maximum.allFinite && simd_all(minimum .<= maximum) }
+    var isFinite: Bool {
+        minimum.allFinite && maximum.allFinite &&
+            minimum.x <= maximum.x && minimum.y <= maximum.y && minimum.z <= maximum.z
+    }
     var center: SIMD3<Float> { isFinite ? (minimum + maximum) * 0.5 : .zero }
     var extent: SIMD3<Float> { isFinite ? maximum - minimum : .zero }
     var surfaceArea: Float {
@@ -25,7 +28,9 @@ struct AxisAlignedBoundingBox: Equatable {
     }
 
     func contains(_ point: SIMD3<Float>, epsilon: Float = 0.000_001) -> Bool {
-        isFinite && point.allFinite && simd_all(point .>= minimum - epsilon) && simd_all(point .<= maximum + epsilon)
+        isFinite && point.allFinite &&
+            point.x >= minimum.x - epsilon && point.y >= minimum.y - epsilon && point.z >= minimum.z - epsilon &&
+            point.x <= maximum.x + epsilon && point.y <= maximum.y + epsilon && point.z <= maximum.z + epsilon
     }
 
     func contains(_ other: AxisAlignedBoundingBox, epsilon: Float = 0.000_001) -> Bool {
