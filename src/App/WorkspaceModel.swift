@@ -27,6 +27,7 @@ final class WorkspaceModel: ObservableObject {
 
     private var history = StrokeHistory()
     private let pickingCache = MeshBVHCache()
+    private let sculptSpatialCache = VertexSpatialHashCache()
     private var strokeBefore: [Int: SIMD3<Float>]?
     private var lastHit: SIMD3<Float>?
 
@@ -45,7 +46,7 @@ final class WorkspaceModel: ObservableObject {
         let drag = lastHit.map { hit.position - $0 } ?? .zero
         let mutations = SculptBrush.apply(kind: brush, center: hit.position, normal: hit.normal, drag: drag,
                                           pressure: max(sample.pressure, 0.05), settings: brushSettings,
-                                          mesh: &mesh, profiler: profiler)
+                                          mesh: &mesh, spatialCache: sculptSpatialCache, profiler: profiler)
         for mutation in mutations where strokeBefore?[mutation.index] == nil {
             strokeBefore?[mutation.index] = mutation.before
         }

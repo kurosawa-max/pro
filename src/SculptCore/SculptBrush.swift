@@ -16,13 +16,24 @@ enum SculptBrush {
         pressure: Float,
         settings: BrushSettings,
         mesh: inout EditableMesh,
+        spatialCache: VertexSpatialHashCache? = nil,
         profiler: PerformanceProfiler? = nil
     ) -> [VertexMutation] {
         PerformanceProfiler.measure(profiler, metric: .sculpt) {
             applyUnmeasured(
                 kind: kind, center: center, normal: normal, drag: drag,
-                pressure: pressure, settings: settings, mesh: &mesh, profiler: profiler
+                pressure: pressure, settings: settings, mesh: &mesh, spatialCache: spatialCache, profiler: profiler
             )
+        }
+    }
+
+    static func applyLinear(
+        kind: BrushKind, center: SIMD3<Float>, normal: SIMD3<Float>, drag: SIMD3<Float>, pressure: Float,
+        settings: BrushSettings, mesh: inout EditableMesh, profiler: PerformanceProfiler? = nil
+    ) -> [VertexMutation] {
+        PerformanceProfiler.measure(profiler, metric: .sculpt) {
+            applyUnmeasured(kind: kind, center: center, normal: normal, drag: drag, pressure: pressure,
+                            settings: settings, mesh: &mesh, spatialCache: nil, profiler: profiler)
         }
     }
 
@@ -34,6 +45,7 @@ enum SculptBrush {
         pressure: Float,
         settings: BrushSettings,
         mesh: inout EditableMesh,
+        spatialCache: VertexSpatialHashCache?,
         profiler: PerformanceProfiler?
     ) -> [VertexMutation] {
         guard center.allFinite, normal.allFinite, drag.allFinite else { return [] }
@@ -44,7 +56,8 @@ enum SculptBrush {
 
         let neighbors = kind == .smooth ? mesh.adjacency() : []
         var updates: [Int: SIMD3<Float>] = [:]
-        for index in mesh.vertices.indices {
+        let candidates = spatialCache?.vertices(near: center, radius: radius, mesh: mesh) ?? Array(mesh.vertices.indices)
+        for index in candidates where mesh.vertices.indices.contains(index) {
             let current = mesh.vertices[index].position
             let distance = simd_distance(current, center)
             guard distance.isFinite, distance < radius else { continue }
@@ -68,7 +81,9 @@ enum SculptBrush {
 
             if candidate.allFinite { updates[index] = candidate }
         }
-        return mesh.updatePositions(updates, profiler: profiler)
+        let mutations = mesh.updatePositions(updates, profiler: profiler)
+        spatialCache?.update(mutations: mutations, mesh: mesh)
+        return mutations
     }
 
     private static func limited(_ value: SIMD3<Float>, maximum: Float) -> SIMD3<Float> {

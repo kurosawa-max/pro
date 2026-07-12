@@ -479,6 +479,86 @@ final class FoundationPrototypeTests: XCTestCase {
         }
     }
 
+    func testSpatialCellCoordinateHandlesSignsBoundariesAndInvalidValues() {
+        XCTAssertEqual(SpatialCellCoordinate(position: SIMD3<Float>(0, 0, 0), cellSize: 0.5), SpatialCellCoordinate(x: 0, y: 0, z: 0))
+        XCTAssertEqual(SpatialCellCoordinate(position: SIMD3<Float>(0.5, 1, 1.5), cellSize: 0.5), SpatialCellCoordinate(x: 1, y: 2, z: 3))
+        XCTAssertEqual(SpatialCellCoordinate(position: SIMD3<Float>(-0.01, -0.5, -0.51), cellSize: 0.5), SpatialCellCoordinate(x: -1, y: -1, z: -2))
+        XCTAssertNil(SpatialCellCoordinate(position: SIMD3<Float>(.nan, 0, 0), cellSize: 1))
+        XCTAssertNil(SpatialCellCoordinate(position: SIMD3<Float>(.infinity, 0, 0), cellSize: 1))
+        XCTAssertNil(SpatialCellCoordinate(position: .zero, cellSize: 0))
+        XCTAssertNil(SpatialCellCoordinate(position: .zero, cellSize: -1))
+        XCTAssertNil(SpatialCellCoordinate(position: SIMD3<Float>(.greatestFiniteMagnitude, 0, 0), cellSize: 0.001))
+    }
+
+    func testSpatialHashBuildIsCompleteDeterministicAndScaleAware() throws {
+        let empty = try VertexSpatialHash(mesh: EditableMesh(vertices: [], indices: []))
+        XCTAssertEqual(empty.registeredVertexCount, 0)
+        let one = EditableMesh(vertices: [MeshVertex(position: SIMD3<Float>(-1, 0, 0), normal: SIMD3<Float>(0, 1, 0))], indices: [])
+        XCTAssertEqual(try VertexSpatialHash(mesh: one).registeredVertexCount, 1)
+        var previousCellSize = Float.greatestFiniteMagnitude
+        for preset in BenchmarkPreset.allCases {
+            let mesh = preset.makeMesh(), first = try VertexSpatialHash(mesh: mesh), second = try VertexSpatialHash(mesh: mesh)
+            XCTAssertEqual(first.registeredVertexCount, mesh.vertices.count)
+            XCTAssertEqual(first.buckets, second.buckets)
+            XCTAssertEqual(first.buckets.values.flatMap { $0 }.sorted(), Array(mesh.vertices.indices))
+            XCTAssertTrue(first.buckets.values.allSatisfy { Set($0).count == $0.count })
+            XCTAssertLessThan(first.cellSize, previousCellSize); previousCellSize = first.cellSize
+        }
+        var invalidVertices = one.vertices; invalidVertices[0].position.x = .nan
+        XCTAssertThrowsError(try VertexSpatialHash(mesh: EditableMesh(vertices: invalidVertices, indices: [])))
+    }
+
+    func testSpatialHashRadiusQueryMatchesLinearAndRejectsInvalidOrHugeQueries() throws {
+        let mesh = EditableMesh(vertices: [
+            MeshVertex(position: SIMD3<Float>(0, 0, 0), normal: SIMD3<Float>(0, 1, 0)),
+            MeshVertex(position: SIMD3<Float>(0.1, 0, 0), normal: SIMD3<Float>(0, 1, 0)),
+            MeshVertex(position: SIMD3<Float>(0.1, 0.1, 0), normal: SIMD3<Float>(0, 1, 0)),
+            MeshVertex(position: SIMD3<Float>(-0.2, 0, 0), normal: SIMD3<Float>(0, 1, 0)),
+        ], indices: [])
+        let index = try VertexSpatialHash(mesh: mesh)
+        let center = SIMD3<Float>(0, 0, 0), radius: Float = 0.1
+        let linear = mesh.vertices.indices.filter { simd_length_squared(mesh.vertices[$0].position - center) <= radius * radius }
+        XCTAssertEqual(index.vertices(near: center, radius: radius, mesh: mesh), linear)
+        XCTAssertEqual(index.vertices(near: center, radius: 0.01, mesh: mesh), [0])
+        XCTAssertNil(index.vertices(near: center, radius: 0, mesh: mesh))
+        XCTAssertNil(index.vertices(near: center, radius: -1, mesh: mesh))
+        XCTAssertNil(index.vertices(near: SIMD3<Float>(.nan, 0, 0), radius: 1, mesh: mesh))
+        XCTAssertNil(index.vertices(near: center, radius: .infinity, mesh: mesh))
+        XCTAssertNil(index.vertices(near: center, radius: 10_000, mesh: mesh))
+    }
+
+    func testSpatialHashIncrementalUpdateAndInvalidationPolicy() throws {
+        var mesh = EditableMesh.icosphere(subdivisions: 1); let cache = VertexSpatialHashCache()
+        XCTAssertNotNil(cache.vertices(near: mesh.vertices[0].position, radius: 0.2, mesh: mesh)); XCTAssertEqual(cache.buildCount, 1)
+        let first = mesh.updatePositions([0: mesh.vertices[0].position + SIMD3<Float>(0.000_01, 0, 0)])
+        cache.update(mutations: first, mesh: mesh); XCTAssertEqual(cache.incrementalUpdateCount, 1)
+        XCTAssertNotNil(cache.vertices(near: mesh.vertices[0].position, radius: 0.2, mesh: mesh)); XCTAssertEqual(cache.buildCount, 1)
+        let second = mesh.updatePositions([0: mesh.vertices[0].position + SIMD3<Float>(1, 0, 0), 1: mesh.vertices[1].position - SIMD3<Float>(1, 0, 0)])
+        cache.update(mutations: second, mesh: mesh); XCTAssertEqual(cache.incrementalUpdateCount, 2)
+        _ = mesh.updatePositions([0: first[0].before])
+        XCTAssertNotNil(cache.vertices(near: mesh.vertices[0].position, radius: 0.2, mesh: mesh)); XCTAssertEqual(cache.buildCount, 2)
+        let replacement = EditableMesh.icosphere(subdivisions: 2)
+        XCTAssertNotNil(cache.vertices(near: replacement.vertices[0].position, radius: 0.2, mesh: replacement)); XCTAssertEqual(cache.buildCount, 3)
+    }
+
+    func testSpatialHashSculptMatchesLinearAcrossPresetsAndBrushes() {
+        for preset in BenchmarkPreset.allCases {
+            for kind in BrushKind.allCases {
+                var indexedMesh = preset.makeMesh(), linearMesh = indexedMesh
+                let cache = VertexSpatialHashCache()
+                let indexed = SculptBrush.apply(kind: kind, center: SIMD3<Float>(0, 0, 1), normal: SIMD3<Float>(0, 0, 1),
+                    drag: SIMD3<Float>(0.02, 0, 0), pressure: 0.75, settings: BrushSettings(radius: 0.28, strength: 0.12),
+                    mesh: &indexedMesh, spatialCache: cache)
+                let linear = SculptBrush.applyLinear(kind: kind, center: SIMD3<Float>(0, 0, 1), normal: SIMD3<Float>(0, 0, 1),
+                    drag: SIMD3<Float>(0.02, 0, 0), pressure: 0.75, settings: BrushSettings(radius: 0.28, strength: 0.12), mesh: &linearMesh)
+                XCTAssertEqual(indexed, linear); XCTAssertEqual(indexedMesh, linearMesh)
+                XCTAssertEqual(indexedMesh.runtime.revision, linearMesh.runtime.revision)
+                XCTAssertTrue(indexedMesh.vertices.allSatisfy { $0.position.allFinite && $0.normal.allFinite })
+                XCTAssertEqual(cache.buildCount, 1); XCTAssertEqual(cache.incrementalUpdateCount, indexed.isEmpty ? 0 : 1)
+            }
+        }
+    }
+
     private func pickingTriangle() -> EditableMesh {
         EditableMesh(
             vertices: [
