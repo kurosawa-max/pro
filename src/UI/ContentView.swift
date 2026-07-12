@@ -19,6 +19,10 @@ struct ContentView: View {
                         .position(p).allowsHitTesting(false)
                 }
                 VStack { Spacer(); controls.padding() }
+                TransformPanel(model: model)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .padding(.leading, 8)
+                    .padding(.top, 56)
                 #if DEBUG
                 PerformanceHUD(profiler: model.profiler)
                     .padding(.top, 8)

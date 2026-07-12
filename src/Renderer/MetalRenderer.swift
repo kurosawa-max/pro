@@ -14,6 +14,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private var uploadedRevision: UInt64?
     private var uploadedTopologyID: UUID?
     var camera = CameraState()
+    var objectTransform = ObjectTransform.identity
     private(set) var viewProjection = matrix_identity_float4x4
 
     init?(view: MTKView, profiler: PerformanceProfiler?) {
@@ -84,7 +85,8 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
               let command = queue.makeCommandBuffer(), let encoder = command.makeRenderCommandEncoder(descriptor: pass),
               let vertexBuffer, let indexBuffer else { return }
         updateMatrices(size: view.drawableSize)
-        var uniforms = Uniforms(viewProjection: viewProjection, model: matrix_identity_float4x4)
+        var uniforms = Uniforms(viewProjection: viewProjection, model: objectTransform.modelMatrix,
+                                normalMatrix: objectTransform.normalMatrix)
         encoder.setRenderPipelineState(pipeline); encoder.setDepthStencilState(depthState)
         encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
@@ -114,7 +116,11 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     }
 }
 
-private struct Uniforms { var viewProjection: simd_float4x4; var model: simd_float4x4 }
+private struct Uniforms {
+    var viewProjection: simd_float4x4
+    var model: simd_float4x4
+    var normalMatrix: simd_float3x3
+}
 private extension SIMD4 where Scalar == Float { var xyz: SIMD3<Float> { SIMD3(x, y, z) } }
 
 extension float4x4 {

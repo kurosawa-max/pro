@@ -13,15 +13,35 @@ struct ForgeProject: Codable, Equatable {
     var formatVersion = currentFormatVersion
     var mesh: EditableMesh
     var camera: CameraState
+    var transform: ObjectTransform = .identity
     var metadata: [String: String] = [:]
+
+    init(formatVersion: Int = currentFormatVersion, mesh: EditableMesh, camera: CameraState,
+         transform: ObjectTransform = .identity, metadata: [String: String] = [:]) {
+        self.formatVersion = formatVersion; self.mesh = mesh; self.camera = camera
+        self.transform = transform.sanitized(); self.metadata = metadata
+    }
+
+    private enum CodingKeys: String, CodingKey { case formatVersion, mesh, camera, transform, metadata }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion = try container.decode(Int.self, forKey: .formatVersion)
+        mesh = try container.decode(EditableMesh.self, forKey: .mesh)
+        camera = try container.decode(CameraState.self, forKey: .camera)
+        transform = try container.decodeIfPresent(ObjectTransform.self, forKey: .transform)?.sanitized() ?? .identity
+        metadata = try container.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
+    }
 }
 
 enum ProjectCodec {
     static func encode(_ project: ForgeProject) throws -> Data {
         _ = try project.mesh.validated()
+        var safeProject = project
+        safeProject.transform = project.transform.sanitized()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        return try encoder.encode(project)
+        return try encoder.encode(safeProject)
     }
 
     static func decode(_ data: Data, maximumBytes: Int = 128 * 1_024 * 1_024) throws -> ForgeProject {
