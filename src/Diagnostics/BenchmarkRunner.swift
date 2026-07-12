@@ -110,13 +110,14 @@ final class BenchmarkRunner {
             let base = preset.makeMesh()
             var results: [BenchmarkCaseResult] = []
             for benchmarkCase in BenchmarkCase.allCases {
+                let pickingCache = MeshBVHCache()
                 if isCancelled || Task.isCancelled { return nil }
                 profiler.reset(benchmarkCase.metric)
                 var mesh = base
                 for iteration in 0..<(configuration.warmUpIterations + configuration.measuredIterations) {
                     if isCancelled || Task.isCancelled { return nil }
                     if iteration == configuration.warmUpIterations { profiler.reset(benchmarkCase.metric) }
-                    guard await execute(benchmarkCase, preset: preset, mesh: &mesh,
+                    guard await execute(benchmarkCase, preset: preset, mesh: &mesh, pickingCache: pickingCache,
                                         profiler: profiler, installMesh: installMesh) else { return nil }
                     await Task.yield()
                 }
@@ -133,10 +134,10 @@ final class BenchmarkRunner {
             buildConfiguration: "Debug", configuration: configuration, presets: presetResults)
     }
 
-    private func execute(_ item: BenchmarkCase, preset: BenchmarkPreset, mesh: inout EditableMesh,
+    private func execute(_ item: BenchmarkCase, preset: BenchmarkPreset, mesh: inout EditableMesh, pickingCache: MeshBVHCache,
                          profiler: PerformanceProfiler, installMesh: (EditableMesh) -> Void) async -> Bool {
         switch item {
-        case .picking: _ = MeshPicker.hit(ray: Self.fixedRay, mesh: mesh, profiler: profiler)
+        case .picking: _ = MeshPicker.hit(ray: Self.fixedRay, mesh: mesh, profiler: profiler, cache: pickingCache)
         case .draw: _ = SculptBrush.apply(kind: .draw, center: Self.center, normal: Self.normal, drag: Self.drag, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler)
         case .smooth: _ = SculptBrush.apply(kind: .smooth, center: Self.center, normal: Self.normal, drag: Self.drag, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler)
         case .grab: _ = SculptBrush.apply(kind: .grab, center: Self.center, normal: Self.normal, drag: Self.drag, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler)
