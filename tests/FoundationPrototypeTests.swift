@@ -585,6 +585,141 @@ final class FoundationPrototypeTests: XCTestCase {
         XCTAssertTrue(try ProjectCodec.decode(legacy).transform.isIdentity)
     }
 
+    func testGizmoRayLineClosestAndParallelFallbackAreFinite() throws {
+        let ray = Ray(origin: SIMD3<Float>(0.25, 1, 5), direction: simd_normalize(SIMD3<Float>(0, -0.2, -1)))
+        let closest = try XCTUnwrap(TranslationGizmoGeometry.closestRayAndLine(
+            ray: ray, lineOrigin: .zero, lineDirection: SIMD3<Float>(1, 0, 0)))
+        XCTAssertEqual(closest.lineParameter, 0.25, accuracy: 0.000_1)
+        XCTAssertTrue(closest.distance.isFinite)
+        let parallel = Ray(origin: SIMD3<Float>(0, 1, 0), direction: SIMD3<Float>(1, 0, 0))
+        XCTAssertNil(TranslationGizmoGeometry.closestRayAndLine(ray: parallel, lineOrigin: .zero,
+                                                                lineDirection: SIMD3<Float>(1, 0, 0)))
+        let nearParallel = Ray(origin: SIMD3<Float>(0, 1, 1),
+                               direction: simd_normalize(SIMD3<Float>(1, 0, -0.01)))
+        let fallback = try XCTUnwrap(TranslationGizmoGeometry.axisConstraintPoint(
+            ray: nearParallel, origin: .zero, axis: SIMD3<Float>(1, 0, 0), cameraDirection: SIMD3<Float>(0, 0, -1)))
+        XCTAssertTrue(fallback.allFinite)
+        XCTAssertNotNil(TranslationGizmoGeometry.fallbackPlaneNormal(axis: SIMD3<Float>(1, 0, 0),
+                                                                      cameraDirection: SIMD3<Float>(1, 0, 0)))
+    }
+
+    func testGizmoAxisAndPlaneDragConstraints() throws {
+        let transform = ObjectTransform.identity
+        let axisStart = Ray(origin: SIMD3<Float>(0.2, 1, 5), direction: simd_normalize(SIMD3<Float>(0, -0.2, -1)))
+        let axisSession = try XCTUnwrap(TranslationGizmoGeometry.beginSession(
+            handle: .xAxis, ray: axisStart, transform: transform, cameraDirection: SIMD3<Float>(0, 0, -1)))
+        let unchanged = try XCTUnwrap(TranslationGizmoGeometry.translation(
+            session: axisSession, ray: axisStart, cameraDirection: SIMD3<Float>(0, 0, -1)))
+        XCTAssertEqual(unchanged, .zero)
+        let axisMoved = Ray(origin: SIMD3<Float>(0.7, 1, 5), direction: axisStart.direction)
+        let axisValue = try XCTUnwrap(TranslationGizmoGeometry.translation(
+            session: axisSession, ray: axisMoved, cameraDirection: SIMD3<Float>(0, 0, -1)))
+        XCTAssertEqual(axisValue.x, 0.5, accuracy: 0.000_1); XCTAssertEqual(axisValue.y, 0, accuracy: 0.000_1)
+
+        let cases: [(TranslationGizmoHandle, Ray, Ray, Int)] = [
+            (.xyPlane, Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1)),
+             Ray(origin: SIMD3<Float>(0.5, 0.6, 5), direction: SIMD3<Float>(0, 0, -1)), 2),
+            (.yzPlane, Ray(origin: SIMD3<Float>(5, 0.3, 0.3), direction: SIMD3<Float>(-1, 0, 0)),
+             Ray(origin: SIMD3<Float>(5, 0.5, 0.6), direction: SIMD3<Float>(-1, 0, 0)), 0),
+            (.zxPlane, Ray(origin: SIMD3<Float>(0.3, 5, 0.3), direction: SIMD3<Float>(0, -1, 0)),
+             Ray(origin: SIMD3<Float>(0.5, 5, 0.6), direction: SIMD3<Float>(0, -1, 0)), 1),
+        ]
+        for (handle, start, current, fixedAxis) in cases {
+            let session = try XCTUnwrap(TranslationGizmoGeometry.beginSession(
+                handle: handle, ray: start, transform: transform, cameraDirection: SIMD3<Float>(0, 0, -1)))
+            let value = try XCTUnwrap(TranslationGizmoGeometry.translation(
+                session: session, ray: current, cameraDirection: SIMD3<Float>(0, 0, -1)))
+            XCTAssertEqual(value[fixedAxis], 0, accuracy: 0.000_1)
+        }
+    }
+
+    func testGizmoWorldScaleTracksDistanceAndClamps() {
+        let near = TranslationGizmoGeometry.worldScale(cameraDistance: 2, viewportHeight: 1_000, fovYRadians: .pi / 4)
+        let far = TranslationGizmoGeometry.worldScale(cameraDistance: 10, viewportHeight: 1_000, fovYRadians: .pi / 4)
+        XCTAssertGreaterThan(far, near)
+        XCTAssertEqual(TranslationGizmoGeometry.worldScale(cameraDistance: 0, viewportHeight: 1_000,
+                                                            fovYRadians: .pi / 4), 0.05)
+        XCTAssertEqual(TranslationGizmoGeometry.worldScale(cameraDistance: Float.greatestFiniteMagnitude,
+                                                            viewportHeight: 1, fovYRadians: .pi / 4), 100)
+    }
+
+    func testGizmoPickingAllHandlesMissPriorityAndScaledTolerance() throws {
+        let origin = SIMD3<Float>.zero
+        let rays: [(TranslationGizmoHandle, Ray)] = [
+            (.xAxis, Ray(origin: SIMD3<Float>(0.6, 0.04, 5), direction: SIMD3<Float>(0, 0, -1))),
+            (.yAxis, Ray(origin: SIMD3<Float>(0.04, 0.6, 5), direction: SIMD3<Float>(0, 0, -1))),
+            (.zAxis, Ray(origin: SIMD3<Float>(0.04, 5, 0.6), direction: SIMD3<Float>(0, -1, 0))),
+            (.xyPlane, Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))),
+            (.yzPlane, Ray(origin: SIMD3<Float>(5, 0.3, 0.3), direction: SIMD3<Float>(-1, 0, 0))),
+            (.zxPlane, Ray(origin: SIMD3<Float>(0.3, 5, 0.3), direction: SIMD3<Float>(0, -1, 0))),
+        ]
+        for (expected, ray) in rays {
+            XCTAssertEqual(TranslationGizmoGeometry.hit(ray: ray, origin: origin, scale: 1)?.handle, expected)
+        }
+        XCTAssertNil(TranslationGizmoGeometry.hit(ray: Ray(origin: SIMD3<Float>(2, 2, 5), direction: SIMD3<Float>(0, 0, -1)),
+                                                  origin: origin, scale: 1))
+        let overlap = Ray(origin: SIMD3<Float>(0.3, 0.04, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertEqual(TranslationGizmoGeometry.hit(ray: overlap, origin: origin, scale: 1)?.handle, .xAxis)
+        let scaledRay = Ray(origin: SIMD3<Float>(1.2, 0.15, 10), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertEqual(TranslationGizmoGeometry.hit(ray: scaledRay, origin: origin, scale: 2)?.handle, .xAxis)
+    }
+
+    @MainActor
+    func testWorkspaceGizmoBeginUpdateEndCancelAndRevisionStability() throws {
+        let model = WorkspaceModel(), revision = model.mesh.runtime.revision, topology = model.mesh.runtime.topologyID
+        let uploadsBefore = model.profiler?.snapshot()
+        let start = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start,
+                                                       cameraDirection: SIMD3<Float>(0, 0, -1)))
+        model.updateTranslationGizmoDrag(ray: Ray(origin: SIMD3<Float>(0.8, 0.6, 5), direction: SIMD3<Float>(0, 0, -1)),
+                                          cameraDirection: SIMD3<Float>(0, 0, -1))
+        XCTAssertEqual(model.objectTransform.translation.x, 0.5, accuracy: 0.000_1)
+        XCTAssertEqual(model.objectTransform.translation.y, 0.3, accuracy: 0.000_1)
+        model.endTranslationGizmoDrag(); XCTAssertFalse(model.translationGizmoState.isDragging)
+        XCTAssertEqual(model.mesh.runtime.revision, revision); XCTAssertEqual(model.mesh.runtime.topologyID, topology)
+        XCTAssertEqual(model.profiler?.snapshot()[.vertexUpload].sampleCount, uploadsBefore?[.vertexUpload].sampleCount)
+        XCTAssertEqual(model.profiler?.snapshot()[.indexUpload].sampleCount, uploadsBefore?[.indexUpload].sampleCount)
+
+        let committed = model.objectTransform
+        XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start,
+                                                       cameraDirection: SIMD3<Float>(0, 0, -1)))
+        model.updateTranslationGizmoDrag(ray: Ray(origin: SIMD3<Float>(1, 1, 5), direction: SIMD3<Float>(0, 0, -1)),
+                                          cameraDirection: SIMD3<Float>(0, 0, -1))
+        model.cancelTranslationGizmoDrag()
+        XCTAssertEqual(model.objectTransform, committed)
+    }
+
+    @MainActor
+    func testWorkspaceGizmoCancelsSculptAndFollowsPanelTranslation() {
+        let model = WorkspaceModel(); model.beginStroke(); XCTAssertTrue(model.isStrokeActive)
+        let ray = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: ray,
+                                                       cameraDirection: SIMD3<Float>(0, 0, -1)))
+        XCTAssertFalse(model.isStrokeActive); model.endTranslationGizmoDrag()
+        model.updateTranslation(SIMD3<Float>(2, 3, 4))
+        XCTAssertEqual(model.objectTransform.translation, SIMD3<Float>(2, 3, 4))
+        XCTAssertEqual(model.translationGizmoHit(ray: Ray(origin: SIMD3<Float>(2.3, 3.3, 9), direction: SIMD3<Float>(0, 0, -1)),
+                                                 scale: 1)?.handle, .xyPlane)
+    }
+
+    @MainActor
+    func testBenchmarkBlocksGizmoDrag() async {
+        let model = WorkspaceModel(); model.runAllBenchmarks()
+        let ray = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertFalse(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: ray,
+                                                        cameraDirection: SIMD3<Float>(0, 0, -1)))
+        model.cancelBenchmarks()
+        for _ in 0..<1_000 where model.isBenchmarkRunning { await Task.yield() }
+    }
+
+    func testGizmoUniformSwiftMetalLayout() {
+        XCTAssertEqual(MemoryLayout<GizmoUniforms>.stride, 96)
+        XCTAssertEqual(MemoryLayout<GizmoUniforms>.offset(of: \GizmoUniforms.origin), 64)
+        XCTAssertEqual(MemoryLayout<GizmoUniforms>.offset(of: \GizmoUniforms.scale), 80)
+        XCTAssertEqual(MemoryLayout<GizmoUniforms>.offset(of: \GizmoUniforms.hoverHandle), 84)
+        XCTAssertEqual(MemoryLayout<GizmoUniforms>.offset(of: \GizmoUniforms.activeHandle), 88)
+    }
+
     private func assertMatrix(_ lhs: simd_float4x4, equals rhs: simd_float4x4,
                               file: StaticString = #filePath, line: UInt = #line) {
         for column in 0..<4 { for row in 0..<4 {

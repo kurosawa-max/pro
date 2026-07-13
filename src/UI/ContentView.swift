@@ -41,6 +41,13 @@ struct ContentView: View {
                     Button("Save", systemImage: "square.and.arrow.down") { saveProject() }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Toggle(isOn: Binding(get: { model.showsTranslationGizmo },
+                                         set: { model.setTranslationGizmoVisible($0) })) {
+                        Label("Move Gizmo", systemImage: "move.3d")
+                    }
+                    #if DEBUG
+                    .disabled(model.isBenchmarkRunning)
+                    #endif
                     Button("Undo", systemImage: "arrow.uturn.backward") { model.undo() }
                     Button("Redo", systemImage: "arrow.uturn.forward") { model.redo() }
                     Button("STL", systemImage: "square.and.arrow.up") { exportSTL() }

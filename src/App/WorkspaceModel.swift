@@ -13,6 +13,8 @@ final class WorkspaceModel: ObservableObject {
     @Published var mesh = EditableMesh.icosphere()
     @Published var camera = CameraState()
     @Published private(set) var objectTransform = ObjectTransform.identity
+    @Published var showsTranslationGizmo = true
+    @Published private(set) var translationGizmoState = TranslationGizmoState()
     @Published var brush = BrushKind.draw
     @Published var brushSettings = BrushSettings()
     @Published var hoverLocation: CGPoint?
@@ -36,6 +38,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func beginStroke() {
+        guard !translationGizmoState.isDragging else { return }
         if strokeBefore != nil { cancelStroke() }
         strokeBefore = [:]
         lastHit = nil
@@ -83,6 +86,7 @@ final class WorkspaceModel: ObservableObject {
 
     func load(data: Data) {
         cancelStroke()
+        cancelTranslationGizmoDrag()
         do {
             let project = try ProjectCodec.decode(data)
             mesh = project.mesh; camera = project.camera; objectTransform = project.transform.sanitized()
@@ -105,6 +109,7 @@ final class WorkspaceModel: ObservableObject {
         guard !isBenchmarkRunning else { return }
         #endif
         cancelStroke()
+        cancelTranslationGizmoDrag()
         objectTransform = value.sanitized()
         status = "Transform updated"
     }
@@ -123,8 +128,65 @@ final class WorkspaceModel: ObservableObject {
 
     func resetTransform() { updateTransform(.identity) }
 
+    func translationGizmoHit(ray: Ray, scale: Float) -> TranslationGizmoHit? {
+        guard showsTranslationGizmo else { return nil }
+        #if DEBUG
+        guard !isBenchmarkRunning else { return nil }
+        #endif
+        return TranslationGizmoGeometry.hit(ray: ray, origin: objectTransform.translation, scale: scale)
+    }
+
+    @discardableResult
+    func beginTranslationGizmoDrag(handle: TranslationGizmoHandle, ray: Ray,
+                                   cameraDirection: SIMD3<Float>) -> Bool {
+        guard showsTranslationGizmo, !translationGizmoState.isDragging else { return false }
+        #if DEBUG
+        guard !isBenchmarkRunning else { return false }
+        #endif
+        cancelStroke()
+        cancelTranslationGizmoDrag()
+        guard let session = TranslationGizmoGeometry.beginSession(handle: handle, ray: ray,
+                                                                   transform: objectTransform,
+                                                                   cameraDirection: cameraDirection) else { return false }
+        translationGizmoState.activeHandle = handle
+        translationGizmoState.dragSession = session
+        return true
+    }
+
+    func updateTranslationGizmoDrag(ray: Ray, cameraDirection: SIMD3<Float>) {
+        guard let session = translationGizmoState.dragSession,
+              let translation = TranslationGizmoGeometry.translation(session: session, ray: ray,
+                                                                      cameraDirection: cameraDirection) else { return }
+        var transform = session.startTransform
+        transform.translation = translation
+        objectTransform = transform.sanitized()
+        status = "Move Gizmo"
+    }
+
+    func endTranslationGizmoDrag() {
+        translationGizmoState.dragSession = nil
+        translationGizmoState.activeHandle = nil
+    }
+
+    func cancelTranslationGizmoDrag() {
+        if let session = translationGizmoState.dragSession { objectTransform = session.startTransform }
+        translationGizmoState.dragSession = nil
+        translationGizmoState.activeHandle = nil
+    }
+
+    func updateTranslationGizmoHover(ray: Ray?, scale: Float) {
+        guard !translationGizmoState.isDragging else { return }
+        translationGizmoState.hoverHandle = ray.flatMap { translationGizmoHit(ray: $0, scale: scale)?.handle }
+    }
+
+    func setTranslationGizmoVisible(_ visible: Bool) {
+        if !visible { cancelTranslationGizmoDrag(); translationGizmoState.hoverHandle = nil }
+        showsTranslationGizmo = visible
+    }
+
     #if DEBUG
     func loadBenchmarkPreset(_ preset: BenchmarkPreset) {
+        cancelTranslationGizmoDrag()
         cancelStroke()
         history = StrokeHistory()
         mesh = preset.makeMesh()
@@ -143,6 +205,7 @@ final class WorkspaceModel: ObservableObject {
     func runAllBenchmarks() {
         guard !isBenchmarkRunning, let profiler else { return }
         cancelStroke()
+        cancelTranslationGizmoDrag()
         let originalMesh = mesh, originalCamera = camera, originalBrush = brush
         let originalSettings = brushSettings, originalPreset = benchmarkPreset, originalHistory = history
         let originalTransform = objectTransform
