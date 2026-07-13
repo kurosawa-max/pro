@@ -1,7 +1,11 @@
 import Foundation
 import simd
 
-enum GizmoMode: String, CaseIterable, Hashable { case translate = "Move", rotate = "Rotate" }
+enum GizmoMode: String, CaseIterable, Hashable {
+    case translate = "Move"
+    case rotate = "Rotate"
+    case scale = "Scale"
+}
 
 enum TranslationGizmoHandle: Int32, CaseIterable, Equatable {
     case xAxis = 0, yAxis, zAxis, xyPlane, yzPlane, zxPlane

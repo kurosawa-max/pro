@@ -514,9 +514,9 @@ final class FoundationPrototypeTests: XCTestCase {
                                     scale: SIMD3<Float>(0, .infinity, -Float.greatestFiniteMagnitude))
         XCTAssertTrue(value.isFinite)
         XCTAssertEqual(value.translation, .zero)
-        XCTAssertEqual(abs(value.scale.x), ObjectTransform.minimumScaleMagnitude)
+        XCTAssertEqual(value.scale.x, ObjectTransform.minimumScaleMagnitude)
         XCTAssertEqual(value.scale.y, 1)
-        XCTAssertEqual(abs(value.scale.z), ObjectTransform.maximumScaleMagnitude)
+        XCTAssertEqual(value.scale.z, ObjectTransform.maximumScaleMagnitude)
         let column = value.modelMatrix.columns.0
         XCTAssertTrue(column.x.isFinite && column.y.isFinite && column.z.isFinite && column.w.isFinite)
     }
@@ -922,6 +922,265 @@ final class FoundationPrototypeTests: XCTestCase {
         model.load(data: try model.projectData()); XCTAssertFalse(model.rotationGizmoState.isDragging)
         model.runAllBenchmarks(); XCTAssertFalse(model.isGizmoDragging)
         XCTAssertFalse(model.beginRotationGizmoDrag(handle: .xAxis, ray: start))
+        model.cancelBenchmarks()
+        for _ in 0..<1_000 where model.isBenchmarkRunning { await Task.yield() }
+    }
+
+    func testScaleGizmoHitsAxesUniformCenterAndUsesStablePriority() {
+        let cases: [(ScaleGizmoHandle, Ray)] = [
+            (.xAxis, Ray(origin: SIMD3<Float>(0.7, 0.05, 5), direction: SIMD3<Float>(0, 0, -1))),
+            (.yAxis, Ray(origin: SIMD3<Float>(0.05, 0.7, 5), direction: SIMD3<Float>(0, 0, -1))),
+            (.zAxis, Ray(origin: SIMD3<Float>(0.05, 5, 0.7), direction: SIMD3<Float>(0, -1, 0))),
+            (.uniform, Ray(origin: SIMD3<Float>(0, 0, 5), direction: SIMD3<Float>(0, 0, -1))),
+        ]
+        for (handle, ray) in cases {
+            XCTAssertEqual(ScaleGizmoGeometry.hit(ray: ray, origin: .zero, scale: 1)?.handle, handle)
+        }
+        let centerOverlap = Ray(origin: SIMD3<Float>(0.1, 0, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertEqual(ScaleGizmoGeometry.hit(ray: centerOverlap, origin: .zero, scale: 1)?.handle, .uniform)
+        XCTAssertNil(ScaleGizmoGeometry.hit(
+            ray: Ray(origin: SIMD3<Float>(1.3, 0, 5), direction: SIMD3<Float>(0, 0, -1)),
+            origin: .zero, scale: 1))
+        XCTAssertNil(ScaleGizmoGeometry.hit(
+            ray: Ray(origin: SIMD3<Float>(.nan, 0, 5), direction: SIMD3<Float>(0, 0, -1)),
+            origin: .zero, scale: 1))
+        XCTAssertNil(ScaleGizmoGeometry.hit(
+            ray: Ray(origin: SIMD3<Float>(0.7, 0, 5), direction: .zero), origin: .zero, scale: 1))
+
+        let distanceScaled = Ray(origin: SIMD3<Float>(1.4, 0.15, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertNil(ScaleGizmoGeometry.hit(ray: distanceScaled, origin: .zero, scale: 1))
+        XCTAssertEqual(ScaleGizmoGeometry.hit(ray: distanceScaled, origin: .zero, scale: 2)?.handle, .xAxis)
+    }
+
+    func testScaleGizmoAxisDragChangesOnlySelectedAxisFromStart() throws {
+        let camera = SIMD3<Float>(0, 0, -1)
+        let startScale = SIMD3<Float>(2, 3, 4)
+        let transform = ObjectTransform(scale: startScale)
+        let cases: [(ScaleGizmoHandle, Ray, Ray, SIMD3<Float>)] = [
+            (.xAxis,
+             Ray(origin: SIMD3<Float>(0.4, 0, 5), direction: SIMD3<Float>(0, 0, -1)),
+             Ray(origin: SIMD3<Float>(1.4, 0, 5), direction: SIMD3<Float>(0, 0, -1)),
+             SIMD3<Float>(4, 3, 4)),
+            (.yAxis,
+             Ray(origin: SIMD3<Float>(0, 0.4, 5), direction: SIMD3<Float>(0, 0, -1)),
+             Ray(origin: SIMD3<Float>(0, 1.4, 5), direction: SIMD3<Float>(0, 0, -1)),
+             SIMD3<Float>(2, 6, 4)),
+            (.zAxis,
+             Ray(origin: SIMD3<Float>(5, 0, 0.4), direction: SIMD3<Float>(-1, 0, 0)),
+             Ray(origin: SIMD3<Float>(5, 0, 1.4), direction: SIMD3<Float>(-1, 0, 0)),
+             SIMD3<Float>(2, 3, 8)),
+        ]
+        for (handle, startRay, currentRay, expected) in cases {
+            let session = try XCTUnwrap(ScaleGizmoGeometry.beginSession(
+                handle: handle, ray: startRay, transform: transform,
+                cameraDirection: camera, referenceLength: 1))
+            XCTAssertEqual(try XCTUnwrap(ScaleGizmoGeometry.scale(
+                session: session, ray: startRay, cameraDirection: camera)), startScale)
+            XCTAssertEqual(try XCTUnwrap(ScaleGizmoGeometry.scale(
+                session: session, ray: currentRay, cameraDirection: camera)), expected)
+        }
+
+        let session = try XCTUnwrap(ScaleGizmoGeometry.beginSession(
+            handle: .xAxis,
+            ray: Ray(origin: SIMD3<Float>(0.4, 0, 5), direction: SIMD3<Float>(0, 0, -1)),
+            transform: transform, cameraDirection: camera, referenceLength: 1))
+        let first = try XCTUnwrap(ScaleGizmoGeometry.scale(
+            session: session,
+            ray: Ray(origin: SIMD3<Float>(1.4, 0, 5), direction: SIMD3<Float>(0, 0, -1)),
+            cameraDirection: camera))
+        let second = try XCTUnwrap(ScaleGizmoGeometry.scale(
+            session: session,
+            ray: Ray(origin: SIMD3<Float>(0.9, 0, 5), direction: SIMD3<Float>(0, 0, -1)),
+            cameraDirection: camera))
+        XCTAssertEqual(first.x, 4, accuracy: 0.000_1)
+        XCTAssertEqual(second.x, 3, accuracy: 0.000_1)
+    }
+
+    func testScaleGizmoAxisFallbackAndClampRemainFinite() throws {
+        let nearParallel = simd_normalize(SIMD3<Float>(-0.01, -0.1, -1))
+        let point = TranslationGizmoGeometry.axisConstraintPoint(
+            ray: Ray(origin: SIMD3<Float>(0.4, 0.2, 5), direction: nearParallel),
+            origin: .zero, axis: SIMD3<Float>(0, 0, 1), cameraDirection: nearParallel)
+        XCTAssertNotNil(point); XCTAssertTrue(try XCTUnwrap(point).allFinite)
+        let fallbackRay = Ray(origin: SIMD3<Float>(0.4, 0.2, 5), direction: nearParallel)
+        let fallbackSession = try XCTUnwrap(ScaleGizmoGeometry.beginSession(
+            handle: .zAxis, ray: fallbackRay, transform: .identity,
+            cameraDirection: nearParallel, referenceLength: 1))
+        XCTAssertTrue(try XCTUnwrap(ScaleGizmoGeometry.scale(
+            session: fallbackSession, ray: fallbackRay,
+            cameraDirection: nearParallel)).allFinite)
+        XCTAssertNil(TranslationGizmoGeometry.axisConstraintPoint(
+            ray: Ray(origin: SIMD3<Float>(0, 0, 5), direction: SIMD3<Float>(0, 0, -1)),
+            origin: .zero, axis: SIMD3<Float>(0, 0, 1), cameraDirection: .zero))
+
+        let minimum = try XCTUnwrap(ScaleGizmoGeometry.applyFactor(
+            startScale: SIMD3<Float>(2, 3, 4), handle: .xAxis, factor: -10))
+        XCTAssertEqual(minimum, SIMD3<Float>(ObjectTransform.minimumScaleMagnitude, 3, 4))
+        let maximum = try XCTUnwrap(ScaleGizmoGeometry.applyFactor(
+            startScale: SIMD3<Float>(2, 3, 4), handle: .zAxis, factor: 10_000))
+        XCTAssertEqual(maximum, SIMD3<Float>(2, 3, ObjectTransform.maximumScaleMagnitude))
+        let finiteExtreme = try XCTUnwrap(ScaleGizmoGeometry.applyFactor(
+            startScale: SIMD3<Float>(2, 3, 4), handle: .xAxis,
+            factor: Float.greatestFiniteMagnitude))
+        XCTAssertEqual(finiteExtreme.x, ObjectTransform.maximumScaleMagnitude)
+        XCTAssertTrue(finiteExtreme.allFinite)
+        XCTAssertNil(ScaleGizmoGeometry.applyFactor(
+            startScale: SIMD3<Float>(2, 3, 4), handle: .xAxis, factor: .nan))
+        XCTAssertNil(ScaleGizmoGeometry.applyFactor(
+            startScale: SIMD3<Float>(2, .infinity, 4), handle: .uniform, factor: 2))
+    }
+
+    func testScaleGizmoUniformScalePreservesNonUniformRatiosAndClampsGlobally() throws {
+        XCTAssertEqual(try XCTUnwrap(ScaleGizmoGeometry.applyFactor(
+            startScale: SIMD3<Float>(repeating: 1), handle: .uniform, factor: 2)),
+                       SIMD3<Float>(repeating: 2))
+        let doubled = try XCTUnwrap(ScaleGizmoGeometry.applyFactor(
+            startScale: SIMD3<Float>(2, 1, 0.5), handle: .uniform, factor: 2))
+        XCTAssertEqual(doubled, SIMD3<Float>(4, 2, 1))
+        XCTAssertEqual(doubled.x / doubled.y, 2, accuracy: 0.000_1)
+        XCTAssertEqual(doubled.y / doubled.z, 2, accuracy: 0.000_1)
+
+        let minimum = try XCTUnwrap(ScaleGizmoGeometry.applyFactor(
+            startScale: SIMD3<Float>(2, 1, 0.5), handle: .uniform, factor: -1))
+        XCTAssertEqual(minimum.x, 0.004, accuracy: 0.000_001)
+        XCTAssertEqual(minimum.y, 0.002, accuracy: 0.000_001)
+        XCTAssertEqual(minimum.z, 0.001, accuracy: 0.000_001)
+        let maximum = try XCTUnwrap(ScaleGizmoGeometry.applyFactor(
+            startScale: SIMD3<Float>(2, 1, 0.5), handle: .uniform, factor: 10_000))
+        XCTAssertEqual(maximum, SIMD3<Float>(1_000, 500, 250))
+        XCTAssertTrue(minimum.allFinite && maximum.allFinite)
+    }
+
+    func testScaleGizmoUniformDragUsesCameraPlaneAndIgnoresInvalidFrame() throws {
+        let camera = SIMD3<Float>(0, 0, -1)
+        let startRay = Ray(origin: SIMD3<Float>(0, 0, 5), direction: camera)
+        let transform = ObjectTransform(scale: SIMD3<Float>(2, 1, 0.5))
+        let session = try XCTUnwrap(ScaleGizmoGeometry.beginSession(
+            handle: .uniform, ray: startRay, transform: transform,
+            cameraDirection: camera, referenceLength: 1))
+        let direction = try XCTUnwrap(session.uniformDirection)
+        let currentRay = Ray(origin: direction + SIMD3<Float>(0, 0, 5), direction: camera)
+        XCTAssertEqual(try XCTUnwrap(ScaleGizmoGeometry.scale(
+            session: session, ray: currentRay, cameraDirection: camera)), SIMD3<Float>(4, 2, 1))
+        XCTAssertNil(ScaleGizmoGeometry.scale(
+            session: session,
+            ray: Ray(origin: SIMD3<Float>(0, 0, 5), direction: SIMD3<Float>(1, 0, 0)),
+            cameraDirection: camera))
+        XCTAssertNil(ScaleGizmoGeometry.scale(
+            session: session,
+            ray: Ray(origin: SIMD3<Float>(0, 0, 5), direction: SIMD3<Float>(.nan, 0, 0)),
+            cameraDirection: camera))
+    }
+
+    @MainActor
+    func testWorkspaceScaleGizmoLifecyclePreservesTransformPartsMeshAndUploads() throws {
+        let model = WorkspaceModel(); model.setGizmoMode(.scale)
+        let original = ObjectTransform(translation: SIMD3<Float>(2, 3, 4),
+            rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(10, 20, 30)),
+            scale: SIMD3<Float>(2, 3, 4))
+        model.updateTransform(original)
+        let revision = model.mesh.runtime.revision, topology = model.mesh.runtime.topologyID
+        let uploads = model.profiler?.snapshot()
+        let start = Ray(origin: SIMD3<Float>(2.4, 3, 9), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+                                                 cameraDirection: SIMD3<Float>(0, 0, -1),
+                                                 referenceLength: 1))
+        model.updateScaleGizmoDrag(
+            ray: Ray(origin: SIMD3<Float>(3.4, 3, 9), direction: SIMD3<Float>(0, 0, -1)),
+            cameraDirection: SIMD3<Float>(0, 0, -1))
+        XCTAssertEqual(model.objectTransform.scale, SIMD3<Float>(4, 3, 4))
+        XCTAssertEqual(model.objectTransform.translation, original.translation)
+        XCTAssertEqual(model.objectTransform.rotation, original.rotation)
+        let valid = try XCTUnwrap(model.scaleGizmoState.dragSession).lastValidScale
+        model.updateScaleGizmoDrag(
+            ray: Ray(origin: .zero, direction: .zero), cameraDirection: SIMD3<Float>(0, 0, -1))
+        XCTAssertEqual(model.objectTransform.scale, valid)
+        XCTAssertEqual(try XCTUnwrap(model.scaleGizmoState.dragSession).lastValidScale, valid)
+        model.beginStroke(); XCTAssertFalse(model.isStrokeActive)
+        model.endScaleGizmoDrag(); XCTAssertFalse(model.isGizmoDragging)
+        XCTAssertEqual(model.mesh.runtime.revision, revision)
+        XCTAssertEqual(model.mesh.runtime.topologyID, topology)
+        XCTAssertEqual(model.profiler?.snapshot()[.vertexUpload].sampleCount,
+                       uploads?[.vertexUpload].sampleCount)
+        XCTAssertEqual(model.profiler?.snapshot()[.indexUpload].sampleCount,
+                       uploads?[.indexUpload].sampleCount)
+
+        let committed = model.objectTransform
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+                                                 cameraDirection: SIMD3<Float>(0, 0, -1),
+                                                 referenceLength: 1))
+        model.updateScaleGizmoDrag(
+            ray: Ray(origin: SIMD3<Float>(4.4, 3, 9), direction: SIMD3<Float>(0, 0, -1)),
+            cameraDirection: SIMD3<Float>(0, 0, -1))
+        model.cancelScaleGizmoDrag()
+        XCTAssertEqual(model.objectTransform, committed)
+    }
+
+    @MainActor
+    func testScaleGizmoModeExclusionSculptCancellationPanelSyncAndReset() throws {
+        let model = WorkspaceModel()
+        let translationRay = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))
+        let rotationRay = Ray(origin: SIMD3<Float>(5, 0, 0.82), direction: SIMD3<Float>(-1, 0, 0))
+        let scaleRay = Ray(origin: SIMD3<Float>(0.7, 0.05, 5), direction: SIMD3<Float>(0, 0, -1))
+        let revision = model.mesh.runtime.revision, topology = model.mesh.runtime.topologyID
+        XCTAssertNotNil(model.translationGizmoHit(ray: translationRay, scale: 1))
+        XCTAssertNil(model.rotationGizmoHit(ray: rotationRay, scale: 1))
+        XCTAssertNil(model.scaleGizmoHit(ray: scaleRay, scale: 1))
+
+        model.setGizmoMode(.scale)
+        XCTAssertEqual(model.mesh.runtime.revision, revision)
+        XCTAssertEqual(model.mesh.runtime.topologyID, topology)
+        XCTAssertNil(model.translationGizmoHit(ray: translationRay, scale: 1))
+        XCTAssertNil(model.rotationGizmoHit(ray: rotationRay, scale: 1))
+        XCTAssertNotNil(model.scaleGizmoHit(ray: scaleRay, scale: 1))
+        model.updateScaleGizmoHover(ray: scaleRay, scale: 1)
+        XCTAssertEqual(model.scaleGizmoState.hoverHandle, .xAxis)
+        model.beginStroke(); XCTAssertTrue(model.isStrokeActive)
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: scaleRay,
+                                                 cameraDirection: SIMD3<Float>(0, 0, -1),
+                                                 referenceLength: 1))
+        XCTAssertFalse(model.isStrokeActive)
+        model.updateScaleGizmoDrag(
+            ray: Ray(origin: SIMD3<Float>(1.2, 0.05, 5), direction: SIMD3<Float>(0, 0, -1)),
+            cameraDirection: SIMD3<Float>(0, 0, -1))
+        model.setGizmoMode(.rotate)
+        XCTAssertFalse(model.isGizmoDragging)
+        XCTAssertNil(model.scaleGizmoState.hoverHandle)
+        XCTAssertTrue(model.objectTransform.isIdentity)
+
+        model.updateScale(SIMD3<Float>(0, -2, 2_000))
+        XCTAssertEqual(model.objectTransform.scale,
+                       SIMD3<Float>(ObjectTransform.minimumScaleMagnitude, 2,
+                                    ObjectTransform.maximumScaleMagnitude))
+        model.resetTransform(); XCTAssertTrue(model.objectTransform.isIdentity)
+        model.setTranslationGizmoVisible(false)
+        model.setGizmoMode(.scale)
+        XCTAssertNil(model.scaleGizmoHit(ray: scaleRay, scale: 1))
+    }
+
+    @MainActor
+    func testScaleGizmoLoadAndBenchmarkCancelInteraction() async throws {
+        let model = WorkspaceModel(); model.setGizmoMode(.scale)
+        let start = Ray(origin: SIMD3<Float>(0.4, 0, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+                                                 cameraDirection: SIMD3<Float>(0, 0, -1),
+                                                 referenceLength: 1))
+        model.resetTransform()
+        XCTAssertFalse(model.scaleGizmoState.isDragging)
+        XCTAssertTrue(model.objectTransform.isIdentity)
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+                                                 cameraDirection: SIMD3<Float>(0, 0, -1),
+                                                 referenceLength: 1))
+        model.load(data: try model.projectData())
+        XCTAssertFalse(model.scaleGizmoState.isDragging)
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+                                                 cameraDirection: SIMD3<Float>(0, 0, -1),
+                                                 referenceLength: 1))
+        model.runAllBenchmarks()
+        XCTAssertFalse(model.isGizmoDragging)
+        XCTAssertFalse(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+                                                  cameraDirection: SIMD3<Float>(0, 0, -1),
+                                                  referenceLength: 1))
         model.cancelBenchmarks()
         for _ in 0..<1_000 where model.isBenchmarkRunning { await Task.yield() }
     }

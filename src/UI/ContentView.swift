@@ -46,7 +46,7 @@ struct ContentView: View {
                         ForEach(GizmoMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 150)
+                    .frame(width: 220)
                     #if DEBUG
                     .disabled(model.isBenchmarkRunning)
                     #endif
