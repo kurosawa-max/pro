@@ -30,7 +30,7 @@ struct TranslationGizmoHit: Equatable {
     var distance: Float
 }
 
-struct TranslationDragSession: Equatable {
+struct TranslationDragSession {
     var handle: TranslationGizmoHandle
     var startTransform: ObjectTransform
     var origin: SIMD3<Float>
@@ -40,7 +40,7 @@ struct TranslationDragSession: Equatable {
     var planeNormal: SIMD3<Float>?
 }
 
-struct TranslationGizmoState: Equatable {
+struct TranslationGizmoState {
     var mode: GizmoMode = .translate
     var hoverHandle: TranslationGizmoHandle?
     var activeHandle: TranslationGizmoHandle?
