@@ -399,3 +399,11 @@ EditableMeshはobject-local座標を維持し、translation、Quaternion rotatio
 Pickingではworld-space Rayのoriginを位置（w=1）、directionを方向（w=0）としてinverse model matrixでlocalへ変換する。Sculptはlocal hit center／normal／dragでlocal meshを編集する。brush radiusはworld-space UI値を最大scaleで割る保守的local半径とし、非一様scaleで一方向だけ過大になることを防ぐ。
 
 TransformはFoundation JSON v1へ加算的に保存し、fieldがない旧dataはidentityとして読む。Transform専用UndoはStrokeHistoryの時系列再設計を避けるため本段階では未実装である。3D gizmo、複数object、pivot、snap、Transform bake／STL適用は含まない。
+
+### 17.5 World-space translation gizmo
+
+単一objectの移動ギズモはworld-space固定のX/Y/Z軸とXY/YZ/ZX平面を提供し、`ObjectTransform.translation`だけを変更する。meshはobject-localのままで、ギズモ操作はmesh revision、topology ID、Metal mesh bufferを変更しない。将来のlocal-space modeを追加できるようhandle、state、drag session、幾何計算はUIイベントから分離する。
+
+軸dragはcamera Rayとaxis lineの最近接parameter差を開始時からの絶対差分として用いる。ほぼ平行な場合はaxisとcamera view directionから補助平面を作り、その交点をaxisへ射影する。平面dragは同一world planeとの開始／現在交点差を使い、平行・非有限・過大な差分は無視する。表示scaleはcamera距離、45度FOV、viewport高さからscreen-space約112 point相当を近似し、安全範囲へclampする。
+
+Rendererは固定ギズモbufferをmesh後の別draw callで再利用し、origin、scale、hover／activeだけをuniform更新する。操作性を優先してdepth compareをalwaysとし、オブジェクト背後でも完全には隠さない。入力優先順位はactive gizmo、gizmo handle hit、Pencil Sculpt、指Cameraの順で、drag cancel時は開始Transformを復元する。Transform Undo／Redo、rotation／scale gizmo、local軸、snap、pivot、複数objectは未実装である。

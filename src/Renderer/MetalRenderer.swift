@@ -6,6 +6,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
+    private let gizmoRenderer: TranslationGizmoRenderer
     private let profiler: PerformanceProfiler?
     private var depthState: MTLDepthStencilState
     private var vertexBuffer: MTLBuffer?
@@ -15,6 +16,9 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private var uploadedTopologyID: UUID?
     var camera = CameraState()
     var objectTransform = ObjectTransform.identity
+    var gizmoState = TranslationGizmoState()
+    var showsTranslationGizmo = true
+    private(set) var gizmoWorldScale: Float = 1
     private(set) var viewProjection = matrix_identity_float4x4
 
     init?(view: MTKView, profiler: PerformanceProfiler?) {
@@ -29,8 +33,12 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         descriptor.vertexFunction = vertex; descriptor.fragmentFunction = fragment
         descriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
         descriptor.depthAttachmentPixelFormat = view.depthStencilPixelFormat
-        guard let pipeline = try? device.makeRenderPipelineState(descriptor: descriptor) else { return nil }
+        guard let pipeline = try? device.makeRenderPipelineState(descriptor: descriptor),
+              let gizmoRenderer = TranslationGizmoRenderer(device: device, library: library,
+                                                            colorPixelFormat: view.colorPixelFormat,
+                                                            depthPixelFormat: view.depthStencilPixelFormat) else { return nil }
         self.pipeline = pipeline
+        self.gizmoRenderer = gizmoRenderer
         let depth = MTLDepthStencilDescriptor(); depth.isDepthWriteEnabled = true; depth.depthCompareFunction = .less
         guard let depthState = device.makeDepthStencilState(descriptor: depth) else { return nil }
         self.depthState = depthState
@@ -92,6 +100,10 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
         encoder.drawIndexedPrimitives(type: .triangle, indexCount: indexCount, indexType: .uint32,
                                       indexBuffer: indexBuffer, indexBufferOffset: 0)
+        if showsTranslationGizmo {
+            gizmoRenderer.encode(encoder: encoder, viewProjection: viewProjection,
+                                 origin: objectTransform.translation, scale: gizmoWorldScale, state: gizmoState)
+        }
         encoder.endEncoding(); command.present(drawable); command.commit()
     }
 
@@ -113,6 +125,16 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         let projection = float4x4.perspective(fovY: 45 * .pi / 180, aspect: aspect, near: 0.01, far: 100)
         let cp = cos(camera.pitch), eye = camera.target + SIMD3<Float>(sin(camera.yaw) * cp, sin(camera.pitch), cos(camera.yaw) * cp) * camera.distance
         viewProjection = projection * float4x4.lookAt(eye: eye, center: camera.target, up: SIMD3<Float>(0, 1, 0))
+        let distance = simd_length(eye - objectTransform.translation)
+        gizmoWorldScale = TranslationGizmoGeometry.worldScale(cameraDistance: distance,
+                                                               viewportHeight: Float(size.height),
+                                                               fovYRadians: 45 * .pi / 180)
+    }
+
+    var cameraViewDirection: SIMD3<Float> {
+        let cp = cos(camera.pitch)
+        let eye = camera.target + SIMD3<Float>(sin(camera.yaw) * cp, sin(camera.pitch), cos(camera.yaw) * cp) * camera.distance
+        return simd_normalize(camera.target - eye)
     }
 }
 

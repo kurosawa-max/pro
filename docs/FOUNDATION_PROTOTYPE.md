@@ -60,7 +60,11 @@ Debugビルドでは画面右上の`Perf`ボタンから性能HUDを開閉でき
 
 mesh vertexはobject-local座標で保存・編集する。単一objectのTransformは非破壊状態として別保存され、Rendererでworld-spaceへ変換される。非一様scale時のnormalはinverse-transposeで変換する。Pickingはworld Rayをlocalへ戻し、Sculptはlocal座標のmeshを編集する。Transform変更はmesh revisionやGPU mesh bufferを変更しない。
 
-現段階ではTransformのUndo/Redo、3D gizmo、複数object、pivot、snap、STLへのTransform bakeを実装しない。STLは従来どおりlocal meshを出力する。
+通常toolbarの`Move Gizmo`でworld-space固定の移動ギズモを表示できる。X/Y/Z軸とXY/YZ/ZX平面をPencilまたは指でdragし、Transform panelと同じtranslationを非破壊更新する。軸dragはRay／axis最近接を使い、平行時はcamera方向から作る補助平面へfallbackする。平面dragは対応world planeの交点差を使う。camera距離、FOV、viewport高さから表示scaleを近似するため、画面上の大きさは距離によって極端に変化しない。
+
+ギズモはmesh後の独立overlay draw callで描画し、固定GPU bufferを再利用する。mesh revisionやvertex／index uploadは発生しない。操作優先順位はactive drag、gizmo handle、Sculpt、Cameraで、cancel時は開始Transformへ戻る。Benchmark中は非表示・操作不可で、ON／OFF状態はprojectへ保存しない。
+
+現段階ではTransformのUndo/Redo、rotation／scale gizmo、local／world軸切替、複数object、pivot、snap、STLへのTransform bakeを実装しない。STLは従来どおりlocal meshを出力する。
 
 ## 実機検証項目
 

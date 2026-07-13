@@ -18,6 +18,8 @@ Picking専用CPU BVHとして中央値分割、topology変更時build、vertex r
 
 単一object Transform foundationとして非破壊translation／Quaternion rotation／scale、Renderer normal matrix、world→local Picking／Sculpt、後方互換保存、通常Transform panelを追加する。3D gizmo、Transform Undo、複数object、pivot、snapは後続作業とする。
 
+単一objectのworld-space Translation GizmoとしてX/Y/Z軸、XY/YZ/ZX平面、hover／active表示、安定化fallback付き拘束dragを追加する。meshはlocal座標を維持し、ギズモはTransform translationだけを更新する。rotation／scale gizmo、local軸切替、snap、pivot、Transform Undoは後続作業とする。
+
 ## Milestone 0 — Repository Foundation
 
 - Xcode workspace作成
