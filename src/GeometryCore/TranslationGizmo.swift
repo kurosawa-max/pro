@@ -1,7 +1,7 @@
 import Foundation
 import simd
 
-enum GizmoMode: Equatable { case translate }
+enum GizmoMode: String, CaseIterable, Hashable { case translate = "Move", rotate = "Rotate" }
 
 enum TranslationGizmoHandle: Int32, CaseIterable, Equatable {
     case xAxis = 0, yAxis, zAxis, xyPlane, yzPlane, zxPlane
@@ -41,7 +41,6 @@ struct TranslationDragSession {
 }
 
 struct TranslationGizmoState {
-    var mode: GizmoMode = .translate
     var hoverHandle: TranslationGizmoHandle?
     var activeHandle: TranslationGizmoHandle?
     var dragSession: TranslationDragSession?

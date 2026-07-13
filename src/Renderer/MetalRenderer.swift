@@ -7,6 +7,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
     private let gizmoRenderer: TranslationGizmoRenderer
+    private let rotationGizmoRenderer: RotationGizmoRenderer
     private let profiler: PerformanceProfiler?
     private var depthState: MTLDepthStencilState
     private var vertexBuffer: MTLBuffer?
@@ -17,6 +18,8 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     var camera = CameraState()
     var objectTransform = ObjectTransform.identity
     var gizmoState = TranslationGizmoState()
+    var rotationGizmoState = RotationGizmoState()
+    var gizmoMode = GizmoMode.translate
     var showsTranslationGizmo = true
     private(set) var gizmoWorldScale: Float = 1
     private(set) var viewProjection = matrix_identity_float4x4
@@ -36,9 +39,13 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         guard let pipeline = try? device.makeRenderPipelineState(descriptor: descriptor),
               let gizmoRenderer = TranslationGizmoRenderer(device: device, library: library,
                                                             colorPixelFormat: view.colorPixelFormat,
-                                                            depthPixelFormat: view.depthStencilPixelFormat) else { return nil }
+                                                            depthPixelFormat: view.depthStencilPixelFormat),
+              let rotationGizmoRenderer = RotationGizmoRenderer(device: device, library: library,
+                                                                 colorPixelFormat: view.colorPixelFormat,
+                                                                 depthPixelFormat: view.depthStencilPixelFormat) else { return nil }
         self.pipeline = pipeline
         self.gizmoRenderer = gizmoRenderer
+        self.rotationGizmoRenderer = rotationGizmoRenderer
         let depth = MTLDepthStencilDescriptor(); depth.isDepthWriteEnabled = true; depth.depthCompareFunction = .less
         guard let depthState = device.makeDepthStencilState(descriptor: depth) else { return nil }
         self.depthState = depthState
@@ -101,8 +108,15 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         encoder.drawIndexedPrimitives(type: .triangle, indexCount: indexCount, indexType: .uint32,
                                       indexBuffer: indexBuffer, indexBufferOffset: 0)
         if showsTranslationGizmo {
-            gizmoRenderer.encode(encoder: encoder, viewProjection: viewProjection,
-                                 origin: objectTransform.translation, scale: gizmoWorldScale, state: gizmoState)
+            switch gizmoMode {
+            case .translate:
+                gizmoRenderer.encode(encoder: encoder, viewProjection: viewProjection,
+                                     origin: objectTransform.translation, scale: gizmoWorldScale, state: gizmoState)
+            case .rotate:
+                rotationGizmoRenderer.encode(encoder: encoder, viewProjection: viewProjection,
+                                             origin: objectTransform.translation, scale: gizmoWorldScale,
+                                             state: rotationGizmoState)
+            }
         }
         encoder.endEncoding(); command.present(drawable); command.commit()
     }

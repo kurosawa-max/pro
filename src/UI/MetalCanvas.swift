@@ -11,6 +11,8 @@ struct MetalCanvas: UIViewRepresentable {
         context.coordinator.renderer = renderer
         renderer.objectTransform = model.objectTransform
         renderer.gizmoState = model.translationGizmoState
+        renderer.rotationGizmoState = model.rotationGizmoState
+        renderer.gizmoMode = model.gizmoMode
         renderer.showsTranslationGizmo = model.showsTranslationGizmo
         view.delegate = renderer; view.preferredFramesPerSecond = 60; view.isPaused = false
         view.onPencilBegan = { [weak coordinator = context.coordinator] sample in coordinator?.pencilBegan(sample, in: view) }
@@ -28,6 +30,8 @@ struct MetalCanvas: UIViewRepresentable {
         context.coordinator.renderer?.camera = model.camera
         context.coordinator.renderer?.objectTransform = model.objectTransform
         context.coordinator.renderer?.gizmoState = model.translationGizmoState
+        context.coordinator.renderer?.rotationGizmoState = model.rotationGizmoState
+        context.coordinator.renderer?.gizmoMode = model.gizmoMode
         #if DEBUG
         context.coordinator.renderer?.showsTranslationGizmo = model.showsTranslationGizmo && !model.isBenchmarkRunning
         #else
@@ -44,37 +48,67 @@ struct MetalCanvas: UIViewRepresentable {
 
         func pencilBegan(_ sample: PencilSample, in view: UIView) {
             guard let renderer, let ray = renderer.ray(at: sample.location, viewSize: view.bounds.size) else { return }
-            if let hit = model.translationGizmoHit(ray: ray, scale: renderer.gizmoWorldScale),
-               model.beginTranslationGizmoDrag(handle: hit.handle, ray: ray,
-                                                cameraDirection: renderer.cameraViewDirection) { return }
+            if beginGizmoDrag(ray: ray, renderer: renderer) { return }
             model.beginStroke()
             model.updateStroke(sample: sample, ray: ray)
         }
         func pencilMoved(_ sample: PencilSample, in view: UIView) {
             guard let ray = renderer?.ray(at: sample.location, viewSize: view.bounds.size) else { return }
-            if model.translationGizmoState.isDragging, let renderer {
-                model.updateTranslationGizmoDrag(ray: ray, cameraDirection: renderer.cameraViewDirection)
+            if model.isGizmoDragging, let renderer {
+                updateGizmoDrag(ray: ray, renderer: renderer)
             } else { model.updateStroke(sample: sample, ray: ray) }
         }
 
         func inputEnded() {
-            if model.translationGizmoState.isDragging { model.endTranslationGizmoDrag() }
+            if model.isGizmoDragging { endGizmoDrag() }
             else { model.endStroke() }
         }
 
         func inputCancelled() {
-            if model.translationGizmoState.isDragging { model.cancelTranslationGizmoDrag() }
+            if model.isGizmoDragging { model.cancelAllGizmoDrags() }
             else { model.cancelStroke() }
         }
 
         func hover(_ point: CGPoint?, in view: UIView) {
             guard let point, let renderer, let ray = renderer.ray(at: point, viewSize: view.bounds.size) else {
                 model.hoverLocation = nil
-                model.updateTranslationGizmoHover(ray: nil, scale: 1)
+                updateGizmoHover(ray: nil, scale: 1)
                 return
             }
-            model.updateTranslationGizmoHover(ray: ray, scale: renderer.gizmoWorldScale)
-            model.hoverLocation = model.translationGizmoState.hoverHandle == nil ? point : nil
+            updateGizmoHover(ray: ray, scale: renderer.gizmoWorldScale)
+            let hasHover = model.gizmoMode == .translate
+                ? model.translationGizmoState.hoverHandle != nil : model.rotationGizmoState.hoverHandle != nil
+            model.hoverLocation = hasHover ? nil : point
+        }
+
+        private func beginGizmoDrag(ray: Ray, renderer: MetalRenderer) -> Bool {
+            switch model.gizmoMode {
+            case .translate:
+                guard let hit = model.translationGizmoHit(ray: ray, scale: renderer.gizmoWorldScale) else { return false }
+                return model.beginTranslationGizmoDrag(handle: hit.handle, ray: ray,
+                                                       cameraDirection: renderer.cameraViewDirection)
+            case .rotate:
+                guard let hit = model.rotationGizmoHit(ray: ray, scale: renderer.gizmoWorldScale) else { return false }
+                return model.beginRotationGizmoDrag(handle: hit.handle, ray: ray)
+            }
+        }
+
+        private func updateGizmoDrag(ray: Ray, renderer: MetalRenderer) {
+            if model.translationGizmoState.isDragging {
+                model.updateTranslationGizmoDrag(ray: ray, cameraDirection: renderer.cameraViewDirection)
+            } else if model.rotationGizmoState.isDragging { model.updateRotationGizmoDrag(ray: ray) }
+        }
+
+        private func endGizmoDrag() {
+            if model.translationGizmoState.isDragging { model.endTranslationGizmoDrag() }
+            else if model.rotationGizmoState.isDragging { model.endRotationGizmoDrag() }
+        }
+
+        private func updateGizmoHover(ray: Ray?, scale: Float) {
+            switch model.gizmoMode {
+            case .translate: model.updateTranslationGizmoHover(ray: ray, scale: scale)
+            case .rotate: model.updateRotationGizmoHover(ray: ray, scale: scale)
+            }
         }
 
         func installGestures(on view: UIView) {
@@ -89,25 +123,23 @@ struct MetalCanvas: UIViewRepresentable {
         }
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            !model.translationGizmoState.isDragging
+            !model.isGizmoDragging
         }
 
         @objc private func orbit(_ gesture: UIPanGestureRecognizer) {
             if gesture.state == .began {
                 if let view = gesture.view, let renderer,
                    let ray = renderer.ray(at: gesture.location(in: view), viewSize: view.bounds.size),
-                   let hit = model.translationGizmoHit(ray: ray, scale: renderer.gizmoWorldScale),
-                   model.beginTranslationGizmoDrag(handle: hit.handle, ray: ray,
-                                                    cameraDirection: renderer.cameraViewDirection) { return }
+                   beginGizmoDrag(ray: ray, renderer: renderer) { return }
                 orbitStart = model.camera
             }
-            if model.translationGizmoState.isDragging {
+            if model.isGizmoDragging {
                 guard let view = gesture.view, let renderer,
                       let ray = renderer.ray(at: gesture.location(in: view), viewSize: view.bounds.size) else { return }
                 switch gesture.state {
-                case .ended: model.updateTranslationGizmoDrag(ray: ray, cameraDirection: renderer.cameraViewDirection); model.endTranslationGizmoDrag()
-                case .cancelled, .failed: model.cancelTranslationGizmoDrag()
-                default: model.updateTranslationGizmoDrag(ray: ray, cameraDirection: renderer.cameraViewDirection)
+                case .ended: updateGizmoDrag(ray: ray, renderer: renderer); endGizmoDrag()
+                case .cancelled, .failed: model.cancelAllGizmoDrags()
+                default: updateGizmoDrag(ray: ray, renderer: renderer)
                 }
                 return
             }

@@ -41,9 +41,18 @@ struct ContentView: View {
                     Button("Save", systemImage: "square.and.arrow.down") { saveProject() }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Picker("Gizmo Mode", selection: Binding(get: { model.gizmoMode },
+                                                            set: { model.setGizmoMode($0) })) {
+                        ForEach(GizmoMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 150)
+                    #if DEBUG
+                    .disabled(model.isBenchmarkRunning)
+                    #endif
                     Toggle(isOn: Binding(get: { model.showsTranslationGizmo },
                                          set: { model.setTranslationGizmoVisible($0) })) {
-                        Label("Move Gizmo", systemImage: "move.3d")
+                        Label("Gizmo", systemImage: "move.3d")
                     }
                     #if DEBUG
                     .disabled(model.isBenchmarkRunning)

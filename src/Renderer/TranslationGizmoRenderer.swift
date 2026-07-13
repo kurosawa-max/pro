@@ -68,8 +68,7 @@ final class TranslationGizmoRenderer {
                          GizmoVertex(position: c, color: color, handle: handle.rawValue)]
             indices += [base, base + 1, base + 2]
         }
-        let red = SIMD4<Float>(0.95, 0.12, 0.12, 1), green = SIMD4<Float>(0.12, 0.9, 0.25, 1)
-        let blue = SIMD4<Float>(0.15, 0.4, 1, 1), t: Float = 0.025
+        let red = GizmoColors.x, green = GizmoColors.y, blue = GizmoColors.z, t: Float = 0.025
         quad(SIMD3(0, -t, 0), SIMD3(0.82, -t, 0), SIMD3(0.82, t, 0), SIMD3(0, t, 0), color: red, handle: .xAxis)
         triangle(SIMD3(0.82, -0.08, 0), SIMD3(1, 0, 0), SIMD3(0.82, 0.08, 0), color: red, handle: .xAxis)
         quad(SIMD3(-t, 0, 0), SIMD3(t, 0, 0), SIMD3(t, 0.82, 0), SIMD3(-t, 0.82, 0), color: green, handle: .yAxis)
@@ -99,4 +98,14 @@ struct GizmoUniforms {
     var scale: Float
     var hoverHandle: Int32
     var activeHandle: Int32
+}
+
+enum GizmoColors {
+    static let x = SIMD4<Float>(0.95, 0.12, 0.12, 1)
+    static let y = SIMD4<Float>(0.12, 0.9, 0.25, 1)
+    static let z = SIMD4<Float>(0.15, 0.4, 1, 1)
+
+    static func color(forAxis axis: Int32) -> SIMD4<Float> {
+        axis == 0 ? x : (axis == 1 ? y : z)
+    }
 }

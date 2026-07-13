@@ -720,6 +720,212 @@ final class FoundationPrototypeTests: XCTestCase {
         XCTAssertEqual(MemoryLayout<GizmoUniforms>.offset(of: \GizmoUniforms.activeHandle), 88)
     }
 
+    func testRotationGizmoHitsWorldAxisRingsAndMissesInvalidAreas() {
+        let cases: [(RotationGizmoHandle, Ray)] = [
+            (.xAxis, Ray(origin: SIMD3<Float>(5, 0, 0.82), direction: SIMD3<Float>(-1, 0, 0))),
+            (.yAxis, Ray(origin: SIMD3<Float>(0, 5, 0.82), direction: SIMD3<Float>(0, -1, 0))),
+            (.zAxis, Ray(origin: SIMD3<Float>(0.82, 0, 5), direction: SIMD3<Float>(0, 0, -1))),
+        ]
+        for (handle, ray) in cases {
+            XCTAssertEqual(RotationGizmoGeometry.hit(ray: ray, origin: .zero, scale: 1)?.handle, handle)
+        }
+        XCTAssertNil(RotationGizmoGeometry.hit(
+            ray: Ray(origin: SIMD3<Float>(5, 0, 0), direction: SIMD3<Float>(-1, 0, 0)), origin: .zero, scale: 1))
+        XCTAssertNil(RotationGizmoGeometry.hit(
+            ray: Ray(origin: SIMD3<Float>(5, 0, 1.3), direction: SIMD3<Float>(-1, 0, 0)), origin: .zero, scale: 1))
+        XCTAssertNil(RotationGizmoGeometry.hit(
+            ray: Ray(origin: SIMD3<Float>(0, 0, 0.3), direction: SIMD3<Float>(0, 1, 0)), origin: .zero, scale: 1))
+        XCTAssertNil(RotationGizmoGeometry.hit(
+            ray: Ray(origin: SIMD3<Float>(.nan, 0, 1), direction: SIMD3<Float>(-1, 0, 0)), origin: .zero, scale: 1))
+    }
+
+    func testRotationGizmoPickingScalesAndUsesStableTieBreak() {
+        let scaled = Ray(origin: SIMD3<Float>(5, 0, 1.64), direction: SIMD3<Float>(-1, 0, 0))
+        XCTAssertEqual(RotationGizmoGeometry.hit(ray: scaled, origin: .zero, scale: 2)?.handle, .xAxis)
+        XCTAssertNil(RotationGizmoGeometry.hit(ray: scaled, origin: .zero, scale: 1))
+        let tie = Ray(origin: SIMD3<Float>(5, 5, 0.82), direction: simd_normalize(SIMD3<Float>(-1, -1, 0)))
+        XCTAssertEqual(RotationGizmoGeometry.hit(ray: tie, origin: .zero, scale: 1)?.handle, .xAxis)
+    }
+
+    func testRotationSignedAnglesCoverZeroPositiveNegativeAndPi() throws {
+        let x = SIMD3<Float>(1, 0, 0), y = SIMD3<Float>(0, 1, 0), z = SIMD3<Float>(0, 0, 1)
+        XCTAssertEqual(try XCTUnwrap(RotationGizmoGeometry.signedAngle(from: x, to: x, axis: z)), 0, accuracy: 0.000_01)
+        XCTAssertEqual(try XCTUnwrap(RotationGizmoGeometry.signedAngle(from: x, to: y, axis: z)), .pi / 2, accuracy: 0.000_01)
+        XCTAssertEqual(try XCTUnwrap(RotationGizmoGeometry.signedAngle(from: x, to: -y, axis: z)), -.pi / 2, accuracy: 0.000_01)
+        let nearPi = try XCTUnwrap(RotationGizmoGeometry.signedAngle(
+            from: x, to: simd_normalize(SIMD3<Float>(-1, 0.000_01, 0)), axis: z))
+        XCTAssertTrue(nearPi.isFinite); XCTAssertEqual(abs(nearPi), .pi, accuracy: 0.000_1)
+        XCTAssertNil(RotationGizmoGeometry.signedAngle(from: .zero, to: y, axis: z))
+        XCTAssertNil(RotationGizmoGeometry.signedAngle(from: SIMD3<Float>(.nan, 0, 0), to: y, axis: z))
+    }
+
+    func testRotationGizmoQuaternionUsesWorldSpaceLeftMultiplication() throws {
+        for handle in RotationGizmoHandle.allCases {
+            let startRay: Ray, currentRay: Ray
+            switch handle {
+            case .xAxis:
+                startRay = Ray(origin: SIMD3<Float>(5, 0, 1), direction: SIMD3<Float>(-1, 0, 0))
+                currentRay = Ray(origin: SIMD3<Float>(5, -1, 0), direction: SIMD3<Float>(-1, 0, 0))
+            case .yAxis:
+                startRay = Ray(origin: SIMD3<Float>(1, 5, 0), direction: SIMD3<Float>(0, -1, 0))
+                currentRay = Ray(origin: SIMD3<Float>(0, 5, -1), direction: SIMD3<Float>(0, -1, 0))
+            case .zAxis:
+                startRay = Ray(origin: SIMD3<Float>(1, 0, 5), direction: SIMD3<Float>(0, 0, -1))
+                currentRay = Ray(origin: SIMD3<Float>(0, 1, 5), direction: SIMD3<Float>(0, 0, -1))
+            }
+            let session = try XCTUnwrap(RotationGizmoGeometry.beginSession(
+                handle: handle, ray: startRay, transform: .identity))
+            XCTAssertEqual(try XCTUnwrap(RotationGizmoGeometry.rotation(session: session, ray: startRay)).accumulatedAngle,
+                           0, accuracy: 0.000_01)
+            let update = try XCTUnwrap(RotationGizmoGeometry.rotation(session: session, ray: currentRay))
+            XCTAssertEqual(abs(update.accumulatedAngle), .pi / 2, accuracy: 0.000_1)
+            XCTAssertEqual(simd_length(update.rotation), 1, accuracy: 0.000_1)
+        }
+
+        let start = ObjectTransform(rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(0, 90, 0)),
+                                    scale: SIMD3<Float>(2, 3, 4))
+        let session = try XCTUnwrap(RotationGizmoGeometry.beginSession(
+            handle: .xAxis, ray: Ray(origin: SIMD3<Float>(5, 0, 1), direction: SIMD3<Float>(-1, 0, 0)),
+            transform: start))
+        let update = try XCTUnwrap(RotationGizmoGeometry.rotation(
+            session: session, ray: Ray(origin: SIMD3<Float>(5, -1, 0), direction: SIMD3<Float>(-1, 0, 0))))
+        let expected = simd_normalize(simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(1, 0, 0)) * start.quaternion)
+        XCTAssertLessThan(min(simd_distance(update.rotation, expected.vector), simd_distance(update.rotation, -expected.vector)), 0.000_1)
+        var transformed = start; transformed.rotation = update.rotation
+        XCTAssertEqual(transformed.translation, start.translation); XCTAssertEqual(transformed.scale, start.scale)
+    }
+
+    func testRotationAngleUnwrapCrossesPositiveAndNegativePiContinuously() throws {
+        let positive179 = Float(179) * .pi / 180, negative179 = -positive179
+        let beforePositiveCross = try XCTUnwrap(RotationGizmoGeometry.unwrap(
+            rawAngle: positive179, lastRawAngle: 0, accumulatedAngle: 0))
+        let afterPositiveCross = try XCTUnwrap(RotationGizmoGeometry.unwrap(
+            rawAngle: negative179, lastRawAngle: beforePositiveCross.rawAngle,
+            accumulatedAngle: beforePositiveCross.accumulatedAngle))
+        XCTAssertEqual(afterPositiveCross.accumulatedAngle - beforePositiveCross.accumulatedAngle,
+                       2 * .pi / 180, accuracy: 0.000_01)
+        XCTAssertEqual(afterPositiveCross.accumulatedAngle, Float(181) * .pi / 180, accuracy: 0.000_01)
+
+        let beforeNegativeCross = try XCTUnwrap(RotationGizmoGeometry.unwrap(
+            rawAngle: negative179, lastRawAngle: 0, accumulatedAngle: 0))
+        let afterNegativeCross = try XCTUnwrap(RotationGizmoGeometry.unwrap(
+            rawAngle: positive179, lastRawAngle: beforeNegativeCross.rawAngle,
+            accumulatedAngle: beforeNegativeCross.accumulatedAngle))
+        XCTAssertEqual(afterNegativeCross.accumulatedAngle - beforeNegativeCross.accumulatedAngle,
+                       -2 * .pi / 180, accuracy: 0.000_01)
+        XCTAssertEqual(afterNegativeCross.accumulatedAngle, -Float(181) * .pi / 180, accuracy: 0.000_01)
+    }
+
+    func testRotationAngleUnwrapSupportsFullAndDoubleTurnsWithNormalizedQuaternion() throws {
+        func accumulate(_ degrees: [Float]) throws -> Float {
+            var raw: Float = 0, accumulated: Float = 0
+            for degree in degrees {
+                let update = try XCTUnwrap(RotationGizmoGeometry.unwrap(
+                    rawAngle: degree * .pi / 180, lastRawAngle: raw, accumulatedAngle: accumulated))
+                raw = update.rawAngle; accumulated = update.accumulatedAngle
+            }
+            return accumulated
+        }
+        let oneTurn = try accumulate([90, 179, -90, 0])
+        XCTAssertEqual(oneTurn, 2 * .pi, accuracy: 0.000_1)
+        let twoTurns = try accumulate([90, 179, -90, 0, 90, 179, -90, 0])
+        XCTAssertEqual(twoTurns, 4 * .pi, accuracy: 0.000_1)
+        let transform = ObjectTransform(translation: SIMD3<Float>(1, 2, 3),
+                                        rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(10, 20, 30)),
+                                        scale: SIMD3<Float>(2, 3, 4))
+        let quaternion = try XCTUnwrap(RotationGizmoGeometry.worldRotation(
+            startTransform: transform, axis: SIMD3<Float>(0, 1, 0), accumulatedAngle: twoTurns))
+        XCTAssertTrue(quaternion.x.isFinite && quaternion.y.isFinite && quaternion.z.isFinite && quaternion.w.isFinite)
+        XCTAssertEqual(simd_length(quaternion), 1, accuracy: 0.000_1)
+        XCTAssertEqual(transform.translation, SIMD3<Float>(1, 2, 3)); XCTAssertEqual(transform.scale, SIMD3<Float>(2, 3, 4))
+    }
+
+    @MainActor
+    func testRotationWorkspaceUnwrapSurvivesInvalidRayAndRebuildsFromStart() throws {
+        let model = WorkspaceModel(); model.setGizmoMode(.rotate)
+        let start = Ray(origin: SIMD3<Float>(5, 0, 1), direction: SIMD3<Float>(-1, 0, 0))
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .xAxis, ray: start))
+        func ray(degrees: Float) -> Ray {
+            let angle = degrees * .pi / 180
+            return Ray(origin: SIMD3<Float>(5, -sin(angle), cos(angle)), direction: SIMD3<Float>(-1, 0, 0))
+        }
+        model.updateRotationGizmoDrag(ray: ray(degrees: 179))
+        let beforeInvalid = try XCTUnwrap(model.rotationGizmoState.dragSession)
+        model.updateRotationGizmoDrag(ray: Ray(origin: SIMD3<Float>(0, 1, 0), direction: SIMD3<Float>(0, 1, 0)))
+        let afterInvalid = try XCTUnwrap(model.rotationGizmoState.dragSession)
+        XCTAssertEqual(afterInvalid.lastRawAngle, beforeInvalid.lastRawAngle)
+        XCTAssertEqual(afterInvalid.accumulatedAngle, beforeInvalid.accumulatedAngle)
+        model.updateRotationGizmoDrag(ray: ray(degrees: -179))
+        let crossed = try XCTUnwrap(model.rotationGizmoState.dragSession)
+        XCTAssertEqual(crossed.accumulatedAngle, Float(181) * .pi / 180, accuracy: 0.000_1)
+        let expected = try XCTUnwrap(RotationGizmoGeometry.worldRotation(
+            startTransform: crossed.startTransform, axis: crossed.axis,
+            accumulatedAngle: crossed.accumulatedAngle))
+        XCTAssertLessThan(min(simd_distance(model.objectTransform.rotation, expected),
+                              simd_distance(model.objectTransform.rotation, -expected)), 0.000_1)
+        XCTAssertEqual(model.objectTransform.translation, crossed.startTransform.translation)
+        XCTAssertEqual(model.objectTransform.scale, crossed.startTransform.scale)
+    }
+
+    @MainActor
+    func testWorkspaceRotationGizmoBeginUpdateEndCancelAndNoMeshUpload() throws {
+        let model = WorkspaceModel(); model.setGizmoMode(.rotate)
+        let revision = model.mesh.runtime.revision, topology = model.mesh.runtime.topologyID
+        let uploads = model.profiler?.snapshot(), original = model.objectTransform
+        let start = Ray(origin: SIMD3<Float>(5, 0, 1), direction: SIMD3<Float>(-1, 0, 0))
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .xAxis, ray: start))
+        model.updateRotationGizmoDrag(ray: Ray(origin: SIMD3<Float>(5, -1, 0), direction: SIMD3<Float>(-1, 0, 0)))
+        XCTAssertEqual(simd_length(model.objectTransform.rotation), 1, accuracy: 0.000_1)
+        let validRotation = model.objectTransform.rotation
+        model.updateRotationGizmoDrag(ray: Ray(origin: SIMD3<Float>(0, 1, 0), direction: SIMD3<Float>(0, 1, 0)))
+        XCTAssertEqual(model.objectTransform.rotation, validRotation)
+        model.endRotationGizmoDrag(); XCTAssertFalse(model.rotationGizmoState.isDragging)
+        XCTAssertEqual(model.mesh.runtime.revision, revision); XCTAssertEqual(model.mesh.runtime.topologyID, topology)
+        XCTAssertEqual(model.profiler?.snapshot()[.vertexUpload].sampleCount, uploads?[.vertexUpload].sampleCount)
+        XCTAssertEqual(model.profiler?.snapshot()[.indexUpload].sampleCount, uploads?[.indexUpload].sampleCount)
+
+        let committed = model.objectTransform
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .xAxis, ray: start))
+        model.updateRotationGizmoDrag(ray: Ray(origin: SIMD3<Float>(5, 1, 0), direction: SIMD3<Float>(-1, 0, 0)))
+        model.cancelRotationGizmoDrag(); XCTAssertEqual(model.objectTransform, committed)
+        XCTAssertNotEqual(model.objectTransform.rotation, original.rotation)
+    }
+
+    @MainActor
+    func testRotationGizmoModeExclusionSculptCancellationAndPanelSync() {
+        let model = WorkspaceModel()
+        let revision = model.mesh.runtime.revision, topology = model.mesh.runtime.topologyID
+        let translationRay = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))
+        let rotationRay = Ray(origin: SIMD3<Float>(5, 0, 0.82), direction: SIMD3<Float>(-1, 0, 0))
+        XCTAssertNotNil(model.translationGizmoHit(ray: translationRay, scale: 1))
+        XCTAssertNil(model.rotationGizmoHit(ray: rotationRay, scale: 1))
+        model.setGizmoMode(.rotate)
+        XCTAssertEqual(model.mesh.runtime.revision, revision); XCTAssertEqual(model.mesh.runtime.topologyID, topology)
+        XCTAssertNil(model.translationGizmoHit(ray: translationRay, scale: 1))
+        XCTAssertNotNil(model.rotationGizmoHit(ray: rotationRay, scale: 1))
+        model.beginStroke(); XCTAssertTrue(model.isStrokeActive)
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .xAxis, ray: rotationRay))
+        XCTAssertFalse(model.isStrokeActive); XCTAssertTrue(model.isGizmoDragging)
+        model.setGizmoMode(.translate)
+        XCTAssertFalse(model.isGizmoDragging); XCTAssertTrue(model.objectTransform.isIdentity)
+        model.updateRotationDegrees(SIMD3<Float>(15, 25, 35))
+        XCTAssertTrue(model.objectTransform.rotationDegrees.allFinite)
+    }
+
+    @MainActor
+    func testRotationGizmoResetLoadAndBenchmarkClearInteraction() async throws {
+        let model = WorkspaceModel(); model.setGizmoMode(.rotate)
+        let start = Ray(origin: SIMD3<Float>(5, 0, 1), direction: SIMD3<Float>(-1, 0, 0))
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .xAxis, ray: start))
+        model.resetTransform(); XCTAssertFalse(model.rotationGizmoState.isDragging); XCTAssertTrue(model.objectTransform.isIdentity)
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .xAxis, ray: start))
+        model.load(data: try model.projectData()); XCTAssertFalse(model.rotationGizmoState.isDragging)
+        model.runAllBenchmarks(); XCTAssertFalse(model.isGizmoDragging)
+        XCTAssertFalse(model.beginRotationGizmoDrag(handle: .xAxis, ray: start))
+        model.cancelBenchmarks()
+        for _ in 0..<1_000 where model.isBenchmarkRunning { await Task.yield() }
+    }
+
     private func assertMatrix(_ lhs: simd_float4x4, equals rhs: simd_float4x4,
                               file: StaticString = #filePath, line: UInt = #line) {
         for column in 0..<4 { for row in 0..<4 {

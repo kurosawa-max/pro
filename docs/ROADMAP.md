@@ -20,6 +20,8 @@ Picking専用CPU BVHとして中央値分割、topology変更時build、vertex r
 
 単一objectのworld-space Translation GizmoとしてX/Y/Z軸、XY/YZ/ZX平面、hover／active表示、安定化fallback付き拘束dragを追加する。meshはlocal座標を維持し、ギズモはTransform translationだけを更新する。rotation／scale gizmo、local軸切替、snap、pivot、Transform Undoは後続作業とする。
 
+world-space Rotation GizmoとしてX/Y/Z ring、Move／Rotate mode、Quaternion左乗算による拘束回転を追加する。平行Rayは安全に無視し、固定overlay bufferを再利用してmesh uploadを発生させない。自由回転、scale gizmo、local軸、snap、pivot、Transform Undoは後続作業とする。
+
 ## Milestone 0 — Repository Foundation
 
 - Xcode workspace作成
