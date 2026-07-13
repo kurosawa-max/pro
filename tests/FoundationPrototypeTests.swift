@@ -594,8 +594,10 @@ final class FoundationPrototypeTests: XCTestCase {
         let parallel = Ray(origin: SIMD3<Float>(0, 1, 0), direction: SIMD3<Float>(1, 0, 0))
         XCTAssertNil(TranslationGizmoGeometry.closestRayAndLine(ray: parallel, lineOrigin: .zero,
                                                                 lineDirection: SIMD3<Float>(1, 0, 0)))
+        let nearParallel = Ray(origin: SIMD3<Float>(0, 1, 1),
+                               direction: simd_normalize(SIMD3<Float>(1, 0, -0.01)))
         let fallback = try XCTUnwrap(TranslationGizmoGeometry.axisConstraintPoint(
-            ray: parallel, origin: .zero, axis: SIMD3<Float>(1, 0, 0), cameraDirection: SIMD3<Float>(0, 0, -1)))
+            ray: nearParallel, origin: .zero, axis: SIMD3<Float>(1, 0, 0), cameraDirection: SIMD3<Float>(0, 0, -1)))
         XCTAssertTrue(fallback.allFinite)
         XCTAssertNotNil(TranslationGizmoGeometry.fallbackPlaneNormal(axis: SIMD3<Float>(1, 0, 0),
                                                                       cameraDirection: SIMD3<Float>(1, 0, 0)))
