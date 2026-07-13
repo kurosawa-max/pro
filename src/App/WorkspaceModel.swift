@@ -227,7 +227,8 @@ final class WorkspaceModel: ObservableObject {
         var transform = session.startTransform
         transform.rotation = update.rotation
         objectTransform = transform.sanitized()
-        session.lastValidAngle = update.angle
+        session.lastRawAngle = update.rawAngle
+        session.accumulatedAngle = update.accumulatedAngle
         rotationGizmoState.dragSession = session
         status = "Rotate Gizmo"
     }

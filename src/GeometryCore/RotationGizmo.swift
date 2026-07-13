@@ -26,7 +26,8 @@ struct RotationDragSession {
     var axis: SIMD3<Float>
     var startIntersection: SIMD3<Float>
     var startVector: SIMD3<Float>
-    var lastValidAngle: Float
+    var lastRawAngle: Float
+    var accumulatedAngle: Float
 }
 
 struct RotationGizmoState {
@@ -66,17 +67,40 @@ enum RotationGizmoGeometry {
         guard let intersection = intersect(ray: ray, planePoint: origin, planeNormal: axis),
               let vector = normalized(intersection.point - origin) else { return nil }
         return RotationDragSession(handle: handle, startTransform: transform, origin: origin, axis: axis,
-                                   startIntersection: intersection.point, startVector: vector, lastValidAngle: 0)
+                                   startIntersection: intersection.point, startVector: vector,
+                                   lastRawAngle: 0, accumulatedAngle: 0)
     }
 
-    static func rotation(session: RotationDragSession, ray: Ray) -> (rotation: SIMD4<Float>, angle: Float)? {
+    static func rotation(session: RotationDragSession, ray: Ray)
+        -> (rotation: SIMD4<Float>, rawAngle: Float, accumulatedAngle: Float)? {
         guard let intersection = intersect(ray: ray, planePoint: session.origin, planeNormal: session.axis),
               let current = normalized(intersection.point - session.origin),
-              let angle = signedAngle(from: session.startVector, to: current, axis: session.axis) else { return nil }
-        let delta = simd_quatf(angle: angle, axis: session.axis)
-        let composed = simd_normalize(delta * session.startTransform.quaternion).vector
+              let rawAngle = signedAngle(from: session.startVector, to: current, axis: session.axis),
+              let unwrapped = unwrap(rawAngle: rawAngle, lastRawAngle: session.lastRawAngle,
+                                     accumulatedAngle: session.accumulatedAngle),
+              let composed = worldRotation(startTransform: session.startTransform, axis: session.axis,
+                                           accumulatedAngle: unwrapped.accumulatedAngle) else { return nil }
+        return (composed, unwrapped.rawAngle, unwrapped.accumulatedAngle)
+    }
+
+    static func unwrap(rawAngle: Float, lastRawAngle: Float, accumulatedAngle: Float)
+        -> (rawAngle: Float, accumulatedAngle: Float)? {
+        guard rawAngle.isFinite, lastRawAngle.isFinite, accumulatedAngle.isFinite else { return nil }
+        var delta = rawAngle - lastRawAngle
+        if delta > .pi { delta -= 2 * .pi }
+        if delta < -.pi { delta += 2 * .pi }
+        let accumulated = accumulatedAngle + delta
+        guard delta.isFinite, accumulated.isFinite else { return nil }
+        return (rawAngle, accumulated)
+    }
+
+    static func worldRotation(startTransform: ObjectTransform, axis: SIMD3<Float>,
+                              accumulatedAngle: Float) -> SIMD4<Float>? {
+        guard accumulatedAngle.isFinite, let normalizedAxis = normalized(axis) else { return nil }
+        let delta = simd_quatf(angle: accumulatedAngle, axis: normalizedAxis)
+        let composed = simd_normalize(delta * startTransform.quaternion).vector
         guard composed.x.isFinite, composed.y.isFinite, composed.z.isFinite, composed.w.isFinite else { return nil }
-        return (composed, angle)
+        return composed
     }
 
     static func signedAngle(from start: SIMD3<Float>, to end: SIMD3<Float>,

@@ -64,7 +64,7 @@ mesh vertexはobject-local座標で保存・編集する。単一objectのTransf
 
 ギズモはmesh後の独立overlay draw callで描画し、固定GPU bufferを再利用する。mesh revisionやvertex／index uploadは発生しない。操作優先順位はactive drag、gizmo handle、Sculpt、Cameraで、cancel時は開始Transformへ戻る。Benchmark中は非表示・操作不可で、ON／OFF状態はprojectへ保存しない。
 
-toolbarでMove／Rotateを切り替えられる。Rotateはworld X/Y/Z固定ringを表示し、Rayとring平面の交点半径でPickingする。複数候補は半径誤差、Ray距離、軸順で決定する。drag開始vectorと現在vectorのcross／dotから`atan2`で符号付き絶対角度を求め、`worldDelta * startRotation`としてQuaternionを左乗算・正規化する。平行Rayや微小／非有限vectorはそのframeを無視する。
+toolbarでMove／Rotateを切り替えられる。Rotateはworld X/Y/Z固定ringを表示し、Rayとring平面の交点半径でPickingする。複数候補は半径誤差、Ray距離、軸順で決定する。drag開始vectorと現在vectorのcross／dotから`atan2`でraw角度を求め、前回raw角との差を±πでunwrapして連続累積角を保持する。Quaternionは毎frame `worldDelta(accumulatedAngle) * startRotation`から再構成して正規化する。平行Rayや微小／非有限vectorはsession角度を変更せず、そのframeを無視する。
 
 Rotation ringも固定GPU bufferと独立overlay draw callを使用し、object rotation／scaleによらずworld-space方向とscreen-space近似サイズを維持する。Transformパネルのdegree値とは双方向同期するが、内部状態はQuaternionである。mode切替、cancel、load、reset、Benchmark開始時はdrag状態を解除し、cancelでは開始Transformを復元する。modeや操作状態はprojectへ保存しない。
 

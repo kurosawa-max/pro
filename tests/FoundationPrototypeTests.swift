@@ -775,10 +775,10 @@ final class FoundationPrototypeTests: XCTestCase {
             }
             let session = try XCTUnwrap(RotationGizmoGeometry.beginSession(
                 handle: handle, ray: startRay, transform: .identity))
-            XCTAssertEqual(try XCTUnwrap(RotationGizmoGeometry.rotation(session: session, ray: startRay)).angle,
+            XCTAssertEqual(try XCTUnwrap(RotationGizmoGeometry.rotation(session: session, ray: startRay)).accumulatedAngle,
                            0, accuracy: 0.000_01)
             let update = try XCTUnwrap(RotationGizmoGeometry.rotation(session: session, ray: currentRay))
-            XCTAssertEqual(abs(update.angle), .pi / 2, accuracy: 0.000_1)
+            XCTAssertEqual(abs(update.accumulatedAngle), .pi / 2, accuracy: 0.000_1)
             XCTAssertEqual(simd_length(update.rotation), 1, accuracy: 0.000_1)
         }
 
@@ -793,6 +793,78 @@ final class FoundationPrototypeTests: XCTestCase {
         XCTAssertLessThan(min(simd_distance(update.rotation, expected.vector), simd_distance(update.rotation, -expected.vector)), 0.000_1)
         var transformed = start; transformed.rotation = update.rotation
         XCTAssertEqual(transformed.translation, start.translation); XCTAssertEqual(transformed.scale, start.scale)
+    }
+
+    func testRotationAngleUnwrapCrossesPositiveAndNegativePiContinuously() throws {
+        let positive179 = Float(179) * .pi / 180, negative179 = -positive179
+        let beforePositiveCross = try XCTUnwrap(RotationGizmoGeometry.unwrap(
+            rawAngle: positive179, lastRawAngle: 0, accumulatedAngle: 0))
+        let afterPositiveCross = try XCTUnwrap(RotationGizmoGeometry.unwrap(
+            rawAngle: negative179, lastRawAngle: beforePositiveCross.rawAngle,
+            accumulatedAngle: beforePositiveCross.accumulatedAngle))
+        XCTAssertEqual(afterPositiveCross.accumulatedAngle - beforePositiveCross.accumulatedAngle,
+                       2 * .pi / 180, accuracy: 0.000_01)
+        XCTAssertEqual(afterPositiveCross.accumulatedAngle, Float(181) * .pi / 180, accuracy: 0.000_01)
+
+        let beforeNegativeCross = try XCTUnwrap(RotationGizmoGeometry.unwrap(
+            rawAngle: negative179, lastRawAngle: 0, accumulatedAngle: 0))
+        let afterNegativeCross = try XCTUnwrap(RotationGizmoGeometry.unwrap(
+            rawAngle: positive179, lastRawAngle: beforeNegativeCross.rawAngle,
+            accumulatedAngle: beforeNegativeCross.accumulatedAngle))
+        XCTAssertEqual(afterNegativeCross.accumulatedAngle - beforeNegativeCross.accumulatedAngle,
+                       -2 * .pi / 180, accuracy: 0.000_01)
+        XCTAssertEqual(afterNegativeCross.accumulatedAngle, -Float(181) * .pi / 180, accuracy: 0.000_01)
+    }
+
+    func testRotationAngleUnwrapSupportsFullAndDoubleTurnsWithNormalizedQuaternion() throws {
+        func accumulate(_ degrees: [Float]) throws -> Float {
+            var raw: Float = 0, accumulated: Float = 0
+            for degree in degrees {
+                let update = try XCTUnwrap(RotationGizmoGeometry.unwrap(
+                    rawAngle: degree * .pi / 180, lastRawAngle: raw, accumulatedAngle: accumulated))
+                raw = update.rawAngle; accumulated = update.accumulatedAngle
+            }
+            return accumulated
+        }
+        let oneTurn = try accumulate([90, 179, -90, 0])
+        XCTAssertEqual(oneTurn, 2 * .pi, accuracy: 0.000_1)
+        let twoTurns = try accumulate([90, 179, -90, 0, 90, 179, -90, 0])
+        XCTAssertEqual(twoTurns, 4 * .pi, accuracy: 0.000_1)
+        let transform = ObjectTransform(translation: SIMD3<Float>(1, 2, 3),
+                                        rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(10, 20, 30)),
+                                        scale: SIMD3<Float>(2, 3, 4))
+        let quaternion = try XCTUnwrap(RotationGizmoGeometry.worldRotation(
+            startTransform: transform, axis: SIMD3<Float>(0, 1, 0), accumulatedAngle: twoTurns))
+        XCTAssertTrue(quaternion.x.isFinite && quaternion.y.isFinite && quaternion.z.isFinite && quaternion.w.isFinite)
+        XCTAssertEqual(simd_length(quaternion), 1, accuracy: 0.000_1)
+        XCTAssertEqual(transform.translation, SIMD3<Float>(1, 2, 3)); XCTAssertEqual(transform.scale, SIMD3<Float>(2, 3, 4))
+    }
+
+    @MainActor
+    func testRotationWorkspaceUnwrapSurvivesInvalidRayAndRebuildsFromStart() throws {
+        let model = WorkspaceModel(); model.setGizmoMode(.rotate)
+        let start = Ray(origin: SIMD3<Float>(5, 0, 1), direction: SIMD3<Float>(-1, 0, 0))
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .xAxis, ray: start))
+        func ray(degrees: Float) -> Ray {
+            let angle = degrees * .pi / 180
+            return Ray(origin: SIMD3<Float>(5, -sin(angle), cos(angle)), direction: SIMD3<Float>(-1, 0, 0))
+        }
+        model.updateRotationGizmoDrag(ray: ray(degrees: 179))
+        let beforeInvalid = try XCTUnwrap(model.rotationGizmoState.dragSession)
+        model.updateRotationGizmoDrag(ray: Ray(origin: SIMD3<Float>(0, 1, 0), direction: SIMD3<Float>(0, 1, 0)))
+        let afterInvalid = try XCTUnwrap(model.rotationGizmoState.dragSession)
+        XCTAssertEqual(afterInvalid.lastRawAngle, beforeInvalid.lastRawAngle)
+        XCTAssertEqual(afterInvalid.accumulatedAngle, beforeInvalid.accumulatedAngle)
+        model.updateRotationGizmoDrag(ray: ray(degrees: -179))
+        let crossed = try XCTUnwrap(model.rotationGizmoState.dragSession)
+        XCTAssertEqual(crossed.accumulatedAngle, Float(181) * .pi / 180, accuracy: 0.000_1)
+        let expected = try XCTUnwrap(RotationGizmoGeometry.worldRotation(
+            startTransform: crossed.startTransform, axis: crossed.axis,
+            accumulatedAngle: crossed.accumulatedAngle))
+        XCTAssertLessThan(min(simd_distance(model.objectTransform.rotation, expected),
+                              simd_distance(model.objectTransform.rotation, -expected)), 0.000_1)
+        XCTAssertEqual(model.objectTransform.translation, crossed.startTransform.translation)
+        XCTAssertEqual(model.objectTransform.scale, crossed.startTransform.scale)
     }
 
     @MainActor
