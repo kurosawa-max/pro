@@ -49,6 +49,18 @@ struct ObjectTransform: Codable, Equatable {
             min(simd_length(value.rotation - SIMD4<Float>(0, 0, 0, 1)), simd_length(value.rotation + SIMD4<Float>(0, 0, 0, 1))) <= epsilon
     }
 
+    func isApproximatelyEqual(to other: ObjectTransform, epsilon: Float = 0.000_001) -> Bool {
+        guard isFinite, other.isFinite, epsilon.isFinite, epsilon >= 0 else { return false }
+        let lhs = sanitized(), rhs = other.sanitized()
+        let translationDelta = lhs.translation - rhs.translation
+        let scaleDelta = lhs.scale - rhs.scale
+        let rotationDot = min(max(abs(simd_dot(lhs.rotation, rhs.rotation)), 0), 1)
+        return abs(translationDelta.x) <= epsilon && abs(translationDelta.y) <= epsilon
+            && abs(translationDelta.z) <= epsilon
+            && abs(scaleDelta.x) <= epsilon && abs(scaleDelta.y) <= epsilon && abs(scaleDelta.z) <= epsilon
+            && 1 - rotationDot <= epsilon
+    }
+
     func sanitized() -> ObjectTransform {
         var value = self
         if !value.translation.allFinite { value.translation = .zero }

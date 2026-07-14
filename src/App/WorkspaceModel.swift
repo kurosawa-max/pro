@@ -22,6 +22,8 @@ final class WorkspaceModel: ObservableObject {
     @Published var brushSettings = BrushSettings()
     @Published var hoverLocation: CGPoint?
     @Published var status = "Ready"
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
     #if DEBUG
     @Published private(set) var benchmarkPreset: BenchmarkPreset?
     @Published private(set) var isBenchmarkRunning = false
@@ -31,10 +33,11 @@ final class WorkspaceModel: ObservableObject {
     private var benchmarkRunner: BenchmarkRunner?
     #endif
 
-    private var history = StrokeHistory()
+    private var history = WorkspaceHistory()
     private let pickingCache = MeshBVHCache()
     private var strokeBefore: [Int: SIMD3<Float>]?
     private var lastHit: SIMD3<Float>?
+    private var panelTransformBefore: ObjectTransform?
 
     init() {
         profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
@@ -42,6 +45,10 @@ final class WorkspaceModel: ObservableObject {
 
     func beginStroke() {
         guard !isGizmoDragging else { return }
+        #if DEBUG
+        guard !isBenchmarkRunning else { return }
+        #endif
+        commitTransformPanelTransaction()
         if strokeBefore != nil { cancelStroke() }
         strokeBefore = [:]
         lastHit = nil
@@ -69,7 +76,7 @@ final class WorkspaceModel: ObservableObject {
             guard mesh.vertices.indices.contains(index), before[index] != mesh.vertices[index].position else { return nil }
             return VertexChange(index: index, before: before[index]!, after: mesh.vertices[index].position)
         }
-        history.record(StrokeCommand(changes: changes))
+        record(.sculpt(StrokeCommand(changes: changes)))
         strokeBefore = nil; lastHit = nil
     }
 
@@ -79,8 +86,29 @@ final class WorkspaceModel: ObservableObject {
         lastHit = nil
     }
 
-    func undo() { history.undo(mesh: &mesh, profiler: profiler) }
-    func redo() { history.redo(mesh: &mesh, profiler: profiler) }
+    func undo() {
+        #if DEBUG
+        guard !isBenchmarkRunning else { return }
+        #endif
+        cancelStroke()
+        cancelAllGizmoDrags()
+        commitTransformPanelTransaction()
+        guard let command = history.undoCommand() else { return }
+        apply(command, useAfter: false)
+        syncHistoryAvailability()
+    }
+
+    func redo() {
+        #if DEBUG
+        guard !isBenchmarkRunning else { return }
+        #endif
+        cancelStroke()
+        cancelAllGizmoDrags()
+        commitTransformPanelTransaction()
+        guard let command = history.redoCommand() else { return }
+        apply(command, useAfter: true)
+        syncHistoryAvailability()
+    }
 
     func projectData() throws -> Data {
         try ProjectCodec.encode(ForgeProject(mesh: mesh, camera: camera, transform: objectTransform,
@@ -92,8 +120,9 @@ final class WorkspaceModel: ObservableObject {
         cancelAllGizmoDrags()
         do {
             let project = try ProjectCodec.decode(data)
+            discardTransformPanelTransaction()
             mesh = project.mesh; camera = project.camera; objectTransform = project.transform.sanitized()
-            history = StrokeHistory(); status = "Project loaded"
+            history.removeAll(); syncHistoryAvailability(); status = "Project loaded"
             #if DEBUG
             benchmarkPreset = nil
             #endif
@@ -106,6 +135,7 @@ final class WorkspaceModel: ObservableObject {
     var isStrokeActive: Bool { strokeBefore != nil }
     var undoCount: Int { history.undoStack.count }
     var redoCount: Int { history.redoStack.count }
+    var isTransformPanelEditing: Bool { panelTransformBefore != nil }
 
     func updateTransform(_ value: ObjectTransform) {
         #if DEBUG
@@ -113,7 +143,9 @@ final class WorkspaceModel: ObservableObject {
         #endif
         cancelStroke()
         cancelAllGizmoDrags()
+        let before = objectTransform
         objectTransform = value.sanitized()
+        if panelTransformBefore == nil { recordTransform(before: before, after: objectTransform) }
         status = "Transform updated"
     }
 
@@ -129,7 +161,38 @@ final class WorkspaceModel: ObservableObject {
         var transform = objectTransform; transform.scale = value; updateTransform(transform)
     }
 
-    func resetTransform() { updateTransform(.identity) }
+    func resetTransform() {
+        #if DEBUG
+        guard !isBenchmarkRunning else { return }
+        #endif
+        commitTransformPanelTransaction()
+        cancelStroke()
+        cancelAllGizmoDrags()
+        let before = objectTransform
+        objectTransform = .identity
+        recordTransform(before: before, after: objectTransform)
+        status = "Transform reset"
+    }
+
+    func beginTransformPanelTransaction() {
+        #if DEBUG
+        guard !isBenchmarkRunning else { return }
+        #endif
+        guard panelTransformBefore == nil else { return }
+        cancelStroke()
+        cancelAllGizmoDrags()
+        panelTransformBefore = objectTransform
+    }
+
+    func commitTransformPanelTransaction() {
+        guard let before = panelTransformBefore else { return }
+        panelTransformBefore = nil
+        recordTransform(before: before, after: objectTransform)
+    }
+
+    func discardTransformPanelTransaction() {
+        panelTransformBefore = nil
+    }
 
     func translationGizmoHit(ray: Ray, scale: Float) -> TranslationGizmoHit? {
         guard showsTranslationGizmo, gizmoMode == .translate else { return nil }
@@ -146,6 +209,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { return false }
         #endif
+        commitTransformPanelTransaction()
         cancelStroke()
         cancelTranslationGizmoDrag()
         guard let session = TranslationGizmoGeometry.beginSession(handle: handle, ray: ray,
@@ -167,8 +231,10 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func endTranslationGizmoDrag() {
+        let startTransform = translationGizmoState.dragSession?.startTransform
         translationGizmoState.dragSession = nil
         translationGizmoState.activeHandle = nil
+        if let startTransform { recordTransform(before: startTransform, after: objectTransform) }
     }
 
     func cancelTranslationGizmoDrag() {
@@ -219,6 +285,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { return false }
         #endif
+        commitTransformPanelTransaction()
         cancelStroke()
         cancelAllGizmoDrags()
         guard let session = RotationGizmoGeometry.beginSession(handle: handle, ray: ray,
@@ -241,8 +308,10 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func endRotationGizmoDrag() {
+        let startTransform = rotationGizmoState.dragSession?.startTransform
         rotationGizmoState.dragSession = nil
         rotationGizmoState.activeHandle = nil
+        if let startTransform { recordTransform(before: startTransform, after: objectTransform) }
     }
 
     func cancelRotationGizmoDrag() {
@@ -271,6 +340,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { return false }
         #endif
+        commitTransformPanelTransaction()
         cancelStroke()
         cancelAllGizmoDrags()
         guard let session = ScaleGizmoGeometry.beginSession(
@@ -294,8 +364,10 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func endScaleGizmoDrag() {
+        let startTransform = scaleGizmoState.dragSession?.startTransform
         scaleGizmoState.dragSession = nil
         scaleGizmoState.activeHandle = nil
+        if let startTransform { recordTransform(before: startTransform, after: objectTransform) }
     }
 
     func cancelScaleGizmoDrag() {
@@ -315,11 +387,45 @@ final class WorkspaceModel: ObservableObject {
         cancelScaleGizmoDrag()
     }
 
+    private func record(_ command: WorkspaceCommand) {
+        history.record(command)
+        syncHistoryAvailability()
+    }
+
+    private func recordTransform(before: ObjectTransform, after: ObjectTransform) {
+        guard let command = TransformCommand(before: before, after: after) else { return }
+        record(.transform(command))
+    }
+
+    private func apply(_ command: WorkspaceCommand, useAfter: Bool) {
+        switch command {
+        case .sculpt(let stroke):
+            let positions = Dictionary(uniqueKeysWithValues: stroke.changes.map {
+                ($0.index, useAfter ? $0.after : $0.before)
+            })
+            _ = mesh.updatePositions(positions, profiler: profiler)
+        case .transform(let transform):
+            objectTransform = (useAfter ? transform.after : transform.before).sanitized()
+        }
+    }
+
+    private func syncHistoryAvailability() {
+        #if DEBUG
+        let isEnabled = !isBenchmarkRunning
+        #else
+        let isEnabled = true
+        #endif
+        canUndo = isEnabled && history.canUndo
+        canRedo = isEnabled && history.canRedo
+    }
+
     #if DEBUG
     func loadBenchmarkPreset(_ preset: BenchmarkPreset) {
         cancelAllGizmoDrags()
         cancelStroke()
-        history = StrokeHistory()
+        discardTransformPanelTransaction()
+        history.removeAll()
+        syncHistoryAvailability()
         mesh = preset.makeMesh()
         objectTransform = .identity
         benchmarkPreset = preset
@@ -335,6 +441,7 @@ final class WorkspaceModel: ObservableObject {
 
     func runAllBenchmarks() {
         guard !isBenchmarkRunning, let profiler else { return }
+        commitTransformPanelTransaction()
         cancelStroke()
         cancelAllGizmoDrags()
         let originalMesh = mesh, originalCamera = camera, originalBrush = brush
@@ -343,6 +450,7 @@ final class WorkspaceModel: ObservableObject {
         let runner = BenchmarkRunner(); benchmarkRunner = runner
         objectTransform = .identity
         isBenchmarkRunning = true; benchmarkProgress = 0; lastBenchmarkReport = nil
+        syncHistoryAvailability()
         benchmarkTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
@@ -351,6 +459,7 @@ final class WorkspaceModel: ObservableObject {
                 self.objectTransform = originalTransform
                 self.profiler?.reset(vertexCount: originalMesh.vertices.count, triangleCount: originalMesh.indices.count / 3)
                 self.isBenchmarkRunning = false; self.benchmarkRunner = nil; self.benchmarkTask = nil
+                self.syncHistoryAvailability()
             }
             let report = await runner.run(profiler: profiler, progress: { completed, total in
                 self.benchmarkProgress = Double(completed) / Double(max(total, 1))

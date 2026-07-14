@@ -11,7 +11,7 @@
 - 画面レイと全三角形の CPU 交差判定でメッシュ表面をピッキングする。
 - Pencil の座標、正規化筆圧、altitude、azimuth、timestamp を `PencilSample` に変換する。
 - Draw、Smooth、Grab を固定トポロジーの頂点変形として実行する。
-- touchesBegan から touchesEnded までの変更頂点のみを1個の Undo コマンドに保存する。
+- touchesBegan から touchesEnded までの変更頂点を1個のSculpt Undoコマンドに保存し、Transform操作と同じ時系列でUndo／Redoする。
 - Pencilキャンセル時は進行中ストロークを破棄し、カメラジェスチャーは指入力だけを受け付ける。
 - `.forge3d` プロジェクトを保存・再読込し、Binary STL を出力する。
 - コアロジックを XCTest から検証する。
@@ -72,7 +72,9 @@ Scaleはworld X/Y/Z固定の軸線＋先端cubeと中央uniform cubeを表示す
 
 scaleはTransform panel入力では絶対値を、Gizmo dragでは負factorを最小値へ止めたうえで`0.001...1000`へ有限な正値としてclampし、negative scaleを許可しない。Scaleも固定GPU bufferと独立overlay draw callを使い、mesh bufferを再uploadしない。中央uniformを軸より優先してpickし、Scale mode以外ではScale handleをpickしない。active drag中はSculptとCameraを抑止し、Benchmark中は全Gizmoを無効化する。
 
-現段階ではTransformのUndo/Redo、平面scale、negative scale、scale snapping、自由／screen-plane回転、local／world軸切替、複数object、pivot、STLへのTransform bakeを実装しない。STLは従来どおりlocal meshを出力する。
+Sculpt strokeとTransformは単一のWorkspace historyへ操作順に記録する。Move／Rotate／Scaleのdragはend時に1コマンド、Transform panelはfield focus単位に1コマンド、Reset Transformは単独コマンドとなる。cancelとno-opは記録せず、新規編集はRedoを破棄する。load時は履歴を消去し、自動Benchmark中は履歴を一時退避してUndo／Redoを無効化し、終了時に復元する。履歴はprojectへ保存しない。
+
+現段階では平面scale、negative scale、scale snapping、自由／screen-plane回転、local／world軸切替、複数object、pivot、STLへのTransform bakeを実装しない。STLは従来どおりlocal meshを出力する。
 
 ## 実機検証項目
 

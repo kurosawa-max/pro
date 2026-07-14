@@ -3,6 +3,55 @@ import simd
 struct VertexChange: Equatable { let index: Int; let before: SIMD3<Float>; let after: SIMD3<Float> }
 struct StrokeCommand: Equatable { let changes: [VertexChange] }
 
+struct TransformCommand: Equatable {
+    let before: ObjectTransform
+    let after: ObjectTransform
+
+    init?(before: ObjectTransform, after: ObjectTransform) {
+        guard before.isFinite, after.isFinite else { return nil }
+        let safeBefore = before.sanitized(), safeAfter = after.sanitized()
+        guard !safeBefore.isApproximatelyEqual(to: safeAfter) else { return nil }
+        self.before = safeBefore
+        self.after = safeAfter
+    }
+}
+
+enum WorkspaceCommand: Equatable {
+    case sculpt(StrokeCommand)
+    case transform(TransformCommand)
+}
+
+struct WorkspaceHistory: Equatable {
+    private(set) var undoStack: [WorkspaceCommand] = []
+    private(set) var redoStack: [WorkspaceCommand] = []
+
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+
+    mutating func record(_ command: WorkspaceCommand) {
+        if case .sculpt(let stroke) = command, stroke.changes.isEmpty { return }
+        undoStack.append(command)
+        redoStack.removeAll(keepingCapacity: true)
+    }
+
+    mutating func undoCommand() -> WorkspaceCommand? {
+        guard let command = undoStack.popLast() else { return nil }
+        redoStack.append(command)
+        return command
+    }
+
+    mutating func redoCommand() -> WorkspaceCommand? {
+        guard let command = redoStack.popLast() else { return nil }
+        undoStack.append(command)
+        return command
+    }
+
+    mutating func removeAll() {
+        undoStack.removeAll(keepingCapacity: true)
+        redoStack.removeAll(keepingCapacity: true)
+    }
+}
+
 struct StrokeHistory {
     private(set) var undoStack: [StrokeCommand] = []
     private(set) var redoStack: [StrokeCommand] = []

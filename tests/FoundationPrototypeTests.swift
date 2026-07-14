@@ -381,14 +381,18 @@ final class FoundationPrototypeTests: XCTestCase {
         model.updateTransform(ObjectTransform(translation: SIMD3<Float>(1, 2, 3), scale: SIMD3<Float>(2, 1, 0.5)))
         let originalMesh = model.mesh; let originalCamera = model.camera; let originalSettings = model.brushSettings
         let originalTransform = model.objectTransform
+        let originalUndoCount = model.undoCount, originalRedoCount = model.redoCount
         model.runAllBenchmarks()
+        XCTAssertFalse(model.canUndo); XCTAssertFalse(model.canRedo)
         XCTAssertTrue(model.objectTransform.isIdentity)
         for _ in 0..<10_000 where model.isBenchmarkRunning && model.benchmarkProgress < (5.0 / 21.0) { await Task.yield() }
         model.cancelBenchmarks()
         for _ in 0..<1_000 where model.isBenchmarkRunning { await Task.yield() }
         XCTAssertFalse(model.isBenchmarkRunning); XCTAssertEqual(model.mesh, originalMesh); XCTAssertEqual(model.camera, originalCamera)
         XCTAssertEqual(model.objectTransform, originalTransform)
-        XCTAssertEqual(model.brushSettings.radius, originalSettings.radius); XCTAssertEqual(model.undoCount, 0); XCTAssertEqual(model.redoCount, 0)
+        XCTAssertEqual(model.brushSettings.radius, originalSettings.radius)
+        XCTAssertEqual(model.undoCount, originalUndoCount); XCTAssertEqual(model.redoCount, originalRedoCount)
+        XCTAssertEqual(model.canUndo, originalUndoCount > 0); XCTAssertEqual(model.canRedo, originalRedoCount > 0)
     }
 
     func testAutomatedBenchmarkReleaseBoundary() {
@@ -1183,6 +1187,174 @@ final class FoundationPrototypeTests: XCTestCase {
                                                   referenceLength: 1))
         model.cancelBenchmarks()
         for _ in 0..<1_000 where model.isBenchmarkRunning { await Task.yield() }
+    }
+
+    func testTransformCommandRejectsNoOpAndNonFiniteValues() {
+        XCTAssertNil(TransformCommand(before: .identity, after: .identity))
+        var equivalent = ObjectTransform.identity
+        equivalent.rotation = -equivalent.rotation
+        XCTAssertNil(TransformCommand(before: .identity, after: equivalent))
+        var invalid = ObjectTransform.identity
+        invalid.translation.x = .nan
+        XCTAssertNil(TransformCommand(before: .identity, after: invalid))
+        XCTAssertNotNil(TransformCommand(
+            before: .identity,
+            after: ObjectTransform(translation: SIMD3<Float>(0.01, 0, 0))))
+    }
+
+    @MainActor
+    func testTransformPanelTransactionCoalescesLiveUpdatesAndSupportsUndoRedo() {
+        let model = WorkspaceModel()
+        model.beginTransformPanelTransaction()
+        model.updateTranslation(SIMD3<Float>(1, 0, 0))
+        model.updateTranslation(SIMD3<Float>(2, 3, 4))
+        model.updateRotationDegrees(SIMD3<Float>(10, 20, 30))
+        model.updateScale(SIMD3<Float>(2, 3, 4))
+        XCTAssertEqual(model.undoCount, 0)
+        XCTAssertTrue(model.isTransformPanelEditing)
+        let final = model.objectTransform
+        model.commitTransformPanelTransaction()
+        XCTAssertEqual(model.undoCount, 1)
+        XCTAssertTrue(model.canUndo)
+        model.undo()
+        XCTAssertTrue(model.objectTransform.isIdentity)
+        XCTAssertTrue(model.canRedo)
+        model.redo()
+        XCTAssertEqual(model.objectTransform, final)
+    }
+
+    @MainActor
+    func testTransformPanelFocusTransactionsAndResetAreSeparateCommands() {
+        let model = WorkspaceModel()
+        model.beginTransformPanelTransaction()
+        model.updateTranslation(SIMD3<Float>(1, 2, 3))
+        model.commitTransformPanelTransaction()
+        model.beginTransformPanelTransaction()
+        model.updateScale(SIMD3<Float>(2, 2, 2))
+        model.commitTransformPanelTransaction()
+        XCTAssertEqual(model.undoCount, 2)
+        let transformed = model.objectTransform
+        model.resetTransform()
+        XCTAssertEqual(model.undoCount, 3)
+        model.undo()
+        XCTAssertEqual(model.objectTransform, transformed)
+        model.redo()
+        XCTAssertTrue(model.objectTransform.isIdentity)
+        model.resetTransform()
+        XCTAssertEqual(model.undoCount, 3)
+    }
+
+    @MainActor
+    func testEachGizmoDragRecordsExactlyOneTransformCommandAndCancelRecordsNone() throws {
+        let model = WorkspaceModel()
+        let moveStart = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: moveStart,
+                                                       cameraDirection: SIMD3<Float>(0, 0, -1)))
+        model.updateTranslationGizmoDrag(
+            ray: Ray(origin: SIMD3<Float>(0.8, 0.6, 5), direction: SIMD3<Float>(0, 0, -1)),
+            cameraDirection: SIMD3<Float>(0, 0, -1))
+        model.updateTranslationGizmoDrag(
+            ray: Ray(origin: SIMD3<Float>(1.0, 0.7, 5), direction: SIMD3<Float>(0, 0, -1)),
+            cameraDirection: SIMD3<Float>(0, 0, -1))
+        model.endTranslationGizmoDrag()
+        XCTAssertEqual(model.undoCount, 1)
+
+        model.setGizmoMode(.rotate)
+        let rotateStart = Ray(origin: SIMD3<Float>(5, 0, 1), direction: SIMD3<Float>(-1, 0, 0))
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .xAxis, ray: rotateStart))
+        model.updateRotationGizmoDrag(ray: Ray(origin: SIMD3<Float>(5, -1, 0), direction: SIMD3<Float>(-1, 0, 0)))
+        model.endRotationGizmoDrag()
+        XCTAssertEqual(model.undoCount, 2)
+
+        model.setGizmoMode(.scale)
+        let scaleStart = Ray(origin: model.objectTransform.translation + SIMD3<Float>(0.4, 0, 5),
+                             direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: scaleStart,
+                                                 cameraDirection: SIMD3<Float>(0, 0, -1), referenceLength: 1))
+        model.updateScaleGizmoDrag(
+            ray: Ray(origin: scaleStart.origin + SIMD3<Float>(0.5, 0, 0), direction: scaleStart.direction),
+            cameraDirection: SIMD3<Float>(0, 0, -1))
+        model.endScaleGizmoDrag()
+        XCTAssertEqual(model.undoCount, 3)
+        let committed = model.objectTransform
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: scaleStart,
+                                                 cameraDirection: SIMD3<Float>(0, 0, -1), referenceLength: 1))
+        model.updateScaleGizmoDrag(
+            ray: Ray(origin: scaleStart.origin + SIMD3<Float>(1, 0, 0), direction: scaleStart.direction),
+            cameraDirection: SIMD3<Float>(0, 0, -1))
+        model.cancelScaleGizmoDrag()
+        XCTAssertEqual(model.objectTransform, committed)
+        XCTAssertEqual(model.undoCount, 3)
+    }
+
+    @MainActor
+    func testUnifiedHistoryPreservesSculptAndTransformChronology() {
+        let model = WorkspaceModel()
+        let initialMesh = model.mesh
+        let sample = PencilSample(location: .zero, force: 1, maximumForce: 1,
+                                  altitude: 1, azimuth: 0, timestamp: 0)
+        let ray = Ray(origin: SIMD3<Float>(0, 0, 3), direction: SIMD3<Float>(0, 0, -1))
+        model.beginStroke(); model.updateStroke(sample: sample, ray: ray); model.endStroke()
+        let sculptA = model.mesh
+        model.updateTranslation(SIMD3<Float>(1, 0, 0))
+        let moved = model.objectTransform
+        let transformedRay = Ray(origin: moved.worldPosition(fromLocal: SIMD3<Float>(0, 0, 3)),
+                                 direction: moved.worldDirection(fromLocal: SIMD3<Float>(0, 0, -1)))
+        model.beginStroke(); model.updateStroke(sample: sample, ray: transformedRay); model.endStroke()
+        let sculptB = model.mesh
+        model.updateScale(SIMD3<Float>(2, 2, 2))
+        XCTAssertEqual(model.undoCount, 4)
+
+        model.undo(); XCTAssertEqual(model.objectTransform, moved); XCTAssertEqual(model.mesh, sculptB)
+        model.undo(); XCTAssertEqual(model.mesh, sculptA); XCTAssertEqual(model.objectTransform, moved)
+        model.undo(); XCTAssertTrue(model.objectTransform.isIdentity); XCTAssertEqual(model.mesh, sculptA)
+        model.undo(); XCTAssertEqual(model.mesh, initialMesh)
+        model.redo(); XCTAssertEqual(model.mesh, sculptA)
+        model.redo(); XCTAssertEqual(model.objectTransform, moved)
+        model.redo(); XCTAssertEqual(model.mesh, sculptB)
+        model.redo(); XCTAssertEqual(model.objectTransform.scale, SIMD3<Float>(repeating: 2))
+    }
+
+    @MainActor
+    func testNewMeaningfulEditInvalidatesRedoButNoOpDoesNot() {
+        let model = WorkspaceModel()
+        model.updateTranslation(SIMD3<Float>(1, 0, 0))
+        model.undo()
+        XCTAssertEqual(model.redoCount, 1)
+        model.updateTransform(.identity)
+        XCTAssertEqual(model.redoCount, 1)
+        model.updateTranslation(SIMD3<Float>(2, 0, 0))
+        XCTAssertEqual(model.redoCount, 0)
+        XCTAssertFalse(model.canRedo)
+    }
+
+    @MainActor
+    func testLoadClearsUnifiedHistoryAndTransformPanelTransaction() throws {
+        let model = WorkspaceModel()
+        let data = try model.projectData()
+        model.updateTranslation(SIMD3<Float>(1, 2, 3))
+        model.beginTransformPanelTransaction()
+        model.updateScale(SIMD3<Float>(2, 2, 2))
+        model.load(data: data)
+        XCTAssertTrue(model.objectTransform.isIdentity)
+        XCTAssertEqual(model.undoCount, 0); XCTAssertEqual(model.redoCount, 0)
+        XCTAssertFalse(model.canUndo); XCTAssertFalse(model.canRedo)
+        XCTAssertFalse(model.isTransformPanelEditing)
+    }
+
+    @MainActor
+    func testTransformUndoRedoDoesNotChangeMeshRevisionOrUploadMetrics() {
+        let model = WorkspaceModel()
+        let revision = model.mesh.runtime.revision, topology = model.mesh.runtime.topologyID
+        let uploads = model.profiler?.snapshot()
+        model.updateTransform(ObjectTransform(translation: SIMD3<Float>(1, 2, 3), scale: SIMD3<Float>(2, 3, 4)))
+        model.undo(); model.redo()
+        XCTAssertEqual(model.mesh.runtime.revision, revision)
+        XCTAssertEqual(model.mesh.runtime.topologyID, topology)
+        XCTAssertEqual(model.profiler?.snapshot()[.vertexUpload].sampleCount,
+                       uploads?[.vertexUpload].sampleCount)
+        XCTAssertEqual(model.profiler?.snapshot()[.indexUpload].sampleCount,
+                       uploads?[.indexUpload].sampleCount)
     }
 
     private func assertMatrix(_ lhs: simd_float4x4, equals rhs: simd_float4x4,
