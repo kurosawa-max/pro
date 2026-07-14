@@ -74,8 +74,12 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         }
         guard uploadedRevision != mesh.runtime.revision else { return }
         PerformanceProfiler.measure(profiler, metric: .vertexUpload) {
+            let canPartiallyUpdate = !topologyChanged && vertexBuffer != nil && vertexBuffer!.length >= vertexByteCount
             vertexBuffer = makeOrReuse(buffer: vertexBuffer, requiredLength: vertexByteCount)
-            copy(mesh.vertices, to: vertexBuffer, byteCount: vertexByteCount)
+            if canPartiallyUpdate, let range = mesh.runtime.changedVertexRange, !range.isEmpty,
+               range.lowerBound >= 0, range.upperBound <= mesh.vertices.count {
+                copy(mesh.vertices, range: range, to: vertexBuffer)
+            } else { copy(mesh.vertices, to: vertexBuffer, byteCount: vertexByteCount) }
             uploadedRevision = mesh.runtime.revision
         }
     }
@@ -91,6 +95,16 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         values.withUnsafeBufferPointer { elements in
             guard let source = elements.baseAddress else { return }
             buffer.contents().copyMemory(from: source, byteCount: byteCount)
+        }
+    }
+
+    private func copy<Element>(_ values: [Element], range: Range<Int>, to buffer: MTLBuffer?) {
+        guard let buffer else { return }
+        let stride = MemoryLayout<Element>.stride, byteCount = range.count * stride
+        values.withUnsafeBufferPointer { elements in
+            guard let source = elements.baseAddress else { return }
+            buffer.contents().advanced(by: range.lowerBound * stride)
+                .copyMemory(from: source.advanced(by: range.lowerBound), byteCount: byteCount)
         }
     }
 

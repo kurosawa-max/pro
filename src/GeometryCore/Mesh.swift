@@ -131,9 +131,35 @@ struct EditableMesh: Codable, Equatable {
             mutations.append(VertexMutation(index: index, before: before, after: position))
         }
         guard !mutations.isEmpty else { return [] }
-        recalculateNormals(recordChange: false, profiler: profiler)
-        recordVertexChange(indices: mutations.map(\.index))
+        let affected = recalculateNormals(around: mutations.map(\.index), profiler: profiler)
+        recordVertexChange(indices: affected)
         return mutations
+    }
+
+    @discardableResult
+    mutating func recalculateNormals(around changed: [Int], profiler: PerformanceProfiler? = nil) -> [Int] {
+        var affected = Set(changed.filter(vertices.indices.contains))
+        let neighbors = adjacency()
+        for index in Array(affected) { affected.formUnion(neighbors[index]) }
+        let ordered = affected.sorted()
+        guard !ordered.isEmpty else { return [] }
+        PerformanceProfiler.measure(profiler, metric: .normalRebuild) {
+            for index in ordered { vertices[index].normal = .zero }
+            for triangle in stride(from: 0, to: indices.count, by: 3) {
+                let ids = [Int(indices[triangle]), Int(indices[triangle + 1]), Int(indices[triangle + 2])]
+                guard ids.allSatisfy(vertices.indices.contains), ids.contains(where: affected.contains) else { continue }
+                let normal = simd_cross(vertices[ids[1]].position - vertices[ids[0]].position,
+                                        vertices[ids[2]].position - vertices[ids[0]].position)
+                guard normal.allFinite else { continue }
+                for index in ids where affected.contains(index) { vertices[index].normal += normal }
+            }
+            for index in ordered {
+                let length = simd_length(vertices[index].normal)
+                vertices[index].normal = length.isFinite && length > 0.000_001
+                    ? vertices[index].normal / length : SIMD3<Float>(0, 1, 0)
+            }
+        }
+        return ordered
     }
 
     mutating func recalculateNormals(

@@ -24,6 +24,11 @@ enum BenchmarkCase: String, CaseIterable, Codable {
     case draw = "Draw brush"
     case smooth = "Smooth brush"
     case grab = "Grab brush"
+    case flatten = "Flatten brush"
+    case crease = "Crease brush"
+    case drawSymmetryX = "Draw brush X symmetry"
+    case drawSymmetryXYZ = "Draw brush XYZ symmetry"
+    case creaseSymmetryXYZ = "Crease brush XYZ symmetry"
     case normalRebuild = "Normal rebuild"
     case vertexUpload = "Vertex buffer upload"
     case indexUpload = "Index buffer upload"
@@ -31,7 +36,7 @@ enum BenchmarkCase: String, CaseIterable, Codable {
     var metric: PerformanceMetric {
         switch self {
         case .picking: .picking
-        case .draw, .smooth, .grab: .sculpt
+        case .draw, .smooth, .grab, .flatten, .crease, .drawSymmetryX, .drawSymmetryXYZ, .creaseSymmetryXYZ: .sculpt
         case .normalRebuild: .normalRebuild
         case .vertexUpload: .vertexUpload
         case .indexUpload: .indexUpload
@@ -111,6 +116,7 @@ final class BenchmarkRunner {
             var results: [BenchmarkCaseResult] = []
             for benchmarkCase in BenchmarkCase.allCases {
                 let pickingCache = MeshBVHCache()
+                let spatialIndex = VertexSpatialIndex()
                 if isCancelled || Task.isCancelled { return nil }
                 profiler.reset(benchmarkCase.metric)
                 var mesh = base
@@ -118,6 +124,7 @@ final class BenchmarkRunner {
                     if isCancelled || Task.isCancelled { return nil }
                     if iteration == configuration.warmUpIterations { profiler.reset(benchmarkCase.metric) }
                     guard await execute(benchmarkCase, preset: preset, mesh: &mesh, pickingCache: pickingCache,
+                                        spatialIndex: spatialIndex,
                                         profiler: profiler, installMesh: installMesh) else { return nil }
                     await Task.yield()
                 }
@@ -135,12 +142,18 @@ final class BenchmarkRunner {
     }
 
     private func execute(_ item: BenchmarkCase, preset: BenchmarkPreset, mesh: inout EditableMesh, pickingCache: MeshBVHCache,
+                         spatialIndex: VertexSpatialIndex,
                          profiler: PerformanceProfiler, installMesh: (EditableMesh) -> Void) async -> Bool {
         switch item {
         case .picking: _ = MeshPicker.hit(ray: Self.fixedRay, mesh: mesh, profiler: profiler, cache: pickingCache)
-        case .draw: _ = SculptBrush.apply(kind: .draw, center: Self.center, normal: Self.normal, drag: Self.drag, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler)
-        case .smooth: _ = SculptBrush.apply(kind: .smooth, center: Self.center, normal: Self.normal, drag: Self.drag, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler)
-        case .grab: _ = SculptBrush.apply(kind: .grab, center: Self.center, normal: Self.normal, drag: Self.drag, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler)
+        case .draw: _ = SculptBrush.apply(kind: .draw, center: Self.center, normal: Self.normal, drag: Self.drag, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler, spatialIndex: spatialIndex)
+        case .smooth: _ = SculptBrush.apply(kind: .smooth, center: Self.center, normal: Self.normal, drag: Self.drag, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler, spatialIndex: spatialIndex)
+        case .grab: _ = SculptBrush.apply(kind: .grab, center: Self.center, normal: Self.normal, drag: Self.drag, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler, spatialIndex: spatialIndex)
+        case .flatten: _ = SculptBrush.apply(kind: .flatten, center: Self.center, normal: Self.normal, drag: .zero, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler, flattenPlane: FlattenPlane(origin: Self.center, normal: Self.normal), spatialIndex: spatialIndex)
+        case .crease: _ = SculptBrush.apply(kind: .crease, center: Self.center, normal: Self.normal, drag: .zero, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler, spatialIndex: spatialIndex)
+        case .drawSymmetryX: _ = SculptBrush.apply(kind: .draw, center: Self.center, normal: Self.normal, drag: .zero, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler, symmetry: SculptSymmetry(x: true), spatialIndex: spatialIndex)
+        case .drawSymmetryXYZ: _ = SculptBrush.apply(kind: .draw, center: Self.center, normal: Self.normal, drag: .zero, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler, symmetry: SculptSymmetry(x: true, y: true, z: true), spatialIndex: spatialIndex)
+        case .creaseSymmetryXYZ: _ = SculptBrush.apply(kind: .crease, center: Self.center, normal: Self.normal, drag: .zero, pressure: Self.pressure, settings: Self.settings, mesh: &mesh, profiler: profiler, symmetry: SculptSymmetry(x: true, y: true, z: true), spatialIndex: spatialIndex)
         case .normalRebuild: mesh.recalculateNormals(profiler: profiler)
         case .vertexUpload:
             let before = profiler.sampleCount(for: .vertexUpload)

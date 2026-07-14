@@ -160,3 +160,65 @@ final class MeshBVHCache {
         }
     }
 }
+
+private struct SpatialCell: Hashable {
+    let x: Int, y: Int, z: Int
+}
+
+final class VertexSpatialIndex {
+    private let cellSize: Float
+    private var cells: [SpatialCell: Set<Int>] = [:]
+    private var vertexCells: [SpatialCell] = []
+    private(set) var topologyID: UUID?
+    private(set) var revision: UInt64?
+    private(set) var buildCount = 0
+    private(set) var updateCount = 0
+
+    init(cellSize: Float = 0.25) { self.cellSize = max(cellSize, 0.001) }
+
+    func candidates(center: SIMD3<Float>, radius: Float, mesh: EditableMesh) -> [Int] {
+        guard center.allFinite, radius.isFinite, radius > 0 else { return [] }
+        prepare(for: mesh)
+        let minimum = cell(for: center - SIMD3<Float>(repeating: radius))
+        let maximum = cell(for: center + SIMD3<Float>(repeating: radius))
+        var result = Set<Int>()
+        for x in minimum.x...maximum.x { for y in minimum.y...maximum.y { for z in minimum.z...maximum.z {
+            if let values = cells[SpatialCell(x: x, y: y, z: z)] { result.formUnion(values) }
+        } } }
+        return result.sorted()
+    }
+
+    func didUpdate(_ mutations: [VertexMutation], mesh: EditableMesh) {
+        guard topologyID == mesh.runtime.topologyID, vertexCells.count == mesh.vertices.count else {
+            rebuild(mesh); return
+        }
+        for mutation in mutations {
+            guard vertexCells.indices.contains(mutation.index) else { continue }
+            let oldCell = vertexCells[mutation.index], newCell = cell(for: mutation.after)
+            if oldCell != newCell {
+                cells[oldCell]?.remove(mutation.index)
+                if cells[oldCell]?.isEmpty == true { cells.removeValue(forKey: oldCell) }
+                cells[newCell, default: []].insert(mutation.index)
+                vertexCells[mutation.index] = newCell
+            }
+        }
+        revision = mesh.runtime.revision
+        if !mutations.isEmpty { updateCount += 1 }
+    }
+
+    private func prepare(for mesh: EditableMesh) {
+        if topologyID != mesh.runtime.topologyID || vertexCells.count != mesh.vertices.count { rebuild(mesh) }
+        else if revision != mesh.runtime.revision { rebuild(mesh) }
+    }
+
+    private func rebuild(_ mesh: EditableMesh) {
+        cells.removeAll(keepingCapacity: true)
+        vertexCells = mesh.vertices.map { cell(for: $0.position) }
+        for index in vertexCells.indices { cells[vertexCells[index], default: []].insert(index) }
+        topologyID = mesh.runtime.topologyID; revision = mesh.runtime.revision; buildCount += 1
+    }
+
+    private func cell(for point: SIMD3<Float>) -> SpatialCell {
+        SpatialCell(x: Int(floor(point.x / cellSize)), y: Int(floor(point.y / cellSize)), z: Int(floor(point.z / cellSize)))
+    }
+}
