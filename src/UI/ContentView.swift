@@ -58,7 +58,11 @@ struct ContentView: View {
                     .disabled(model.isBenchmarkRunning)
                     #endif
                     Button("Undo", systemImage: "arrow.uturn.backward") { model.undo() }
+                        .disabled(!model.canUndo || model.isGizmoDragging)
+                        .keyboardShortcut("z", modifiers: .command)
                     Button("Redo", systemImage: "arrow.uturn.forward") { model.redo() }
+                        .disabled(!model.canRedo || model.isGizmoDragging)
+                        .keyboardShortcut("z", modifiers: [.command, .shift])
                     Button("STL", systemImage: "square.and.arrow.up") { exportSTL() }
                 }
             }

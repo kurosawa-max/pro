@@ -2,13 +2,21 @@ import SwiftUI
 import simd
 
 struct TransformPanel: View {
+    private enum Field: Hashable {
+        case position(Int)
+        case rotation(Int)
+        case scale(Int)
+    }
+
     @ObservedObject var model: WorkspaceModel
     @State private var isExpanded = false
     @State private var uniformScale = true
+    @FocusState private var focusedField: Field?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
+                if isExpanded { focusedField = nil }
                 isExpanded.toggle()
             } label: {
                 Label("Transform", systemImage: "move.3d")
@@ -19,10 +27,13 @@ struct TransformPanel: View {
             if isExpanded {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        vectorSection("Position", values: translationBindings, step: 0.1)
-                        vectorSection("Rotation °", values: rotationBindings, step: 5)
+                        vectorSection("Position", values: translationBindings,
+                                      fields: (0..<3).map(Field.position), step: 0.1)
+                        vectorSection("Rotation °", values: rotationBindings,
+                                      fields: (0..<3).map(Field.rotation), step: 5)
                         Toggle("Uniform Scale", isOn: $uniformScale).font(.caption)
-                        vectorSection("Scale", values: scaleBindings, step: 0.1)
+                        vectorSection("Scale", values: scaleBindings,
+                                      fields: (0..<3).map(Field.scale), step: 0.1)
                         Button("Reset Transform", systemImage: "arrow.counterclockwise") { model.resetTransform() }
                             .buttonStyle(.bordered).controlSize(.small)
                     }
@@ -33,17 +44,26 @@ struct TransformPanel: View {
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
             }
         }
+        .onChange(of: focusedField) { _, newValue in
+            model.commitTransformPanelTransaction()
+            if newValue != nil { model.beginTransformPanelTransaction() }
+        }
+        .onDisappear { model.commitTransformPanelTransaction() }
     }
 
-    private func vectorSection(_ title: String, values: [Binding<Float>], step: Float) -> some View {
+    private func vectorSection(_ title: String, values: [Binding<Float>],
+                               fields: [Field], step: Float) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption.bold())
-            ForEach(Array(zip(["X", "Y", "Z"], values)), id: \.0) { item in
+            ForEach(values.indices, id: \.self) { index in
                 HStack {
-                    Text(item.0).frame(width: 14)
-                    TextField(item.0, value: item.1, format: .number.precision(.fractionLength(0...3)))
+                    let label = ["X", "Y", "Z"][index]
+                    Text(label).frame(width: 14)
+                    TextField(label, value: values[index], format: .number.precision(.fractionLength(0...3)))
                         .textFieldStyle(.roundedBorder).keyboardType(.numbersAndPunctuation)
-                    Stepper("", value: item.1, step: step).labelsHidden()
+                        .focused($focusedField, equals: fields[index])
+                        .onSubmit { focusedField = nil }
+                    Stepper("", value: values[index], step: step).labelsHidden()
                 }
             }
         }
