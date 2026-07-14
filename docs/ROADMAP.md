@@ -18,9 +18,11 @@ Picking専用CPU BVHとして中央値分割、topology変更時build、vertex r
 
 単一object Transform foundationとして非破壊translation／Quaternion rotation／scale、Renderer normal matrix、world→local Picking／Sculpt、後方互換保存、通常Transform panelを追加する。3D gizmo、Transform Undo、複数object、pivot、snapは後続作業とする。
 
-単一objectのworld-space Translation GizmoとしてX/Y/Z軸、XY/YZ/ZX平面、hover／active表示、安定化fallback付き拘束dragを追加する。meshはlocal座標を維持し、ギズモはTransform translationだけを更新する。rotation／scale gizmo、local軸切替、snap、pivot、Transform Undoは後続作業とする。
+単一objectのworld-space Translation GizmoとしてX/Y/Z軸、XY/YZ/ZX平面、hover／active表示、安定化fallback付き拘束dragを追加する。meshはlocal座標を維持し、ギズモはTransform translationだけを更新する。local軸切替、snap、pivot、Transform Undoは後続作業とする。
 
-world-space Rotation GizmoとしてX/Y/Z ring、Move／Rotate mode、Quaternion左乗算による拘束回転を追加する。平行Rayは安全に無視し、固定overlay bufferを再利用してmesh uploadを発生させない。自由回転、scale gizmo、local軸、snap、pivot、Transform Undoは後続作業とする。
+world-space Rotation GizmoとしてX/Y/Z ring、Quaternion左乗算による拘束回転を追加する。平行Rayは安全に無視し、固定overlay bufferを再利用してmesh uploadを発生させない。自由回転、local軸、snap、pivot、Transform Undoは後続作業とする。
+
+world-space表示のScale GizmoとしてX/Y/Z軸＋先端cubeと中央uniform cube、Move／Rotate／Scale modeを追加する。軸scaleは開始値の選択成分だけ、uniformは非一様比率を保って全成分へ開始相対倍率を適用する。`0.001...1000`へ正値clampし、固定overlay bufferによりmesh uploadを発生させない。平面scale、negative scale、snapping、local/world切替、Transform Undoは後続範囲とする。
 
 ## Milestone 0 — Repository Foundation
 

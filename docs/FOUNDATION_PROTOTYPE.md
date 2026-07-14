@@ -60,15 +60,19 @@ Debugビルドでは画面右上の`Perf`ボタンから性能HUDを開閉でき
 
 mesh vertexはobject-local座標で保存・編集する。単一objectのTransformは非破壊状態として別保存され、Rendererでworld-spaceへ変換される。非一様scale時のnormalはinverse-transposeで変換する。Pickingはworld Rayをlocalへ戻し、Sculptはlocal座標のmeshを編集する。Transform変更はmesh revisionやGPU mesh bufferを変更しない。
 
-通常toolbarの`Move Gizmo`でworld-space固定の移動ギズモを表示できる。X/Y/Z軸とXY/YZ/ZX平面をPencilまたは指でdragし、Transform panelと同じtranslationを非破壊更新する。軸dragはRay／axis最近接を使い、平行時はcamera方向から作る補助平面へfallbackする。平面dragは対応world planeの交点差を使う。camera距離、FOV、viewport高さから表示scaleを近似するため、画面上の大きさは距離によって極端に変化しない。
+通常toolbarでMove／Rotate／Scaleを切り替え、world-space固定のギズモを表示できる。MoveはX/Y/Z軸とXY/YZ/ZX平面をPencilまたは指でdragし、Transform panelと同じtranslationを非破壊更新する。軸dragはRay／axis最近接を使い、平行時はcamera方向から作る補助平面へfallbackする。平面dragは対応world planeの交点差を使う。camera距離、FOV、viewport高さから表示scaleを近似するため、画面上の大きさは距離によって極端に変化しない。
 
 ギズモはmesh後の独立overlay draw callで描画し、固定GPU bufferを再利用する。mesh revisionやvertex／index uploadは発生しない。操作優先順位はactive drag、gizmo handle、Sculpt、Cameraで、cancel時は開始Transformへ戻る。Benchmark中は非表示・操作不可で、ON／OFF状態はprojectへ保存しない。
 
-toolbarでMove／Rotateを切り替えられる。Rotateはworld X/Y/Z固定ringを表示し、Rayとring平面の交点半径でPickingする。複数候補は半径誤差、Ray距離、軸順で決定する。drag開始vectorと現在vectorのcross／dotから`atan2`でraw角度を求め、前回raw角との差を±πでunwrapして連続累積角を保持する。Quaternionは毎frame `worldDelta(accumulatedAngle) * startRotation`から再構成して正規化する。平行Rayや微小／非有限vectorはsession角度を変更せず、そのframeを無視する。
+Rotateはworld X/Y/Z固定ringを表示し、Rayとring平面の交点半径でPickingする。複数候補は半径誤差、Ray距離、軸順で決定する。drag開始vectorと現在vectorのcross／dotから`atan2`でraw角度を求め、前回raw角との差を±πでunwrapして連続累積角を保持する。Quaternionは毎frame `worldDelta(accumulatedAngle) * startRotation`から再構成して正規化する。平行Rayや微小／非有限vectorはsession角度を変更せず、そのframeを無視する。
 
 Rotation ringも固定GPU bufferと独立overlay draw callを使用し、object rotation／scaleによらずworld-space方向とscreen-space近似サイズを維持する。Transformパネルのdegree値とは双方向同期するが、内部状態はQuaternionである。mode切替、cancel、load、reset、Benchmark開始時はdrag状態を解除し、cancelでは開始Transformを復元する。modeや操作状態はprojectへ保存しない。
 
-現段階ではTransformのUndo/Redo、scale gizmo、自由／screen-plane回転、local／world軸切替、複数object、pivot、snap、STLへのTransform bakeを実装しない。STLは従来どおりlocal meshを出力する。
+Scaleはworld X/Y/Z固定の軸線＋先端cubeと中央uniform cubeを表示する。軸dragは開始時からの拘束距離を`1 + delta / gizmoWorldScale`へ変換して対応する`ObjectTransform.scale`成分だけへ適用する。uniform dragはcamera-facing plane上の固定対角方向へ投影し、開始scale全体へ同じ倍率を掛けるため非一様比率を維持する。表示軸はobject rotationに追従しないが、編集対象は`T × R × S`のscale.x/y/zである。
+
+scaleはTransform panel入力では絶対値を、Gizmo dragでは負factorを最小値へ止めたうえで`0.001...1000`へ有限な正値としてclampし、negative scaleを許可しない。Scaleも固定GPU bufferと独立overlay draw callを使い、mesh bufferを再uploadしない。中央uniformを軸より優先してpickし、Scale mode以外ではScale handleをpickしない。active drag中はSculptとCameraを抑止し、Benchmark中は全Gizmoを無効化する。
+
+現段階ではTransformのUndo/Redo、平面scale、negative scale、scale snapping、自由／screen-plane回転、local／world軸切替、複数object、pivot、STLへのTransform bakeを実装しない。STLは従来どおりlocal meshを出力する。
 
 ## 実機検証項目
 

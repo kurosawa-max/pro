@@ -55,11 +55,16 @@ struct ObjectTransform: Codable, Equatable {
         let rotationLength = simd_length(value.rotation)
         value.rotation = rotationLength.isFinite && rotationLength > 0.000_001
             ? value.rotation / rotationLength : SIMD4<Float>(0, 0, 0, 1)
+        value.scale = Self.sanitizedScale(value.scale)
+        return value
+    }
+
+    static func sanitizedScale(_ scale: SIMD3<Float>) -> SIMD3<Float> {
+        var value = scale
         for axis in 0..<3 {
-            let component = value.scale[axis]
-            if !component.isFinite { value.scale[axis] = 1; continue }
-            let sign: Float = component < 0 ? -1 : 1
-            value.scale[axis] = sign * min(max(abs(component), Self.minimumScaleMagnitude), Self.maximumScaleMagnitude)
+            let component = value[axis]
+            if !component.isFinite { value[axis] = 1; continue }
+            value[axis] = min(max(abs(component), minimumScaleMagnitude), maximumScaleMagnitude)
         }
         return value
     }

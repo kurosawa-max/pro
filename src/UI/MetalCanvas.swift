@@ -12,6 +12,7 @@ struct MetalCanvas: UIViewRepresentable {
         renderer.objectTransform = model.objectTransform
         renderer.gizmoState = model.translationGizmoState
         renderer.rotationGizmoState = model.rotationGizmoState
+        renderer.scaleGizmoState = model.scaleGizmoState
         renderer.gizmoMode = model.gizmoMode
         renderer.showsTranslationGizmo = model.showsTranslationGizmo
         view.delegate = renderer; view.preferredFramesPerSecond = 60; view.isPaused = false
@@ -31,6 +32,7 @@ struct MetalCanvas: UIViewRepresentable {
         context.coordinator.renderer?.objectTransform = model.objectTransform
         context.coordinator.renderer?.gizmoState = model.translationGizmoState
         context.coordinator.renderer?.rotationGizmoState = model.rotationGizmoState
+        context.coordinator.renderer?.scaleGizmoState = model.scaleGizmoState
         context.coordinator.renderer?.gizmoMode = model.gizmoMode
         #if DEBUG
         context.coordinator.renderer?.showsTranslationGizmo = model.showsTranslationGizmo && !model.isBenchmarkRunning
@@ -76,8 +78,12 @@ struct MetalCanvas: UIViewRepresentable {
                 return
             }
             updateGizmoHover(ray: ray, scale: renderer.gizmoWorldScale)
-            let hasHover = model.gizmoMode == .translate
-                ? model.translationGizmoState.hoverHandle != nil : model.rotationGizmoState.hoverHandle != nil
+            let hasHover: Bool
+            switch model.gizmoMode {
+            case .translate: hasHover = model.translationGizmoState.hoverHandle != nil
+            case .rotate: hasHover = model.rotationGizmoState.hoverHandle != nil
+            case .scale: hasHover = model.scaleGizmoState.hoverHandle != nil
+            }
             model.hoverLocation = hasHover ? nil : point
         }
 
@@ -90,24 +96,35 @@ struct MetalCanvas: UIViewRepresentable {
             case .rotate:
                 guard let hit = model.rotationGizmoHit(ray: ray, scale: renderer.gizmoWorldScale) else { return false }
                 return model.beginRotationGizmoDrag(handle: hit.handle, ray: ray)
+            case .scale:
+                guard let hit = model.scaleGizmoHit(ray: ray, scale: renderer.gizmoWorldScale) else { return false }
+                return model.beginScaleGizmoDrag(handle: hit.handle, ray: ray,
+                                                 cameraDirection: renderer.cameraViewDirection,
+                                                 referenceLength: renderer.gizmoWorldScale)
             }
         }
 
         private func updateGizmoDrag(ray: Ray, renderer: MetalRenderer) {
             if model.translationGizmoState.isDragging {
                 model.updateTranslationGizmoDrag(ray: ray, cameraDirection: renderer.cameraViewDirection)
-            } else if model.rotationGizmoState.isDragging { model.updateRotationGizmoDrag(ray: ray) }
+            } else if model.rotationGizmoState.isDragging {
+                model.updateRotationGizmoDrag(ray: ray)
+            } else if model.scaleGizmoState.isDragging {
+                model.updateScaleGizmoDrag(ray: ray, cameraDirection: renderer.cameraViewDirection)
+            }
         }
 
         private func endGizmoDrag() {
             if model.translationGizmoState.isDragging { model.endTranslationGizmoDrag() }
             else if model.rotationGizmoState.isDragging { model.endRotationGizmoDrag() }
+            else if model.scaleGizmoState.isDragging { model.endScaleGizmoDrag() }
         }
 
         private func updateGizmoHover(ray: Ray?, scale: Float) {
             switch model.gizmoMode {
             case .translate: model.updateTranslationGizmoHover(ray: ray, scale: scale)
             case .rotate: model.updateRotationGizmoHover(ray: ray, scale: scale)
+            case .scale: model.updateScaleGizmoHover(ray: ray, scale: scale)
             }
         }
 
@@ -134,12 +151,18 @@ struct MetalCanvas: UIViewRepresentable {
                 orbitStart = model.camera
             }
             if model.isGizmoDragging {
-                guard let view = gesture.view, let renderer,
-                      let ray = renderer.ray(at: gesture.location(in: view), viewSize: view.bounds.size) else { return }
                 switch gesture.state {
-                case .ended: updateGizmoDrag(ray: ray, renderer: renderer); endGizmoDrag()
                 case .cancelled, .failed: model.cancelAllGizmoDrags()
-                default: updateGizmoDrag(ray: ray, renderer: renderer)
+                case .ended:
+                    if let view = gesture.view, let renderer,
+                       let ray = renderer.ray(at: gesture.location(in: view), viewSize: view.bounds.size) {
+                        updateGizmoDrag(ray: ray, renderer: renderer)
+                    }
+                    endGizmoDrag()
+                default:
+                    guard let view = gesture.view, let renderer,
+                          let ray = renderer.ray(at: gesture.location(in: view), viewSize: view.bounds.size) else { return }
+                    updateGizmoDrag(ray: ray, renderer: renderer)
                 }
                 return
             }
@@ -148,10 +171,12 @@ struct MetalCanvas: UIViewRepresentable {
             model.camera.pitch = min(max(orbitStart.pitch + Float(p.y) * 0.008, -1.5), 1.5)
         }
         @objc private func zoom(_ gesture: UIPinchGestureRecognizer) {
+            guard !model.isGizmoDragging else { return }
             if gesture.state == .began { zoomStart = model.camera.distance }
             model.camera.distance = min(max(zoomStart / Float(gesture.scale), 1.2), 20)
         }
         @objc private func pan(_ gesture: UIPanGestureRecognizer) {
+            guard !model.isGizmoDragging else { return }
             if gesture.state == .began { panStart = model.camera }
             let p = gesture.translation(in: gesture.view)
             let scale = model.camera.distance * 0.0015

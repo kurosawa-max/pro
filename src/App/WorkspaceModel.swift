@@ -17,6 +17,7 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var gizmoMode = GizmoMode.translate
     @Published private(set) var translationGizmoState = TranslationGizmoState()
     @Published private(set) var rotationGizmoState = RotationGizmoState()
+    @Published private(set) var scaleGizmoState = ScaleGizmoState()
     @Published var brush = BrushKind.draw
     @Published var brushSettings = BrushSettings()
     @Published var hoverLocation: CGPoint?
@@ -88,8 +89,7 @@ final class WorkspaceModel: ObservableObject {
 
     func load(data: Data) {
         cancelStroke()
-        cancelTranslationGizmoDrag()
-        cancelRotationGizmoDrag()
+        cancelAllGizmoDrags()
         do {
             let project = try ProjectCodec.decode(data)
             mesh = project.mesh; camera = project.camera; objectTransform = project.transform.sanitized()
@@ -112,8 +112,7 @@ final class WorkspaceModel: ObservableObject {
         guard !isBenchmarkRunning else { return }
         #endif
         cancelStroke()
-        cancelTranslationGizmoDrag()
-        cancelRotationGizmoDrag()
+        cancelAllGizmoDrags()
         objectTransform = value.sanitized()
         status = "Transform updated"
     }
@@ -184,17 +183,25 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func setTranslationGizmoVisible(_ visible: Bool) {
-        if !visible { cancelAllGizmoDrags(); translationGizmoState.hoverHandle = nil; rotationGizmoState.hoverHandle = nil }
+        if !visible {
+            cancelAllGizmoDrags()
+            translationGizmoState.hoverHandle = nil
+            rotationGizmoState.hoverHandle = nil
+            scaleGizmoState.hoverHandle = nil
+        }
         showsTranslationGizmo = visible
     }
 
-    var isGizmoDragging: Bool { translationGizmoState.isDragging || rotationGizmoState.isDragging }
+    var isGizmoDragging: Bool {
+        translationGizmoState.isDragging || rotationGizmoState.isDragging || scaleGizmoState.isDragging
+    }
 
     func setGizmoMode(_ mode: GizmoMode) {
         guard mode != gizmoMode else { return }
         cancelAllGizmoDrags()
         translationGizmoState.hoverHandle = nil
         rotationGizmoState.hoverHandle = nil
+        scaleGizmoState.hoverHandle = nil
         gizmoMode = mode
     }
 
@@ -249,9 +256,63 @@ final class WorkspaceModel: ObservableObject {
         rotationGizmoState.hoverHandle = ray.flatMap { rotationGizmoHit(ray: $0, scale: scale)?.handle }
     }
 
+    func scaleGizmoHit(ray: Ray, scale: Float) -> ScaleGizmoHit? {
+        guard showsTranslationGizmo, gizmoMode == .scale else { return nil }
+        #if DEBUG
+        guard !isBenchmarkRunning else { return nil }
+        #endif
+        return ScaleGizmoGeometry.hit(ray: ray, origin: objectTransform.translation, scale: scale)
+    }
+
+    @discardableResult
+    func beginScaleGizmoDrag(handle: ScaleGizmoHandle, ray: Ray,
+                             cameraDirection: SIMD3<Float>, referenceLength: Float) -> Bool {
+        guard showsTranslationGizmo, gizmoMode == .scale, !isGizmoDragging else { return false }
+        #if DEBUG
+        guard !isBenchmarkRunning else { return false }
+        #endif
+        cancelStroke()
+        cancelAllGizmoDrags()
+        guard let session = ScaleGizmoGeometry.beginSession(
+            handle: handle, ray: ray, transform: objectTransform,
+            cameraDirection: cameraDirection, referenceLength: referenceLength) else { return false }
+        scaleGizmoState.activeHandle = handle
+        scaleGizmoState.dragSession = session
+        return true
+    }
+
+    func updateScaleGizmoDrag(ray: Ray, cameraDirection: SIMD3<Float>) {
+        guard var session = scaleGizmoState.dragSession,
+              let scale = ScaleGizmoGeometry.scale(session: session, ray: ray,
+                                                   cameraDirection: cameraDirection) else { return }
+        var transform = session.startTransform
+        transform.scale = scale
+        objectTransform = transform.sanitized()
+        session.lastValidScale = objectTransform.scale
+        scaleGizmoState.dragSession = session
+        status = "Scale Gizmo"
+    }
+
+    func endScaleGizmoDrag() {
+        scaleGizmoState.dragSession = nil
+        scaleGizmoState.activeHandle = nil
+    }
+
+    func cancelScaleGizmoDrag() {
+        if let session = scaleGizmoState.dragSession { objectTransform = session.startTransform }
+        scaleGizmoState.dragSession = nil
+        scaleGizmoState.activeHandle = nil
+    }
+
+    func updateScaleGizmoHover(ray: Ray?, scale: Float) {
+        guard !scaleGizmoState.isDragging else { return }
+        scaleGizmoState.hoverHandle = ray.flatMap { scaleGizmoHit(ray: $0, scale: scale)?.handle }
+    }
+
     func cancelAllGizmoDrags() {
         cancelTranslationGizmoDrag()
         cancelRotationGizmoDrag()
+        cancelScaleGizmoDrag()
     }
 
     #if DEBUG

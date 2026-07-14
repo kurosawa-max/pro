@@ -32,8 +32,10 @@ vertex GizmoVertexOut gizmoVertex(uint id [[vertex_id]], constant GizmoVertex *v
     GizmoVertexOut out;
     GizmoVertex value = vertices[id];
     out.position = uniforms.viewProjection * float4(uniforms.origin + value.position * uniforms.scale, 1.0);
-    bool highlighted = value.handle == uniforms.activeHandle || value.handle == uniforms.hoverHandle;
-    out.color = highlighted ? float4(mix(value.color.rgb, float3(1.0), 0.65), 1.0) : value.color;
+    bool active = value.handle == uniforms.activeHandle;
+    bool hovered = value.handle == uniforms.hoverHandle;
+    out.color = active ? float4(mix(value.color.rgb, float3(1.0), 0.9), 1.0)
+                       : (hovered ? float4(mix(value.color.rgb, float3(1.0), 0.65), 1.0) : value.color);
     return out;
 }
 
