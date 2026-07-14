@@ -433,3 +433,11 @@ Move／Rotate／Scaleは相互排他で、active drag、current-mode handle、Sc
 `WorkspaceHistory`は`StrokeCommand`と`TransformCommand`を同じUndo／Redo stackへ記録し、SculptとTransformをユーザー操作順に戻す。Gizmoはdrag開始Transformを保持し、end時だけ開始値と最終値を1コマンドとして確定する。cancelは開始値を復元して記録しない。Transform panelはfield focus開始から終了までをtransactionとし、live入力を1コマンドへまとめる。Reset Transformは単独コマンドである。
 
 Undo／RedoでTransformを適用してもobject-local mesh、topology ID、mesh revision、GPU mesh bufferは変更しない。Sculpt commandだけが局所頂点位置を復元して通常のmesh revision経路を通る。no-opや非有限commandは拒否し、意味ある新規編集だけがRedoを破棄する。project loadは履歴と未確定panel transactionを消去する。自動Benchmarkは開始時の履歴を一時退避し、実行中はUndo／Redoを無効化して、完了・cancel・timeoutのいずれでも元の履歴を復元する。履歴自体はprojectへ保存しない。
+
+### 17.9 Single-object primitive generation
+
+`PrimitiveMeshBuilder`はGeometryCore内の決定論的な生成境界として、object-local・Y-up・原点中心のUV Sphere、Cube、Cylinderを生成する。UV Sphereは極を各1頂点、経度seamを循環indexで共有する。CubeはSculpt adjacencyを優先した8共有頂点、Cylinderはside ringとcap rimを同じindexで共有する。CubeとCylinderのhard edge normalは分離せず、既存の面積加重頂点normalを使用する。
+
+Primitive作成はmesh topologyの置換であり、新しい`EditableMesh` runtime、adjacency、topology IDを生成する。Picking BVH、Sculpt Spatial Index、Metal vertex／index bufferは固有runtime identityを検知して正規の再構築・upload経路を通り、変更のない後続frameでは再uploadしない。cameraはbounds centerをtargetとし、45度perspectiveに収まる有限distanceへauto-frameする。
+
+`ReplaceMeshCommand`は作成前後のmesh、ObjectTransform、cameraを値型snapshotとして統合Workspace historyへ保存する。Undoは編集済み旧meshを、Redoは生成meshを完全復元し、後続Sculptによるsnapshot汚染を避ける。Foundation段階では全mesh snapshotのメモリ負荷を許容するが、大規模mesh向けの履歴上限・圧縮は技術的負債である。projectには通常のvertices／indicesだけをFoundation v1で保存し、PrimitiveKindやprocedural parameterは保存しない。既存Icosphere Benchmark presetは変更しない。

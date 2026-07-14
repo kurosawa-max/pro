@@ -112,6 +112,12 @@ struct EditableMesh: Codable, Equatable {
 
     var hasCachedAdjacency: Bool { adjacencyCache != nil }
 
+    var bounds: AxisAlignedBoundingBox {
+        var value = AxisAlignedBoundingBox()
+        vertices.forEach { value.include($0.position) }
+        return value
+    }
+
     mutating func updatePositions(
         _ updates: [Int: SIMD3<Float>],
         profiler: PerformanceProfiler? = nil

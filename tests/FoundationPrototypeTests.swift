@@ -1,5 +1,6 @@
 import XCTest
 import UniformTypeIdentifiers
+import MetalKit
 import simd
 @testable import Forge3D
 
@@ -1355,6 +1356,171 @@ final class FoundationPrototypeTests: XCTestCase {
                        uploads?[.vertexUpload].sampleCount)
         XCTAssertEqual(model.profiler?.snapshot()[.indexUpload].sampleCount,
                        uploads?[.indexUpload].sampleCount)
+    }
+
+    func testUVSphereTopologyCountsPolesNormalsAndDeterminism() throws {
+        let mesh = try PrimitiveMeshBuilder.sphere(radius: 0.5, longitudeSegments: 32, latitudeRings: 16)
+        XCTAssertEqual(mesh.vertices.count, 2 + 32 * 15)
+        XCTAssertEqual(mesh.indices.count / 3, 2 * 32 * 15)
+        XCTAssertEqual(mesh.vertices.filter { simd_distance($0.position, SIMD3<Float>(0, 0.5, 0)) < 0.000_001 }.count, 1)
+        XCTAssertEqual(mesh.vertices.filter { simd_distance($0.position, SIMD3<Float>(0, -0.5, 0)) < 0.000_001 }.count, 1)
+        XCTAssertTrue(mesh.vertices.allSatisfy { abs(simd_length($0.position) - 0.5) < 0.000_1 })
+        XCTAssertTrue(mesh.vertices.allSatisfy { $0.normal.allFinite && abs(simd_length($0.normal) - 1) < 0.000_1 })
+        XCTAssertEqual(mesh, try PrimitiveMeshBuilder.sphere(radius: 0.5, longitudeSegments: 32, latitudeRings: 16))
+        assertClosedOutwardMesh(mesh)
+    }
+
+    func testUVSphereMinimumAndHighValidSegmentsHaveNoSeamOrDegeneracy() throws {
+        let minimum = try PrimitiveMeshBuilder.sphere(radius: 0.001, longitudeSegments: 3, latitudeRings: 2)
+        XCTAssertEqual(minimum.vertices.count, 5); XCTAssertEqual(minimum.indices.count / 3, 6)
+        assertClosedOutwardMesh(minimum, areaEpsilon: 0.000_000_000_001)
+        let high = try PrimitiveMeshBuilder.sphere(radius: 1, longitudeSegments: 128, latitudeRings: 128)
+        XCTAssertEqual(high.vertices.count, 2 + 128 * 127)
+        XCTAssertNoThrow(try high.validated())
+    }
+
+    func testCubeUsesEightSharedVerticesAndTwelveOutwardTriangles() throws {
+        let mesh = try PrimitiveMeshBuilder.cube(size: 2)
+        XCTAssertEqual(mesh.vertices.count, 8); XCTAssertEqual(mesh.indices.count, 36)
+        XCTAssertEqual(mesh.indices.count / 3, 12)
+        XCTAssertEqual(mesh.bounds.minimum, SIMD3<Float>(repeating: -1))
+        XCTAssertEqual(mesh.bounds.maximum, SIMD3<Float>(repeating: 1))
+        XCTAssertEqual(mesh, try PrimitiveMeshBuilder.cube(size: 2))
+        assertClosedOutwardMesh(mesh)
+    }
+
+    func testCylinderCountsDimensionsSegmentsAndDeterminism() throws {
+        for (radial, heightSegments) in [(32, 1), (3, 1), (12, 4)] {
+            let mesh = try PrimitiveMeshBuilder.cylinder(radius: 0.5, height: 2,
+                                                         radialSegments: radial, heightSegments: heightSegments)
+            XCTAssertEqual(mesh.vertices.count, (heightSegments + 1) * radial + 2)
+            XCTAssertEqual(mesh.indices.count / 3, 2 * radial * heightSegments + 2 * radial)
+            XCTAssertEqual(mesh.bounds.minimum.y, -1, accuracy: 0.000_01)
+            XCTAssertEqual(mesh.bounds.maximum.y, 1, accuracy: 0.000_01)
+            XCTAssertTrue(mesh.vertices.dropLast(2).allSatisfy {
+                abs(simd_length(SIMD2<Float>($0.position.x, $0.position.z)) - 0.5) < 0.000_1
+            })
+            assertClosedOutwardMesh(mesh)
+        }
+        XCTAssertEqual(try PrimitiveMeshBuilder.cylinder(radius: 0.5, height: 1, radialSegments: 8, heightSegments: 2),
+                       try PrimitiveMeshBuilder.cylinder(radius: 0.5, height: 1, radialSegments: 8, heightSegments: 2))
+    }
+
+    func testPrimitiveInputValidationRejectsInvalidAndAcceptsExtremeFiniteValues() throws {
+        XCTAssertThrowsError(try PrimitiveMeshBuilder.sphere(radius: 0, longitudeSegments: 32, latitudeRings: 16))
+        XCTAssertThrowsError(try PrimitiveMeshBuilder.cube(size: -1))
+        XCTAssertThrowsError(try PrimitiveMeshBuilder.cube(size: .nan))
+        XCTAssertThrowsError(try PrimitiveMeshBuilder.cube(size: .infinity))
+        XCTAssertThrowsError(try PrimitiveMeshBuilder.sphere(radius: 1, longitudeSegments: 2, latitudeRings: 16))
+        XCTAssertThrowsError(try PrimitiveMeshBuilder.sphere(radius: 1, longitudeSegments: 257, latitudeRings: 16))
+        XCTAssertThrowsError(try PrimitiveMeshBuilder.cylinder(radius: 1, height: 0, radialSegments: 8, heightSegments: 1))
+        XCTAssertNoThrow(try PrimitiveMeshBuilder.cube(size: 0.001))
+        XCTAssertNoThrow(try PrimitiveMeshBuilder.cube(size: 1_000))
+    }
+
+    @MainActor
+    func testPrimitiveReplacementResetsStateFramesCameraAndIsOneUndoCommand() throws {
+        let model = WorkspaceModel()
+        model.updateTransform(ObjectTransform(translation: SIMD3<Float>(1, 2, 3), scale: SIMD3<Float>(2, 3, 4)))
+        let beforeMesh = model.mesh, beforeTransform = model.objectTransform, beforeCamera = model.camera
+        let count = model.undoCount
+        var parameters = PrimitiveParameters(kind: .cube); parameters.size = 2
+        try model.createPrimitive(parameters: parameters)
+        XCTAssertEqual(model.mesh.vertices.count, 8); XCTAssertTrue(model.objectTransform.isIdentity)
+        XCTAssertEqual(model.undoCount, count + 1); XCTAssertTrue(model.camera.distance.isFinite)
+        XCTAssertTrue(model.camera.target.allFinite); XCTAssertNil(model.hoverLocation)
+        let cube = model.mesh, cubeCamera = model.camera
+        XCTAssertNotEqual(cube.runtime.topologyID, beforeMesh.runtime.topologyID)
+        XCTAssertTrue(cube.hasCachedAdjacency)
+        let cache = MeshBVHCache()
+        XCTAssertNotNil(cache.index(for: beforeMesh)); XCTAssertEqual(cache.buildCount, 1)
+        XCTAssertNotNil(cache.index(for: cube)); XCTAssertEqual(cache.buildCount, 2)
+        model.undo()
+        XCTAssertEqual(model.mesh, beforeMesh); XCTAssertEqual(model.objectTransform, beforeTransform)
+        XCTAssertEqual(model.camera, beforeCamera)
+        model.redo()
+        XCTAssertEqual(model.mesh, cube); XCTAssertTrue(model.objectTransform.isIdentity)
+        XCTAssertEqual(model.camera, cubeCamera)
+    }
+
+    @MainActor
+    func testPrimitiveReplacementCancelsActiveEditingAndRedoSnapshotIsNotPolluted() throws {
+        let model = WorkspaceModel()
+        model.beginStroke(); XCTAssertTrue(model.isStrokeActive)
+        var cube = PrimitiveParameters(kind: .cube); cube.size = 1
+        try model.createPrimitive(parameters: cube)
+        XCTAssertFalse(model.isStrokeActive); XCTAssertFalse(model.isGizmoDragging)
+        model.undo(); let restored = model.mesh
+        model.beginStroke()
+        let sample = PencilSample(location: .zero, force: 1, maximumForce: 1, altitude: 1, azimuth: 0, timestamp: 0)
+        model.updateStroke(sample: sample, ray: Ray(origin: SIMD3<Float>(0, 0, 3), direction: SIMD3<Float>(0, 0, -1)))
+        model.endStroke()
+        XCTAssertNotEqual(model.mesh, restored); XCTAssertFalse(model.canRedo)
+    }
+
+    @MainActor
+    func testPrimitiveSaveLoadRoundTripUsesFoundationV1MeshOnly() throws {
+        for kind in PrimitiveKind.allCases {
+            let model = WorkspaceModel(); var parameters = PrimitiveParameters(kind: kind)
+            if kind == .cube { parameters.size = 1.25 }
+            try model.createPrimitive(parameters: parameters)
+            let expected = model.mesh, data = try model.projectData()
+            let decoded = try ProjectCodec.decode(data)
+            XCTAssertEqual(decoded.formatVersion, 1); XCTAssertEqual(decoded.mesh, expected)
+            XCTAssertTrue(decoded.transform.isIdentity)
+            let loaded = WorkspaceModel(); loaded.load(data: data)
+            XCTAssertEqual(loaded.mesh, expected); XCTAssertEqual(loaded.undoCount, 0)
+        }
+    }
+
+    @MainActor
+    func testPrimitiveGenerationIsRejectedDuringBenchmarkWithoutHistoryPollution() async {
+        let model = WorkspaceModel(); model.updateTranslation(SIMD3<Float>(1, 0, 0))
+        let mesh = model.mesh, transform = model.objectTransform, undoCount = model.undoCount
+        model.runAllBenchmarks()
+        XCTAssertThrowsError(try model.createPrimitive(parameters: PrimitiveParameters(kind: .cube)))
+        model.cancelBenchmarks()
+        for _ in 0..<2_000 where model.isBenchmarkRunning { await Task.yield() }
+        XCTAssertEqual(model.mesh, mesh); XCTAssertEqual(model.objectTransform, transform)
+        XCTAssertEqual(model.undoCount, undoCount)
+    }
+
+    @MainActor
+    func testPrimitiveTopologyReplacementUploadsEachMetalBufferOnceThenSkips() throws {
+        let profiler = PerformanceProfiler(), view = MTKView()
+        let renderer = try XCTUnwrap(MetalRenderer(view: view, profiler: profiler))
+        renderer.update(mesh: .icosphere(subdivisions: 0))
+        let cube = try PrimitiveMeshBuilder.cube(size: 1)
+        profiler.reset(vertexCount: cube.vertices.count, triangleCount: cube.indices.count / 3)
+        renderer.update(mesh: cube)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 1)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 1)
+        renderer.update(mesh: cube)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 1)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 1)
+    }
+
+    private func assertClosedOutwardMesh(_ mesh: EditableMesh, areaEpsilon: Float = 0.000_000_01,
+                                         file: StaticString = #filePath, line: UInt = #line) {
+        var edgeCounts: [UInt64: Int] = [:], triangles = Set<String>()
+        for start in stride(from: 0, to: mesh.indices.count, by: 3) {
+            let ids = [mesh.indices[start], mesh.indices[start + 1], mesh.indices[start + 2]]
+            let a = mesh.vertices[Int(ids[0])].position, b = mesh.vertices[Int(ids[1])].position
+            let c = mesh.vertices[Int(ids[2])].position, cross = simd_cross(b - a, c - a)
+            XCTAssertGreaterThan(simd_length(cross) * 0.5, areaEpsilon, file: file, line: line)
+            XCTAssertGreaterThan(simd_dot(cross, (a + b + c) / 3), 0, file: file, line: line)
+            triangles.insert(ids.sorted().map { String($0) }.joined(separator: ","))
+            for (u, v) in [(ids[0], ids[1]), (ids[1], ids[2]), (ids[2], ids[0])] {
+                let low = min(u, v), high = max(u, v), key = (UInt64(low) << 32) | UInt64(high)
+                edgeCounts[key, default: 0] += 1
+            }
+        }
+        XCTAssertEqual(triangles.count, mesh.indices.count / 3, file: file, line: line)
+        XCTAssertTrue(edgeCounts.values.allSatisfy { $0 == 2 }, file: file, line: line)
+        var copy = mesh, adjacency = copy.adjacency()
+        for vertex in adjacency.indices { for neighbor in adjacency[vertex] {
+            XCTAssertTrue(adjacency[neighbor].contains(vertex), file: file, line: line)
+        } }
     }
 
     private func assertMatrix(_ lhs: simd_float4x4, equals rhs: simd_float4x4,

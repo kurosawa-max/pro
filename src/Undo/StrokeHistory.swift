@@ -16,9 +16,21 @@ struct TransformCommand: Equatable {
     }
 }
 
+struct WorkspaceMeshSnapshot: Equatable {
+    let mesh: EditableMesh
+    let transform: ObjectTransform
+    let camera: CameraState
+}
+
+struct ReplaceMeshCommand: Equatable {
+    let before: WorkspaceMeshSnapshot
+    let after: WorkspaceMeshSnapshot
+}
+
 enum WorkspaceCommand: Equatable {
     case sculpt(StrokeCommand)
     case transform(TransformCommand)
+    case replaceMesh(ReplaceMeshCommand)
 }
 
 struct WorkspaceHistory: Equatable {

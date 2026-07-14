@@ -26,6 +26,8 @@ world-space表示のScale GizmoとしてX/Y/Z軸＋先端cubeと中央uniform cu
 
 SculptとTransformを単一時系列で扱うWorkspace historyを追加する。Gizmo drag、Transform panel確定、Reset TransformをTransform commandとして記録し、Sculpt commandと交互にUndo／Redoできる。cancel／no-opは記録せず、新規編集でRedoを破棄する。loadでは履歴を消去し、自動Benchmarkでは開始時履歴を隔離・復元する。履歴永続化、Camera／GizmoMode Undo、複数object履歴は対象外とする。
 
+単一object Primitive生成として、weld済みUV Sphere、8共有頂点Cube、Y-up Cylinder、parameter入力sheet、bounds camera framingを追加する。生成はtopology置換としてruntime cacheを再構築し、mesh／Transform／camera snapshotの`ReplaceMeshCommand`でUndo／Redoする。projectには通常meshだけを保存し、procedural parameter、複数object、hard-edge render cacheは含めない。既存Icosphere Benchmark条件は維持する。全mesh snapshotの履歴memory上限は後続課題とする。
+
 ## Milestone 0 — Repository Foundation
 
 - Xcode workspace作成

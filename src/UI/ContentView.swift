@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var showImporter = false
     @State private var showProjectExporter = false
     @State private var showSTLExporter = false
+    @State private var showPrimitiveCreator = false
     @State private var projectExport = ForgeFile(data: Data())
     @State private var stlExport = STLFile(data: Data())
 
@@ -39,6 +40,10 @@ struct ContentView: View {
                 ToolbarItemGroup(placement: .topBarLeading) {
                     Button("Open", systemImage: "folder") { showImporter = true }
                     Button("Save", systemImage: "square.and.arrow.down") { saveProject() }
+                    Button("New Primitive", systemImage: "cube") { showPrimitiveCreator = true }
+                    #if DEBUG
+                    .disabled(model.isBenchmarkRunning)
+                    #endif
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Picker("Gizmo Mode", selection: Binding(get: { model.gizmoMode },
@@ -74,6 +79,7 @@ struct ContentView: View {
             do { model.load(data: try Data(contentsOf: url, options: .mappedIfSafe)) }
             catch { model.status = "Open failed: \(error.localizedDescription)" }
         }
+        .sheet(isPresented: $showPrimitiveCreator) { PrimitiveCreationView(model: model) }
         .fileExporter(isPresented: $showProjectExporter, document: projectExport, contentType: .forge3D, defaultFilename: "Untitled.forge3d") { result in
             if case .failure(let error) = result { model.status = "Save failed: \(error.localizedDescription)" }
         }
