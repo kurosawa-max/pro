@@ -137,6 +137,42 @@ final class WorkspaceModel: ObservableObject {
     var redoCount: Int { history.redoStack.count }
     var isTransformPanelEditing: Bool { panelTransformBefore != nil }
 
+    func createPrimitive(parameters: PrimitiveParameters) throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        let generated = try PrimitiveMeshBuilder.build(parameters)
+        commitTransformPanelTransaction()
+        cancelStroke()
+        cancelAllGizmoDrags()
+        let before = workspaceSnapshot
+        mesh = generated
+        objectTransform = .identity
+        camera = Self.framedCamera(for: generated)
+        hoverLocation = nil
+        translationGizmoState = TranslationGizmoState()
+        rotationGizmoState = RotationGizmoState()
+        scaleGizmoState = ScaleGizmoState()
+        gizmoMode = .translate
+        #if DEBUG
+        benchmarkPreset = nil
+        #endif
+        profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
+        let after = workspaceSnapshot
+        record(.replaceMesh(ReplaceMeshCommand(before: before, after: after)))
+        status = "Created \(parameters.kind.displayName)"
+    }
+
+    static func framedCamera(for mesh: EditableMesh) -> CameraState {
+        let bounds = mesh.bounds
+        guard bounds.isFinite else { return CameraState() }
+        let radius = max(simd_length(bounds.extent) * 0.5, 0.001)
+        let distance = radius / tan(Float(22.5) * .pi / 180) * 1.25
+        return CameraState(yaw: 0.4, pitch: 0.25,
+                           distance: distance.isFinite ? max(distance, 0.01) : 3.5,
+                           target: bounds.center)
+    }
+
     func updateTransform(_ value: ObjectTransform) {
         #if DEBUG
         guard !isBenchmarkRunning else { return }
@@ -406,7 +442,18 @@ final class WorkspaceModel: ObservableObject {
             _ = mesh.updatePositions(positions, profiler: profiler)
         case .transform(let transform):
             objectTransform = (useAfter ? transform.after : transform.before).sanitized()
+        case .replaceMesh(let replacement):
+            let snapshot = useAfter ? replacement.after : replacement.before
+            mesh = snapshot.mesh
+            objectTransform = snapshot.transform.sanitized()
+            camera = snapshot.camera
+            hoverLocation = nil
+            profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
         }
+    }
+
+    private var workspaceSnapshot: WorkspaceMeshSnapshot {
+        WorkspaceMeshSnapshot(mesh: mesh, transform: objectTransform, camera: camera)
     }
 
     private func syncHistoryAvailability() {
@@ -474,3 +521,5 @@ final class WorkspaceModel: ObservableObject {
     }
     #endif
 }
+
+enum WorkspaceError: Error { case benchmarkInProgress }
