@@ -30,6 +30,8 @@ SculptとTransformを単一時系列で扱うWorkspace historyを追加する。
 
 固定topology SculptへFlatten、Crease、object-local X／Y／Z symmetryを追加する。複数軸は最大8 centerへ展開し、center／vertexをdedupeしてnormal／Grab delta／Flatten planeをmirrorする。Vertex Spatial Index候補検索、1-ring normal更新、1stroke＝1Commandを維持し、BenchmarkへFlatten／Crease／X／XYZ caseを追加する。symmetry plane表示、radial symmetry、Mask、Dynamic Topologyは後続範囲とする。
 
+Binary／ASCII STL importを追加する。Binary exact byte layoutとASCII grammarを明示的に判定し、bit-pattern exact weld、degenerate／duplicate／non-manifold／non-finite検証をinstall前に行う。入力座標は変換せずmmと解釈し、identity Transformとauto-frame cameraのmesh置換を1件のUndo／Redoにする。repair、unit自動推測、epsilon weld、multiple objectは含まない。
+
 ## Milestone 0 — Repository Foundation
 
 - Xcode workspace作成
@@ -78,7 +80,7 @@ SculptとTransformを単一時系列で扱うWorkspace historyを追加する。
 
 ## Milestone 4 — Project and Export
 
-- 1 unit = 1 mm、world dimensions、ObjectTransform bake済みBinary STL、As Displayed/Center at OriginはFoundationで実装済み。STL unit metadata、3MF、OBJ Transform bake、multiple-object exportは未実装。
+- 1 unit = 1 mm、world dimensions、ObjectTransform bake済みBinary STL、As Displayed/Center at Origin、Binary/ASCII STL importはFoundationで実装済み。STL importはunit推測やrepairを行わない。STL unit metadata、3MF、OBJ Transform bake、multiple-object exportは未実装。
 
 - `.forge3d`形式
 - 自動保存

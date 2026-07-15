@@ -25,6 +25,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var status = "Ready"
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
+    @Published private(set) var isSTLImporting = false
     #if DEBUG
     @Published private(set) var benchmarkPreset: BenchmarkPreset?
     @Published private(set) var isBenchmarkRunning = false
@@ -163,6 +164,48 @@ final class WorkspaceModel: ObservableObject {
     func stlData(options: STLExportOptions = STLExportOptions()) throws -> Data {
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing else { throw WorkspaceError.activeEditInProgress }
         return try BinarySTLExporter.data(for: mesh, transform: objectTransform, options: options)
+    }
+
+    func previewSTLImport(data: Data) throws -> STLImportResult {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isSTLImporting else { throw WorkspaceError.importInProgress }
+        isSTLImporting = true
+        defer { isSTLImporting = false }
+        return try STLImporter.importMesh(from: data)
+    }
+
+    func importSTL(data: Data, fileName: String = "STL") throws {
+        let result = try previewSTLImport(data: data)
+        try installSTLImport(result, fileName: fileName)
+    }
+
+    func installSTLImport(_ result: STLImportResult, fileName: String = "STL") throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isSTLImporting else { throw WorkspaceError.importInProgress }
+        isSTLImporting = true
+        defer { isSTLImporting = false }
+
+        cancelStroke()
+        cancelAllGizmoDrags()
+        commitTransformPanelTransaction()
+        let before = workspaceSnapshot
+        mesh = result.mesh
+        objectTransform = .identity
+        camera = Self.framedCamera(for: result.mesh)
+        hoverLocation = nil
+        translationGizmoState = TranslationGizmoState()
+        rotationGizmoState = RotationGizmoState()
+        scaleGizmoState = ScaleGizmoState()
+        #if DEBUG
+        benchmarkPreset = nil
+        #endif
+        profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
+        record(.replaceMesh(ReplaceMeshCommand(before: before, after: workspaceSnapshot)))
+        status = "Imported \(fileName): \(result.sourceTriangleCount) triangles, \(result.weldedVertexCount) vertices (mm)"
     }
 
     var isStrokeActive: Bool { strokeBefore != nil }
@@ -587,11 +630,13 @@ final class WorkspaceModel: ObservableObject {
 enum WorkspaceError: Error, LocalizedError {
     case benchmarkInProgress
     case activeEditInProgress
+    case importInProgress
 
     var errorDescription: String? {
         switch self {
         case .benchmarkInProgress: "A benchmark is in progress."
         case .activeEditInProgress: "Finish or cancel the active edit before exporting."
+        case .importInProgress: "An STL import is already in progress."
         }
     }
 }

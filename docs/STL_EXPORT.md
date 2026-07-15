@@ -20,4 +20,4 @@ export前にstructure、indices、finite values、Transform、transformed bounds
 
 export serializationは読み取り専用で、mesh、Transform、camera、history、revision、topology identity、Renderer uploadを変更しない。options sheetを開く前にactive SculptとGizmo dragをcancelし、Transform panel transactionをcommitして曖昧でないsnapshotを作る。cancelは履歴を追加せず、panel commitはExport commandではなく先行するユーザーTransform編集の確定である。初版は上限付き同期Data生成であり、大規模exportの非同期化は将来の置換点である。
 
-3MF、OBJ/STEP、STL import、multiple object、print bed配置、repairを同時実装しない。STLより明確なunit metadataを持つ3MFは独立した後続設計とする。
+BinaryおよびASCII STL importは`STLImporter`の別境界で実装し、export pipelineにparse責務を混ぜない。詳細は`STL_IMPORT.md`を参照する。3MF、OBJ/STEP、multiple object、print bed配置、repairを同時実装しない。STLより明確なunit metadataを持つ3MFは独立した後続設計とする。

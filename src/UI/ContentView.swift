@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var model: WorkspaceModel
     @State private var showImporter = false
+    @State private var showSTLImporter = false
+    @State private var showSTLImportConfirmation = false
     @State private var showProjectExporter = false
     @State private var showSTLExporter = false
     @State private var showSTLOptions = false
@@ -11,6 +13,8 @@ struct ContentView: View {
     @State private var showSubdivision = false
     @State private var projectExport = ForgeFile(data: Data())
     @State private var stlExport = STLFile(data: Data())
+    @State private var stlImportResult: STLImportResult?
+    @State private var stlImportFileName = "STL"
 
     var body: some View {
         NavigationStack {
@@ -41,6 +45,9 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .topBarLeading) {
                     Button("Open", systemImage: "folder") { showImporter = true }
+                    Button("Import STL", systemImage: "square.and.arrow.down") { showSTLImporter = true }
+                        .disabled(importControlsDisabled)
+                        .accessibilityHint("Choose a Binary or ASCII STL file to preview")
                     Button("Save", systemImage: "square.and.arrow.down") { saveProject() }
                     Button("New Primitive", systemImage: "cube") { showPrimitiveCreator = true }
                     Button("Subdivide", systemImage: "triangle") { showSubdivision = true }
@@ -86,8 +93,16 @@ struct ContentView: View {
             do { model.load(data: try Data(contentsOf: url, options: .mappedIfSafe)) }
             catch { model.status = "Open failed: \(error.localizedDescription)" }
         }
+        .fileImporter(isPresented: $showSTLImporter, allowedContentTypes: [.stl]) { result in
+            previewSTLImport(result)
+        }
         .sheet(isPresented: $showPrimitiveCreator) { PrimitiveCreationView(model: model) }
         .sheet(isPresented: $showSubdivision) { MeshSubdivisionView(model: model) }
+        .sheet(isPresented: $showSTLImportConfirmation, onDismiss: { stlImportResult = nil }) {
+            if let stlImportResult {
+                STLImportView(model: model, result: stlImportResult, fileName: stlImportFileName)
+            }
+        }
         .sheet(isPresented: $showSTLOptions) {
             STLExportView(model: model) { data in
                 stlExport = STLFile(data: data)
@@ -140,6 +155,14 @@ struct ContentView: View {
         #endif
     }
 
+    private var importControlsDisabled: Bool {
+        #if DEBUG
+        model.isSTLImporting || model.isBenchmarkRunning
+        #else
+        model.isSTLImporting
+        #endif
+    }
+
     private var brushCursorDiameter: CGFloat {
         let projectedRadius = model.brushSettings.radius / max(model.camera.distance, 0.001)
         return CGFloat(min(max(projectedRadius * 560, 12), 600))
@@ -152,6 +175,24 @@ struct ContentView: View {
     private func beginSTLExport() {
         do { try model.prepareForSTLExport(); showSTLOptions = true }
         catch { model.status = "Export failed: \(error.localizedDescription)" }
+    }
+
+    private func previewSTLImport(_ selection: Result<URL, Error>) {
+        guard case .success(let url) = selection else {
+            if case .failure(let error) = selection { model.status = "Import failed: \(error.localizedDescription)" }
+            return
+        }
+        let hasSecurityScope = url.startAccessingSecurityScopedResource()
+        defer { if hasSecurityScope { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            stlImportResult = try model.previewSTLImport(data: data)
+            stlImportFileName = url.lastPathComponent
+            showSTLImportConfirmation = true
+        } catch {
+            stlImportResult = nil
+            model.status = "Import failed: \(error.localizedDescription)"
+        }
     }
 }
 

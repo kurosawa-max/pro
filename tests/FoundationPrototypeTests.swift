@@ -1857,6 +1857,305 @@ final class FoundationPrototypeTests: XCTestCase {
         XCTAssertEqual(source, original)
     }
 
+    func testSTLImportDetectsBinaryByExactLayoutEvenWhenHeaderStartsWithSolid() throws {
+        let source = try PrimitiveMeshBuilder.cube(size: 20)
+        var data = try BinarySTLExporter.data(for: source)
+        data.replaceSubrange(0..<5, with: Data("solid".utf8))
+        data[data.count - 2] = 0x34
+        data[data.count - 1] = 0x12
+        let result = try STLImporter.importMesh(from: data)
+        XCTAssertEqual(result.format, .binary)
+        XCTAssertEqual(result.sourceTriangleCount, source.indices.count / 3)
+        XCTAssertEqual(result.sourceByteCount, data.count)
+        XCTAssertEqual(result.weldedVertexCount, source.vertices.count)
+        XCTAssertEqual(result.bounds.extent, SIMD3<Float>(repeating: 20))
+        XCTAssertTrue(result.mesh.hasCachedAdjacency)
+        XCTAssertTrue(result.mesh.vertices.allSatisfy {
+            $0.position.allFinite && $0.normal.allFinite && abs(simd_length($0.normal) - 1) < 0.001
+        })
+    }
+
+    func testSTLImportReadsSingleBinaryTriangleLittleEndianNegativeCoordinatesAndIgnoresFacetFields() throws {
+        let vertices = [
+            MeshVertex(position: SIMD3<Float>(-12.5, -2, 0.25), normal: SIMD3<Float>(0,0,1)),
+            MeshVertex(position: SIMD3<Float>(3, -2, 0.25), normal: SIMD3<Float>(0,0,1)),
+            MeshVertex(position: SIMD3<Float>(0, 4, 0.25), normal: SIMD3<Float>(0,0,1)),
+        ]
+        var data = try BinarySTLExporter.data(for: EditableMesh(vertices: vertices, indices: [0,1,2]))
+        XCTAssertEqual(Array(data[80..<84]), [1, 0, 0, 0])
+        let ignoredNaN = Float.nan.bitPattern.littleEndian
+        withUnsafeBytes(of: ignoredNaN) { data.replaceSubrange(84..<88, with: $0) }
+        data[data.count - 2] = 0xfe
+        data[data.count - 1] = 0xca
+        let result = try STLImporter.importMesh(from: data)
+        XCTAssertEqual(result.format, .binary)
+        XCTAssertEqual(result.sourceTriangleCount, 1)
+        XCTAssertEqual(result.mesh.vertices.map(\.position), vertices.map(\.position))
+        XCTAssertEqual(result.mesh.indices, [0,1,2])
+        XCTAssertEqual(result.mesh.vertices[0].normal.z, 1, accuracy: 0.000_1)
+    }
+
+    func testSTLImportParsesASCIIWhitespaceCaseCRLFAndScientificNotation() throws {
+        let source = """
+          SoLiD sample\r
+        \tFaCeT NoRmAl 7 8 9e0\r
+          OuTeR LoOp\r
+            VeRtEx -1e1 -1e1 0\r
+            vertex 1e1 -1e1 0\r
+            vertex 0 1e1 0\r
+          EnDlOoP\r
+        EnDfAcEt\r
+        EnDsOlId sample\r
+        """
+        let result = try STLImporter.importMesh(from: Data(source.utf8))
+        XCTAssertEqual(result.format, .ascii)
+        XCTAssertEqual(result.sourceTriangleCount, 1)
+        XCTAssertEqual(result.weldedVertexCount, 3)
+        XCTAssertEqual(result.bounds.extent, SIMD3<Float>(20, 20, 0))
+        XCTAssertEqual(result.mesh.indices, [0, 1, 2])
+        XCTAssertEqual(result.mesh.vertices[0].normal.z, 1, accuracy: 0.000_1)
+    }
+
+    func testSTLImportExactWeldNormalizesSignedZeroButDoesNotEpsilonWeld() throws {
+        let triangles = [
+            [SIMD3<Float>(-0.0, 0, 0), SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 1, 0)],
+            [SIMD3<Float>(0.0, 0, 0), SIMD3<Float>(0, 1, 0), SIMD3<Float>(1.000_001, 0, 0)],
+        ]
+        let result = try STLImporter.importMesh(from: asciiSTL(triangles))
+        XCTAssertEqual(result.weldedVertexCount, 4)
+        XCTAssertEqual(result.mesh.vertices[0].position.x.bitPattern, Float(0).bitPattern)
+        XCTAssertEqual(result.mesh.indices, [0, 1, 2, 0, 2, 3])
+        var mesh = result.mesh
+        let adjacency = mesh.adjacency()
+        XCTAssertTrue(adjacency[0].contains(2))
+        XCTAssertTrue(adjacency[2].contains(0))
+    }
+
+    func testSTLImportRejectsMalformedTruncatedAndNonFiniteInput() throws {
+        var truncated = try BinarySTLExporter.data(for: PrimitiveMeshBuilder.cube(size: 20))
+        truncated.removeLast()
+        XCTAssertThrowsError(try STLImporter.importMesh(from: truncated))
+        XCTAssertThrowsError(try STLImporter.importMesh(from: Data(count: 83)))
+        XCTAssertThrowsError(try STLImporter.importMesh(from: Data())) { error in
+            XCTAssertEqual(error as? STLImportError, .emptyFile)
+        }
+        XCTAssertThrowsError(try STLImporter.importMesh(from: Data("not an stl".utf8))) { error in
+            XCTAssertEqual(error as? STLImportError, .unsupportedOrMalformedFormat)
+        }
+        let nonFinite = Data("""
+        solid bad
+        facet normal 0 0 1
+        outer loop
+        vertex nan 0 0
+        vertex 1 0 0
+        vertex 0 1 0
+        endloop
+        endfacet
+        endsolid
+        """.utf8)
+        XCTAssertThrowsError(try STLImporter.importMesh(from: nonFinite)) { error in
+            XCTAssertEqual(error as? STLImportError, .nonFiniteValue)
+        }
+        let missingVertex = Data("""
+        solid bad
+        facet normal 0 0 1
+        outer loop
+        vertex 0 0 0
+        vertex 1 0 0
+        endloop
+        endfacet
+        endsolid
+        """.utf8)
+        XCTAssertThrowsError(try STLImporter.importMesh(from: missingVertex))
+        var trailingToken = asciiSTL([[SIMD3<Float>(0,0,0), SIMD3<Float>(1,0,0), SIMD3<Float>(0,1,0)]])
+        trailingToken.append(Data("\ntrailing".utf8))
+        XCTAssertThrowsError(try STLImporter.importMesh(from: trailingToken))
+    }
+
+    func testSTLImportRejectsDegenerateDuplicateAndNonManifoldTriangles() {
+        let degenerate = [[SIMD3<Float>(0,0,0), SIMD3<Float>(1,0,0), SIMD3<Float>(2,0,0)]]
+        XCTAssertThrowsError(try STLImporter.importMesh(from: asciiSTL(degenerate))) { error in
+            XCTAssertEqual(error as? STLImportError, .degenerateTriangle)
+        }
+        let triangle = [SIMD3<Float>(0,0,0), SIMD3<Float>(1,0,0), SIMD3<Float>(0,1,0)]
+        XCTAssertThrowsError(try STLImporter.importMesh(from: asciiSTL([triangle, Array(triangle.reversed())]))) { error in
+            XCTAssertEqual(error as? STLImportError, .duplicateTriangle)
+        }
+        let sharedA = SIMD3<Float>(0,0,0), sharedB = SIMD3<Float>(1,0,0)
+        let nonManifold = [
+            [sharedA, sharedB, SIMD3<Float>(0,1,0)],
+            [sharedB, sharedA, SIMD3<Float>(0,-1,0)],
+            [sharedA, sharedB, SIMD3<Float>(0,0,1)],
+        ]
+        XCTAssertThrowsError(try STLImporter.importMesh(from: asciiSTL(nonManifold))) { error in
+            XCTAssertEqual(error as? STLImportError, .nonManifoldEdge)
+        }
+    }
+
+    func testSTLImportLimitsAndConservativeEstimate() throws {
+        XCTAssertNoThrow(try STLImporter.validateSourceByteCount(STLImporter.maximumSourceByteCount))
+        XCTAssertThrowsError(try STLImporter.validateSourceByteCount(STLImporter.maximumSourceByteCount + 1)) { error in
+            XCTAssertEqual(error as? STLImportError, .sourceTooLarge)
+        }
+        let estimate = try STLImporter.estimate(sourceByteCount: 1_024, triangleCount: 100)
+        XCTAssertEqual(estimate.sourceTriangleCount, 100)
+        XCTAssertEqual(estimate.maximumPossibleVertexCount, 300)
+        XCTAssertGreaterThan(estimate.estimatedWorkingByteCount, estimate.sourceByteCount)
+        XCTAssertThrowsError(try STLImporter.estimate(
+            sourceByteCount: 1_024, triangleCount: STLImporter.maximumTriangleCount + 1)) { error in
+            XCTAssertEqual(error as? STLImportError, .triangleLimitExceeded)
+        }
+        XCTAssertLessThanOrEqual(estimate.estimatedWorkingByteCount,
+                                 STLImporter.maximumEstimatedWorkingByteCount)
+        XCTAssertNoThrow(try STLImporter.validateWeldedVertexCount(STLImporter.maximumWeldedVertexCount))
+        XCTAssertThrowsError(try STLImporter.validateWeldedVertexCount(
+            STLImporter.maximumWeldedVertexCount + 1)) { error in
+            XCTAssertEqual(error as? STLImportError, .vertexLimitExceeded)
+        }
+        XCTAssertThrowsError(try STLImporter.estimate(
+            sourceByteCount: STLImporter.maximumSourceByteCount,
+            triangleCount: STLImporter.maximumTriangleCount)) { error in
+            XCTAssertEqual(error as? STLImportError, .estimatedWorkingSetTooLarge)
+        }
+    }
+
+    @MainActor
+    func testWorkspaceSTLImportReplacesAtomicallyPreservesToolsAndSupportsUndoRedo() throws {
+        let model = WorkspaceModel()
+        model.brush = .crease
+        model.brushSettings = BrushSettings(radius: 4.25, strength: 0.3)
+        model.symmetry = SculptSymmetry(x: true, y: false, z: true)
+        model.setGizmoMode(.scale)
+        model.updateTranslation(SIMD3<Float>(30, 20, 10))
+        let previousMesh = model.mesh, previousCamera = model.camera, previousTransform = model.objectTransform
+        let previousTopology = model.mesh.runtime.topologyID
+        let undoBeforeImport = model.undoCount
+        let importedSource = try PrimitiveMeshBuilder.cube(size: 20)
+        let result = try model.previewSTLImport(data: BinarySTLExporter.data(for: importedSource))
+        let importedTopology = result.mesh.runtime.topologyID
+        try model.installSTLImport(result, fileName: "cube.stl")
+
+        XCTAssertEqual(model.mesh, result.mesh)
+        XCTAssertEqual(model.mesh.runtime.topologyID, importedTopology)
+        XCTAssertNotEqual(model.mesh.runtime.topologyID, previousTopology)
+        XCTAssertTrue(model.objectTransform.isIdentity)
+        XCTAssertEqual(model.camera.target, result.bounds.center)
+        XCTAssertEqual(model.brush, .crease)
+        XCTAssertEqual(model.brushSettings.radius, 4.25)
+        XCTAssertEqual(model.brushSettings.strength, 0.3)
+        XCTAssertEqual(model.symmetry, SculptSymmetry(x: true, y: false, z: true))
+        XCTAssertEqual(model.gizmoMode, .scale)
+        XCTAssertTrue(model.status.contains("cube.stl"))
+        XCTAssertEqual(model.profiler?.snapshot().vertexCount, result.weldedVertexCount)
+        XCTAssertEqual(model.undoCount, undoBeforeImport + 1)
+
+        model.undo()
+        XCTAssertEqual(model.mesh, previousMesh)
+        XCTAssertEqual(model.camera, previousCamera)
+        XCTAssertEqual(model.objectTransform, previousTransform)
+        model.redo()
+        XCTAssertEqual(model.mesh, result.mesh)
+        XCTAssertTrue(model.objectTransform.isIdentity)
+        model.undo()
+        model.updateScale(SIMD3<Float>(repeating: 2))
+        XCTAssertFalse(model.canRedo)
+    }
+
+    @MainActor
+    func testWorkspaceSTLImportCancelsActiveEditsAndFailureLeavesWorkspaceUnchanged() throws {
+        let model = WorkspaceModel()
+        let beforeMesh = model.mesh, beforeCamera = model.camera, beforeTransform = model.objectTransform
+        let beforeUndo = model.undoCount, beforeRedo = model.redoCount
+        XCTAssertThrowsError(try model.importSTL(data: Data("broken".utf8), fileName: "broken.stl"))
+        XCTAssertEqual(model.mesh, beforeMesh)
+        XCTAssertEqual(model.camera, beforeCamera)
+        XCTAssertEqual(model.objectTransform, beforeTransform)
+        XCTAssertEqual(model.undoCount, beforeUndo)
+        XCTAssertEqual(model.redoCount, beforeRedo)
+        XCTAssertFalse(model.isSTLImporting)
+
+        let sourceData = try BinarySTLExporter.data(for: PrimitiveMeshBuilder.cube(size: 20))
+        model.hoverLocation = CGPoint(x: 10, y: 20)
+        model.beginStroke()
+        try model.installSTLImport(STLImporter.importMesh(from: sourceData))
+        XCTAssertFalse(model.isStrokeActive)
+        XCTAssertNil(model.hoverLocation)
+
+        model.setGizmoMode(.translate)
+        let start = Ray(origin: SIMD3<Float>(0.3, 0.3, 50), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start,
+                                                       cameraDirection: SIMD3<Float>(0, 0, -1)))
+        try model.installSTLImport(STLImporter.importMesh(from: sourceData))
+        XCTAssertFalse(model.isGizmoDragging)
+
+        model.beginTransformPanelTransaction()
+        model.updateTranslation(SIMD3<Float>(5, 6, 7))
+        let historyBeforePanelCommit = model.undoCount
+        try model.installSTLImport(STLImporter.importMesh(from: sourceData))
+        XCTAssertFalse(model.isTransformPanelEditing)
+        XCTAssertTrue(model.objectTransform.isIdentity)
+        XCTAssertEqual(model.undoCount, historyBeforePanelCommit + 2)
+    }
+
+    func testImportedMeshBuildsFreshRuntimeCachesAndUploadsOnlyOnce() throws {
+        let data = try BinarySTLExporter.data(for: PrimitiveMeshBuilder.cube(size: 20))
+        let imported = try STLImporter.importMesh(from: data).mesh
+        var adjacencyMesh = imported
+        let adjacency = adjacencyMesh.adjacency()
+        for vertex in adjacency.indices { for neighbor in adjacency[vertex] {
+            XCTAssertTrue(adjacency[neighbor].contains(vertex))
+        } }
+
+        let bvh = MeshBVHCache()
+        XCTAssertNotNil(bvh.index(for: imported))
+        XCTAssertEqual(bvh.buildCount, 1)
+        XCTAssertNotNil(bvh.index(for: imported))
+        XCTAssertEqual(bvh.buildCount, 1)
+        XCTAssertEqual(bvh.reuseCount, 1)
+
+        let spatial = VertexSpatialIndex()
+        XCTAssertFalse(spatial.candidates(center: .zero, radius: 100, mesh: imported).isEmpty)
+        XCTAssertEqual(spatial.buildCount, 1)
+        _ = spatial.candidates(center: .zero, radius: 100, mesh: imported)
+        XCTAssertEqual(spatial.buildCount, 1)
+
+        let profiler = PerformanceProfiler(), view = MTKView()
+        let renderer = try XCTUnwrap(MetalRenderer(view: view, profiler: profiler))
+        renderer.update(mesh: .icosphere(subdivisions: 0))
+        profiler.reset(vertexCount: imported.vertices.count, triangleCount: imported.indices.count / 3)
+        renderer.update(mesh: imported)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 1)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 1)
+        renderer.update(mesh: imported)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 1)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 1)
+    }
+
+    @MainActor
+    func testImportedSTLSavesLoadsAndReexportsWithoutUnitScaling() throws {
+        let triangles = [[
+            SIMD3<Float>(0,0,0), SIMD3<Float>(10,0,0), SIMD3<Float>(0,20,0),
+        ]]
+        let model = WorkspaceModel()
+        try model.importSTL(data: asciiSTL(triangles), fileName: "millimeters.stl")
+        XCTAssertEqual(model.mesh.bounds.extent, SIMD3<Float>(10, 20, 0))
+        let project = try model.projectData()
+        let decoded = try ProjectCodec.decode(project)
+        XCTAssertEqual(decoded.formatVersion, 1)
+        XCTAssertNotEqual(decoded.mesh.runtime.topologyID, model.mesh.runtime.topologyID)
+        let loaded = WorkspaceModel()
+        loaded.load(data: project)
+        XCTAssertEqual(loaded.mesh, model.mesh)
+        XCTAssertEqual(loaded.camera, model.camera)
+        XCTAssertTrue(loaded.objectTransform.isIdentity)
+        let sourceMesh = loaded.mesh
+        let exported = try loaded.stlData()
+        let reimported = try STLImporter.importMesh(from: exported)
+        XCTAssertEqual(reimported.sourceTriangleCount, 1)
+        XCTAssertEqual(reimported.bounds.extent, SIMD3<Float>(10, 20, 0))
+        XCTAssertEqual(loaded.mesh, sourceMesh)
+    }
+
     private func stlVector(_ data: Data, offset: Int) -> SIMD3<Float> {
         func value(_ component: Int) -> Float {
             let start = offset + component * 4
@@ -1864,6 +2163,22 @@ final class FoundationPrototypeTests: XCTestCase {
             return Float(bitPattern: bits)
         }
         return SIMD3<Float>(value(0), value(1), value(2))
+    }
+
+    private func asciiSTL<S: Sequence>(_ triangles: S) -> Data where S.Element: Collection,
+        S.Element.Element == SIMD3<Float> {
+        var lines = ["solid Forge3DTest"]
+        for triangle in triangles {
+            let values = Array(triangle)
+            precondition(values.count == 3)
+            lines.append("facet normal 0 0 1")
+            lines.append("outer loop")
+            for point in values { lines.append("vertex \(point.x) \(point.y) \(point.z)") }
+            lines.append("endloop")
+            lines.append("endfacet")
+        }
+        lines.append("endsolid Forge3DTest")
+        return Data(lines.joined(separator: "\n").utf8)
     }
 
     private func assertClosedOutwardMesh(_ mesh: EditableMesh, areaEpsilon: Float = 0.000_000_01,
