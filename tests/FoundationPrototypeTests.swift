@@ -1819,7 +1819,34 @@ final class FoundationPrototypeTests: XCTestCase {
         XCTAssertEqual(model.mesh.runtime.revision, revision); XCTAssertEqual(model.mesh.runtime.topologyID, topology)
         XCTAssertEqual(model.profiler?.snapshot()[.vertexUpload].sampleCount, uploads?[.vertexUpload].sampleCount)
         XCTAssertEqual(model.profiler?.snapshot()[.indexUpload].sampleCount, uploads?[.indexUpload].sampleCount)
-        model.beginStroke(); XCTAssertThrowsError(try model.stlData()); model.cancelStroke()
+        model.beginStroke(); XCTAssertThrowsError(try model.stlData())
+        try model.prepareForSTLExport(); XCTAssertFalse(model.isStrokeActive)
+        XCTAssertNoThrow(try model.stlData())
+    }
+
+    @MainActor
+    func testSTLExportPreparationCancelsGizmoAndCommitsPanelEdit() throws {
+        let model = WorkspaceModel()
+        let start = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start,
+                                                       cameraDirection: SIMD3<Float>(0, 0, -1)))
+        model.updateTranslationGizmoDrag(ray: Ray(origin: SIMD3<Float>(0.8, 0.6, 5), direction: SIMD3<Float>(0, 0, -1)),
+                                         cameraDirection: SIMD3<Float>(0, 0, -1))
+        XCTAssertTrue(model.isGizmoDragging); XCTAssertFalse(model.objectTransform.isIdentity)
+        try model.prepareForSTLExport()
+        XCTAssertFalse(model.isGizmoDragging); XCTAssertTrue(model.objectTransform.isIdentity)
+        XCTAssertEqual(model.undoCount, 0)
+
+        model.beginTransformPanelTransaction()
+        model.updateTranslation(SIMD3<Float>(12, 3, -4))
+        XCTAssertTrue(model.isTransformPanelEditing); XCTAssertEqual(model.undoCount, 0)
+        try model.prepareForSTLExport()
+        XCTAssertFalse(model.isTransformPanelEditing); XCTAssertEqual(model.undoCount, 1)
+        XCTAssertEqual(model.objectTransform.translation, SIMD3<Float>(12, 3, -4))
+        let before = model.undoCount, revision = model.mesh.runtime.revision, topology = model.mesh.runtime.topologyID
+        _ = try model.stlData()
+        XCTAssertEqual(model.undoCount, before); XCTAssertEqual(model.mesh.runtime.revision, revision)
+        XCTAssertEqual(model.mesh.runtime.topologyID, topology)
     }
 
     func testSubdividedMeshTransformBakeKeepsTriangleCountAndSourceUnchanged() throws {

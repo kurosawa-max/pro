@@ -72,8 +72,10 @@ struct ContentView: View {
                     Button("Redo", systemImage: "arrow.uturn.forward") { model.redo() }
                         .disabled(!model.canRedo || model.isGizmoDragging)
                         .keyboardShortcut("z", modifiers: [.command, .shift])
-                    Button("STL", systemImage: "square.and.arrow.up") { showSTLOptions = true }
-                        .disabled(model.isStrokeActive || model.isGizmoDragging || model.isTransformPanelEditing)
+                    Button("STL", systemImage: "square.and.arrow.up") { beginSTLExport() }
+                    #if DEBUG
+                    .disabled(model.isBenchmarkRunning)
+                    #endif
                 }
             }
         }
@@ -146,6 +148,10 @@ struct ContentView: View {
     private func saveProject() {
         do { projectExport = ForgeFile(data: try model.projectData()); showProjectExporter = true }
         catch { model.status = "Save failed: \(error.localizedDescription)" }
+    }
+    private func beginSTLExport() {
+        do { try model.prepareForSTLExport(); showSTLOptions = true }
+        catch { model.status = "Export failed: \(error.localizedDescription)" }
     }
 }
 

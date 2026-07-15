@@ -145,6 +145,16 @@ final class WorkspaceModel: ObservableObject {
 
     var objectDimensions: ObjectDimensions? { ObjectDimensions.make(mesh: mesh, transform: objectTransform) }
 
+    func prepareForSTLExport() throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        cancelStroke()
+        cancelAllGizmoDrags()
+        commitTransformPanelTransaction()
+        hoverLocation = nil
+    }
+
     func stlEstimate(options: STLExportOptions = STLExportOptions()) throws -> STLExportEstimate {
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing else { throw WorkspaceError.activeEditInProgress }
         return try STLExportPipeline.estimate(mesh: mesh, transform: objectTransform, options: options)
