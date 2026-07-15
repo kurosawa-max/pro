@@ -441,3 +441,11 @@ Undo／RedoでTransformを適用してもobject-local mesh、topology ID、mesh 
 Primitive作成はmesh topologyの置換であり、新しい`EditableMesh` runtime、adjacency、topology IDを生成する。Picking BVH、Sculpt Spatial Index、Metal vertex／index bufferは固有runtime identityを検知して正規の再構築・upload経路を通り、変更のない後続frameでは再uploadしない。cameraはbounds centerをtargetとし、45度perspectiveに収まる有限distanceへauto-frameする。
 
 `ReplaceMeshCommand`は作成前後のmesh、ObjectTransform、cameraを値型snapshotとして統合Workspace historyへ保存する。Undoは編集済み旧meshを、Redoは生成meshを完全復元し、後続Sculptによるsnapshot汚染を避ける。Foundation段階では全mesh snapshotのメモリ負荷を許容するが、大規模mesh向けの履歴上限・圧縮は技術的負債である。projectには通常のvertices／indicesだけをFoundation v1で保存し、PrimitiveKindやprocedural parameterは保存しない。既存Icosphere Benchmark presetは変更しない。
+
+### 17.10 Flatten, Crease, and object-local symmetry
+
+SculptCoreはDraw／Smooth／GrabにFlatten／Creaseを追加する。Flattenはstroke最初の有効hitでobject-local planeを固定し、stroke中は同じorigin／normalへ有限clamp付きで近づける。Creaseはcenterへの接線pinch 70%とsurface内向きindent 30%を合成する。どちらも固定topologyでindexを変更しない。
+
+`SculptSymmetry`はobject-localのX/Y/Z面を独立指定し、X→Y→Zの決定順で最大8 centerへ展開する。center、surface normal、Grab delta、Flatten planeを同じaxis maskで反転する。epsilon内のcenterを除去し、同一vertexへ複数centerが重なる場合は最大変位候補だけを1sampleにつき1回適用する。symmetryはstroke開始時にsnapshotし、projectやUndoへ保存しない。
+
+候補取得は固定cellの`VertexSpatialIndex`を使い、topology時にbuildし、Sculpt後は変更vertexのcell membershipだけを更新する。normalは変更vertexと1-ring近傍に限定して再計算し、adjacency cacheを再利用する。1strokeはoriginal／mirror双方を1個の`StrokeCommand`へ確定し、cancelは全変更を復元する。index uploadとtopology変更は発生せず、vertex revisionは意味ある変更時だけ進む。symmetry plane overlay、radial symmetry、topology mirror、Mask、Dynamic Topologyは未実装である。

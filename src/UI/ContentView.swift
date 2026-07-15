@@ -92,7 +92,14 @@ struct ContentView: View {
         HStack(spacing: 16) {
             Picker("Brush", selection: $model.brush) {
                 ForEach(BrushKind.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }.pickerStyle(.segmented).frame(maxWidth: 360)
+            }.pickerStyle(.segmented).frame(maxWidth: 520)
+            HStack(spacing: 4) {
+                Text("Symmetry").font(.caption)
+                symmetryButton("X", axis: \.x)
+                symmetryButton("Y", axis: \.y)
+                symmetryButton("Z", axis: \.z)
+            }
+            .disabled(symmetryControlsDisabled)
             VStack(alignment: .leading) {
                 Text("Radius").font(.caption)
                 Slider(value: $model.brushSettings.radius, in: 0.05...0.75)
@@ -100,6 +107,23 @@ struct ContentView: View {
             Text(model.status).font(.caption).lineLimit(1)
         }
         .padding().background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func symmetryButton(_ title: String, axis: WritableKeyPath<SculptSymmetry, Bool>) -> some View {
+        Button(title) { model.symmetry[keyPath: axis].toggle() }
+            .buttonStyle(.borderedProminent)
+            .tint(model.symmetry[keyPath: axis] ? .blue : .gray)
+            .controlSize(.small)
+            .accessibilityLabel("\(title) axis symmetry")
+            .accessibilityValue(model.symmetry[keyPath: axis] ? "On" : "Off")
+    }
+
+    private var symmetryControlsDisabled: Bool {
+        #if DEBUG
+        model.isStrokeActive || model.isBenchmarkRunning
+        #else
+        model.isStrokeActive
+        #endif
     }
 
     private func saveProject() {

@@ -167,7 +167,8 @@ final class FoundationPrototypeTests: XCTestCase {
             let mutations = SculptBrush.apply(
                 kind: kind, center: SIMD3<Float>(0, 1, 0), normal: SIMD3<Float>(0, 1, 0),
                 drag: SIMD3<Float>(0.1, 0, 0), pressure: 1,
-                settings: BrushSettings(radius: 0.8, strength: 0.25), mesh: &mesh
+                settings: BrushSettings(radius: 0.8, strength: 0.25), mesh: &mesh,
+                flattenPlane: FlattenPlane(origin: SIMD3<Float>(0, 1, 0), normal: SIMD3<Float>(0, 1, 0))
             )
             XCTAssertFalse(mutations.isEmpty, "\(kind) must modify nearby vertices")
             XCTAssertLessThan(mutations.count, mesh.vertices.count)
@@ -323,7 +324,7 @@ final class FoundationPrototypeTests: XCTestCase {
 
     @MainActor
     func testAutomatedBenchmarkCasesAndConfigurationAreDeterministic() {
-        XCTAssertEqual(BenchmarkCase.allCases.map(\.rawValue), ["Picking", "Draw brush", "Smooth brush", "Grab brush", "Normal rebuild", "Vertex buffer upload", "Index buffer upload"])
+        XCTAssertEqual(BenchmarkCase.allCases.map(\.rawValue), ["Picking", "Draw brush", "Smooth brush", "Grab brush", "Flatten brush", "Crease brush", "Draw brush X symmetry", "Draw brush XYZ symmetry", "Crease brush XYZ symmetry", "Normal rebuild", "Vertex buffer upload", "Index buffer upload"])
         XCTAssertEqual(BenchmarkRunConfiguration.standard.warmUpIterations, 10)
         XCTAssertEqual(BenchmarkRunConfiguration.standard.measuredIterations, 60)
         XCTAssertEqual(BenchmarkRunner.fixedRay.origin, SIMD3<Float>(0, 0, 3))
@@ -386,7 +387,7 @@ final class FoundationPrototypeTests: XCTestCase {
         model.runAllBenchmarks()
         XCTAssertFalse(model.canUndo); XCTAssertFalse(model.canRedo)
         XCTAssertTrue(model.objectTransform.isIdentity)
-        for _ in 0..<10_000 where model.isBenchmarkRunning && model.benchmarkProgress < (5.0 / 21.0) { await Task.yield() }
+        for _ in 0..<10_000 where model.isBenchmarkRunning && model.benchmarkProgress < (5.0 / Double(BenchmarkPreset.allCases.count * BenchmarkCase.allCases.count)) { await Task.yield() }
         model.cancelBenchmarks()
         for _ in 0..<1_000 where model.isBenchmarkRunning { await Task.yield() }
         XCTAssertFalse(model.isBenchmarkRunning); XCTAssertEqual(model.mesh, originalMesh); XCTAssertEqual(model.camera, originalCamera)
@@ -1498,6 +1499,130 @@ final class FoundationPrototypeTests: XCTestCase {
         renderer.update(mesh: cube)
         XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 1)
         XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 1)
+    }
+
+    func testSymmetryCenterExpansionCountsPlanesOriginAndOrder() {
+        let point = SIMD3<Float>(1, 2, 3)
+        XCTAssertEqual(SculptSymmetryGeometry.centers(point, symmetry: .none), [point])
+        XCTAssertEqual(SculptSymmetryGeometry.centers(point, symmetry: SculptSymmetry(x: true)).count, 2)
+        XCTAssertEqual(SculptSymmetryGeometry.centers(point, symmetry: SculptSymmetry(y: true)).count, 2)
+        XCTAssertEqual(SculptSymmetryGeometry.centers(point, symmetry: SculptSymmetry(z: true)).count, 2)
+        XCTAssertEqual(SculptSymmetryGeometry.centers(point, symmetry: SculptSymmetry(x: true, y: true)).count, 4)
+        XCTAssertEqual(SculptSymmetryGeometry.centers(point, symmetry: SculptSymmetry(x: true, z: true)).count, 4)
+        XCTAssertEqual(SculptSymmetryGeometry.centers(point, symmetry: SculptSymmetry(y: true, z: true)).count, 4)
+        let xyz = SculptSymmetryGeometry.centers(point, symmetry: SculptSymmetry(x: true, y: true, z: true))
+        XCTAssertEqual(xyz.count, 8)
+        XCTAssertEqual(xyz, [SIMD3<Float>(1,2,3), SIMD3<Float>(-1,2,3), SIMD3<Float>(1,-2,3), SIMD3<Float>(-1,-2,3), SIMD3<Float>(1,2,-3), SIMD3<Float>(-1,2,-3), SIMD3<Float>(1,-2,-3), SIMD3<Float>(-1,-2,-3)])
+        XCTAssertEqual(SculptSymmetryGeometry.centers(SIMD3<Float>(0, 2, 3), symmetry: SculptSymmetry(x: true)).count, 1)
+        XCTAssertEqual(SculptSymmetryGeometry.centers(.zero, symmetry: SculptSymmetry(x: true, y: true, z: true)).count, 1)
+        XCTAssertTrue(SculptSymmetryGeometry.centers(SIMD3<Float>(.nan, 0, 0), symmetry: SculptSymmetry(x: true)).isEmpty)
+    }
+
+    func testSymmetryMirrorsNormalAndGrabDeltaByEveryAxis() throws {
+        let samples = SculptSymmetryGeometry.samples(center: SIMD3<Float>(1, 2, 3),
+            normal: simd_normalize(SIMD3<Float>(1, 2, 3)), drag: SIMD3<Float>(4, 5, 6),
+            symmetry: SculptSymmetry(x: true, y: true, z: true))
+        let xyz = try XCTUnwrap(samples.first { $0.mask == 7 })
+        XCTAssertEqual(xyz.center, SIMD3<Float>(-1, -2, -3))
+        XCTAssertEqual(xyz.drag, SIMD3<Float>(-4, -5, -6))
+        XCTAssertEqual(simd_length(xyz.normal), 1, accuracy: 0.000_01)
+        XCTAssertLessThan(xyz.normal.x, 0); XCTAssertLessThan(xyz.normal.y, 0); XCTAssertLessThan(xyz.normal.z, 0)
+        XCTAssertTrue(SculptSymmetryGeometry.samples(center: .zero, normal: SIMD3<Float>(.infinity, 0, 0), drag: .zero, symmetry: .none).isEmpty)
+    }
+
+    func testFlattenMovesTowardFixedPlaneAndHonorsZeroInputsClampAndRadius() {
+        let source = EditableMesh(vertices: [
+            MeshVertex(position: SIMD3<Float>(0, 0, 0.2), normal: SIMD3<Float>(0, 0, 1)),
+            MeshVertex(position: SIMD3<Float>(0.2, 0, 0), normal: SIMD3<Float>(0, 0, 1)),
+            MeshVertex(position: SIMD3<Float>(2, 0, 0.2), normal: SIMD3<Float>(0, 0, 1))], indices: [0, 1, 2])
+        var mesh = source
+        let mutations = SculptBrush.apply(kind: .flatten, center: .zero, normal: SIMD3<Float>(0, 0, 1), drag: .zero,
+            pressure: 1, settings: BrushSettings(radius: 1, strength: 1), mesh: &mesh,
+            flattenPlane: FlattenPlane(origin: .zero, normal: SIMD3<Float>(0, 0, 1)))
+        XCTAssertLessThan(mesh.vertices[0].position.z, 0.2); XCTAssertGreaterThanOrEqual(mesh.vertices[0].position.z, 0.1)
+        XCTAssertEqual(mesh.vertices[1].position, source.vertices[1].position)
+        XCTAssertEqual(mesh.vertices[2].position, source.vertices[2].position)
+        XCTAssertLessThanOrEqual(simd_length(mutations[0].after - mutations[0].before), 0.100_001)
+        var zero = source
+        XCTAssertTrue(SculptBrush.apply(kind: .flatten, center: .zero, normal: SIMD3<Float>(0,0,1), drag: .zero,
+            pressure: 0, settings: BrushSettings(radius: 1, strength: 1), mesh: &zero,
+            flattenPlane: FlattenPlane(origin: .zero, normal: SIMD3<Float>(0,0,1))).isEmpty)
+        XCTAssertTrue(SculptBrush.apply(kind: .flatten, center: .zero, normal: .zero, drag: .zero,
+            pressure: 1, settings: BrushSettings(radius: 1, strength: 1), mesh: &zero,
+            flattenPlane: FlattenPlane(origin: .zero, normal: .zero)).isEmpty)
+    }
+
+    func testCreasePinchesTangentiallyIndentsAndStaysFiniteAtCenter() {
+        var mesh = EditableMesh(vertices: [
+            MeshVertex(position: SIMD3<Float>(0.5, 0, 0), normal: SIMD3<Float>(0, 0, 1)),
+            MeshVertex(position: .zero, normal: SIMD3<Float>(0, 0, 1)),
+            MeshVertex(position: SIMD3<Float>(2, 0, 0), normal: SIMD3<Float>(0, 0, 1))], indices: [0, 1, 2])
+        let topology = mesh.runtime.topologyID, indices = mesh.indices
+        _ = SculptBrush.apply(kind: .crease, center: .zero, normal: SIMD3<Float>(0,0,1), drag: .zero,
+            pressure: 1, settings: BrushSettings(radius: 1, strength: 1), mesh: &mesh)
+        XCTAssertLessThan(mesh.vertices[0].position.x, 0.5); XCTAssertLessThan(mesh.vertices[0].position.z, 0)
+        XCTAssertTrue(mesh.vertices[1].position.allFinite); XCTAssertEqual(mesh.vertices[2].position, SIMD3<Float>(2,0,0))
+        XCTAssertEqual(mesh.indices, indices); XCTAssertEqual(mesh.runtime.topologyID, topology)
+    }
+
+    func testSymmetryPlaneVertexIsNotDoubleAppliedAndXYZIsOneUpdatePerVertex() {
+        let source = EditableMesh.icosphere(subdivisions: 1)
+        var none = source, mirrored = source
+        let settings = BrushSettings(radius: 0.4, strength: 0.5)
+        let normal = SIMD3<Float>(0, 0, 1), center = SIMD3<Float>(0, 0, 1)
+        let first = SculptBrush.apply(kind: .draw, center: center, normal: normal, drag: .zero,
+                                     pressure: 1, settings: settings, mesh: &none)
+        let second = SculptBrush.apply(kind: .draw, center: center, normal: normal, drag: .zero,
+            pressure: 1, settings: settings, mesh: &mirrored, symmetry: SculptSymmetry(x: true, y: true))
+        XCTAssertEqual(none, mirrored)
+        XCTAssertEqual(Set(second.map(\.index)).count, second.count)
+        XCTAssertEqual(first.count, second.count)
+        var xyz = source
+        let xyzChanges = SculptBrush.apply(kind: .draw, center: SIMD3<Float>(0.4, 0.3, 0.8), normal: normal,
+            drag: .zero, pressure: 1, settings: settings, mesh: &xyz,
+            symmetry: SculptSymmetry(x: true, y: true, z: true))
+        XCTAssertEqual(Set(xyzChanges.map(\.index)).count, xyzChanges.count)
+    }
+
+    func testVertexSpatialIndexReusesTopologyAndUpdatesMovedCells() {
+        var mesh = EditableMesh.icosphere(subdivisions: 1); let index = VertexSpatialIndex(cellSize: 0.2)
+        let initial = index.candidates(center: SIMD3<Float>(0, 0, 1), radius: 0.3, mesh: mesh)
+        XCTAssertFalse(initial.isEmpty); XCTAssertEqual(index.buildCount, 1)
+        let vertex = initial[0]
+        let mutations = mesh.updatePositions([vertex: SIMD3<Float>(10, 10, 10)])
+        index.didUpdate(mutations, mesh: mesh)
+        XCTAssertEqual(index.buildCount, 1); XCTAssertEqual(index.updateCount, 1)
+        XCTAssertFalse(index.candidates(center: SIMD3<Float>(10,10,10), radius: 0.1, mesh: mesh).isEmpty)
+        XCTAssertEqual(index.buildCount, 1)
+    }
+
+    @MainActor
+    func testSymmetryStrokeIsOneUndoCommandAndCancelRestoresBothSides() {
+        let model = WorkspaceModel(); model.symmetry = SculptSymmetry(x: true)
+        let original = model.mesh, sample = PencilSample(location: .zero, force: 1, maximumForce: 1, altitude: 1, azimuth: 0, timestamp: 0)
+        model.beginStroke(); model.updateStroke(sample: sample, ray: Ray(origin: SIMD3<Float>(0.4, 0, 3), direction: SIMD3<Float>(0,0,-1))); model.endStroke()
+        XCTAssertEqual(model.undoCount, 1); XCTAssertNotEqual(model.mesh, original)
+        let sculpted = model.mesh; model.undo(); XCTAssertEqual(model.mesh, original)
+        model.redo(); XCTAssertEqual(model.mesh, sculpted)
+        let count = model.undoCount
+        model.beginStroke(); model.updateStroke(sample: sample, ray: Ray(origin: SIMD3<Float>(0.4, 0, 3), direction: SIMD3<Float>(0,0,-1))); model.cancelStroke()
+        XCTAssertEqual(model.mesh, sculpted); XCTAssertEqual(model.undoCount, count)
+    }
+
+    @MainActor
+    func testFlattenStrokeUsesOnePlaneAndSaveLoadKeepsOnlySculptedMesh() throws {
+        let model = WorkspaceModel(); model.brush = .flatten; model.symmetry = SculptSymmetry(z: true)
+        let topology = model.mesh.runtime.topologyID
+        let sample = PencilSample(location: .zero, force: 1, maximumForce: 1, altitude: 1, azimuth: 0, timestamp: 0)
+        model.beginStroke()
+        model.updateStroke(sample: sample, ray: Ray(origin: SIMD3<Float>(0.2, 0, 3), direction: SIMD3<Float>(0,0,-1)))
+        model.updateStroke(sample: sample, ray: Ray(origin: SIMD3<Float>(0.3, 0, 3), direction: SIMD3<Float>(0,0,-1)))
+        model.endStroke()
+        XCTAssertEqual(model.undoCount, 1); XCTAssertEqual(model.mesh.runtime.topologyID, topology)
+        let data = try model.projectData(), decoded = try ProjectCodec.decode(data)
+        XCTAssertEqual(decoded.mesh, model.mesh); XCTAssertEqual(decoded.formatVersion, 1)
+        let loaded = WorkspaceModel(); loaded.symmetry = SculptSymmetry(x: true); loaded.load(data: data)
+        XCTAssertEqual(loaded.symmetry, .none)
     }
 
     private func assertClosedOutwardMesh(_ mesh: EditableMesh, areaEpsilon: Float = 0.000_000_01,

@@ -28,6 +28,8 @@ SculptとTransformを単一時系列で扱うWorkspace historyを追加する。
 
 単一object Primitive生成として、weld済みUV Sphere、8共有頂点Cube、Y-up Cylinder、parameter入力sheet、bounds camera framingを追加する。生成はtopology置換としてruntime cacheを再構築し、mesh／Transform／camera snapshotの`ReplaceMeshCommand`でUndo／Redoする。projectには通常meshだけを保存し、procedural parameter、複数object、hard-edge render cacheは含めない。既存Icosphere Benchmark条件は維持する。全mesh snapshotの履歴memory上限は後続課題とする。
 
+固定topology SculptへFlatten、Crease、object-local X／Y／Z symmetryを追加する。複数軸は最大8 centerへ展開し、center／vertexをdedupeしてnormal／Grab delta／Flatten planeをmirrorする。Vertex Spatial Index候補検索、1-ring normal更新、1stroke＝1Commandを維持し、BenchmarkへFlatten／Crease／X／XYZ caseを追加する。symmetry plane表示、radial symmetry、Mask、Dynamic Topologyは後続範囲とする。
+
 ## Milestone 0 — Repository Foundation
 
 - Xcode workspace作成

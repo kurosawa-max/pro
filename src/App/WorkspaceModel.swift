@@ -20,6 +20,7 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var scaleGizmoState = ScaleGizmoState()
     @Published var brush = BrushKind.draw
     @Published var brushSettings = BrushSettings()
+    @Published var symmetry = SculptSymmetry.none
     @Published var hoverLocation: CGPoint?
     @Published var status = "Ready"
     @Published private(set) var canUndo = false
@@ -35,8 +36,11 @@ final class WorkspaceModel: ObservableObject {
 
     private var history = WorkspaceHistory()
     private let pickingCache = MeshBVHCache()
+    private let sculptSpatialIndex = VertexSpatialIndex()
     private var strokeBefore: [Int: SIMD3<Float>]?
     private var lastHit: SIMD3<Float>?
+    private var strokeSymmetry = SculptSymmetry.none
+    private var flattenPlane: FlattenPlane?
     private var panelTransformBefore: ObjectTransform?
 
     init() {
@@ -51,6 +55,8 @@ final class WorkspaceModel: ObservableObject {
         commitTransformPanelTransaction()
         if strokeBefore != nil { cancelStroke() }
         strokeBefore = [:]
+        strokeSymmetry = symmetry
+        flattenPlane = nil
         lastHit = nil
     }
 
@@ -58,12 +64,14 @@ final class WorkspaceModel: ObservableObject {
         guard let localRay = objectTransform.localRay(fromWorld: ray),
               let hit = MeshPicker.hit(ray: localRay, mesh: mesh, profiler: profiler, cache: pickingCache) else { return }
         let drag = lastHit.map { hit.position - $0 } ?? .zero
+        if brush == .flatten, flattenPlane == nil { flattenPlane = FlattenPlane(origin: hit.position, normal: hit.normal) }
         var localSettings = brushSettings
         let maximumScale = max(abs(objectTransform.scale.x), abs(objectTransform.scale.y), abs(objectTransform.scale.z))
         localSettings.radius = brushSettings.radius / max(maximumScale, ObjectTransform.minimumScaleMagnitude)
         let mutations = SculptBrush.apply(kind: brush, center: hit.position, normal: hit.normal, drag: drag,
-                                          pressure: max(sample.pressure, 0.05), settings: localSettings,
-                                          mesh: &mesh, profiler: profiler)
+                                          pressure: sample.pressure, settings: localSettings,
+                                          mesh: &mesh, profiler: profiler, symmetry: strokeSymmetry,
+                                          flattenPlane: flattenPlane, spatialIndex: sculptSpatialIndex)
         for mutation in mutations where strokeBefore?[mutation.index] == nil {
             strokeBefore?[mutation.index] = mutation.before
         }
@@ -77,13 +85,17 @@ final class WorkspaceModel: ObservableObject {
             return VertexChange(index: index, before: before[index]!, after: mesh.vertices[index].position)
         }
         record(.sculpt(StrokeCommand(changes: changes)))
-        strokeBefore = nil; lastHit = nil
+        strokeBefore = nil; lastHit = nil; flattenPlane = nil
     }
 
     func cancelStroke() {
-        if let before = strokeBefore { _ = mesh.updatePositions(before, profiler: profiler) }
+        if let before = strokeBefore {
+            let mutations = mesh.updatePositions(before, profiler: profiler)
+            sculptSpatialIndex.didUpdate(mutations, mesh: mesh)
+        }
         strokeBefore = nil
         lastHit = nil
+        flattenPlane = nil
     }
 
     func undo() {
@@ -122,6 +134,7 @@ final class WorkspaceModel: ObservableObject {
             let project = try ProjectCodec.decode(data)
             discardTransformPanelTransaction()
             mesh = project.mesh; camera = project.camera; objectTransform = project.transform.sanitized()
+            symmetry = .none
             history.removeAll(); syncHistoryAvailability(); status = "Project loaded"
             #if DEBUG
             benchmarkPreset = nil
@@ -439,7 +452,8 @@ final class WorkspaceModel: ObservableObject {
             let positions = Dictionary(uniqueKeysWithValues: stroke.changes.map {
                 ($0.index, useAfter ? $0.after : $0.before)
             })
-            _ = mesh.updatePositions(positions, profiler: profiler)
+            let mutations = mesh.updatePositions(positions, profiler: profiler)
+            sculptSpatialIndex.didUpdate(mutations, mesh: mesh)
         case .transform(let transform):
             objectTransform = (useAfter ? transform.after : transform.before).sanitized()
         case .replaceMesh(let replacement):
@@ -493,9 +507,11 @@ final class WorkspaceModel: ObservableObject {
         cancelAllGizmoDrags()
         let originalMesh = mesh, originalCamera = camera, originalBrush = brush
         let originalSettings = brushSettings, originalPreset = benchmarkPreset, originalHistory = history
+        let originalSymmetry = symmetry
         let originalTransform = objectTransform
         let runner = BenchmarkRunner(); benchmarkRunner = runner
         objectTransform = .identity
+        symmetry = .none
         isBenchmarkRunning = true; benchmarkProgress = 0; lastBenchmarkReport = nil
         syncHistoryAvailability()
         benchmarkTask = Task { @MainActor [weak self] in
@@ -504,6 +520,7 @@ final class WorkspaceModel: ObservableObject {
                 self.mesh = originalMesh; self.camera = originalCamera; self.brush = originalBrush
                 self.brushSettings = originalSettings; self.benchmarkPreset = originalPreset; self.history = originalHistory
                 self.objectTransform = originalTransform
+                self.symmetry = originalSymmetry
                 self.profiler?.reset(vertexCount: originalMesh.vertices.count, triangleCount: originalMesh.indices.count / 3)
                 self.isBenchmarkRunning = false; self.benchmarkRunner = nil; self.benchmarkTask = nil
                 self.syncHistoryAvailability()
