@@ -150,6 +150,31 @@ final class WorkspaceModel: ObservableObject {
     var redoCount: Int { history.redoStack.count }
     var isTransformPanelEditing: Bool { panelTransformBefore != nil }
 
+    func subdivisionEstimate() throws -> SubdivisionEstimate {
+        try MeshSubdivision.estimate(mesh)
+    }
+
+    func subdivideMeshOnce() throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        commitTransformPanelTransaction()
+        cancelStroke()
+        cancelAllGizmoDrags()
+        let estimate = try MeshSubdivision.estimate(mesh)
+        try MeshSubdivision.validateLimits(estimate)
+        let before = workspaceSnapshot
+        let subdivided = try MeshSubdivision.subdivideOnce(mesh)
+        mesh = subdivided
+        hoverLocation = nil
+        #if DEBUG
+        benchmarkPreset = nil
+        #endif
+        profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
+        record(.replaceMesh(ReplaceMeshCommand(before: before, after: workspaceSnapshot)))
+        status = "Subdivided: \(estimate.resultVertices) vertices, \(estimate.resultTriangles) triangles"
+    }
+
     func createPrimitive(parameters: PrimitiveParameters) throws {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }

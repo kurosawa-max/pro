@@ -244,6 +244,14 @@ Pencil入力とカメラ操作を明確に分離し、誤操作を防ぐ。
 
 ## 10. Undo / Redo
 
+### Manual linear triangle subdivision
+
+手動Subdivideはobject-local三角形meshの各共有辺へ一意な中点を作り、1 triangleをwindingを保った4 trianglesへ置換する。元頂点は移動せず、Loop/Catmull-Clark smoothingを同時に行わない。無向edge keyのmidpoint cacheによりseamを防ぎ、完成後にnormalとadjacencyを全再構築する。
+
+これは完全なtopology変更である。新しい`EditableMesh` runtime identityを作るため、`revision`（vertex data変更）、`topologyRevision`（接続構造変更）、`topologyID`（runtime mesh identity）は新runtimeとして開始し、BVH、VertexSpatialIndex、Metal vertex/index bufferを正規経路で再構築する。Transformとcameraは変更しない。
+
+Undoは差分でなく`ReplaceMeshCommand`のbefore/after snapshotを使う。topologyを跨ぐ安全性を優先した判断であり、大規模meshではメモリ負荷が高い。500,000 vertices／1,000,000 trianglesの実用上限と事前memory estimateで危険な操作を拒否する。degenerate/non-manifold入力は暗黙修復せず拒否する。将来Half-edge実装へ移行する際の置換点は`MeshSubdivision`境界である。
+
 Command Patternを採用する。
 
 ```text

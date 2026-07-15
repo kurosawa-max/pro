@@ -324,7 +324,7 @@ final class FoundationPrototypeTests: XCTestCase {
 
     @MainActor
     func testAutomatedBenchmarkCasesAndConfigurationAreDeterministic() {
-        XCTAssertEqual(BenchmarkCase.allCases.map(\.rawValue), ["Picking", "Draw brush", "Smooth brush", "Grab brush", "Flatten brush", "Crease brush", "Draw brush X symmetry", "Draw brush XYZ symmetry", "Crease brush XYZ symmetry", "Normal rebuild", "Vertex buffer upload", "Index buffer upload"])
+        XCTAssertEqual(BenchmarkCase.allCases.map(\.rawValue), ["Picking", "Draw brush", "Smooth brush", "Grab brush", "Flatten brush", "Crease brush", "Draw brush X symmetry", "Draw brush XYZ symmetry", "Crease brush XYZ symmetry", "Normal rebuild", "Vertex buffer upload", "Index buffer upload", "Subdivide once"])
         XCTAssertEqual(BenchmarkRunConfiguration.standard.warmUpIterations, 10)
         XCTAssertEqual(BenchmarkRunConfiguration.standard.measuredIterations, 60)
         XCTAssertEqual(BenchmarkRunner.fixedRay.origin, SIMD3<Float>(0, 0, 3))
@@ -1623,6 +1623,105 @@ final class FoundationPrototypeTests: XCTestCase {
         XCTAssertEqual(decoded.mesh, model.mesh); XCTAssertEqual(decoded.formatVersion, 1)
         let loaded = WorkspaceModel(); loaded.symmetry = SculptSymmetry(x: true); loaded.load(data: data)
         XCTAssertEqual(loaded.symmetry, .none)
+    }
+
+    func testSubdivisionEdgeKeyIsUndirectedAndSupportsBoundaryValues() {
+        XCTAssertEqual(SubdivisionEdgeKey(1, 2), SubdivisionEdgeKey(2, 1))
+        XCTAssertEqual(SubdivisionEdgeKey(4, 4), SubdivisionEdgeKey(4, 4))
+        XCTAssertEqual(SubdivisionEdgeKey(UInt32.max, 0).low, 0)
+        XCTAssertEqual(SubdivisionEdgeKey(UInt32.max, 0).high, UInt32.max)
+    }
+
+    func testSingleTriangleSubdivisionCountsMidpointsWindingAndBounds() throws {
+        let source = EditableMesh(vertices: [
+            MeshVertex(position: SIMD3<Float>(0, 0, 0), normal: SIMD3<Float>(0, 0, 1)),
+            MeshVertex(position: SIMD3<Float>(1, 0, 0), normal: SIMD3<Float>(0, 0, 1)),
+            MeshVertex(position: SIMD3<Float>(0, 1, 0), normal: SIMD3<Float>(0, 0, 1))
+        ], indices: [0, 1, 2])
+        let estimate = try MeshSubdivision.estimate(source), result = try MeshSubdivision.subdivideOnce(source)
+        XCTAssertEqual(estimate.uniqueEdges, 3); XCTAssertEqual(result.vertices.count, 6)
+        XCTAssertEqual(result.indices.count / 3, 4); XCTAssertEqual(source.vertices.count, 3)
+        XCTAssertEqual(result.bounds, source.bounds)
+        for offset in stride(from: 0, to: result.indices.count, by: 3) {
+            let a = result.vertices[Int(result.indices[offset])].position
+            let b = result.vertices[Int(result.indices[offset + 1])].position
+            let c = result.vertices[Int(result.indices[offset + 2])].position
+            XCTAssertGreaterThan(simd_cross(b - a, c - a).z, 0)
+        }
+        XCTAssertTrue(result.vertices.allSatisfy { $0.normal.allFinite && abs(simd_length($0.normal) - 1) < 0.0001 })
+    }
+
+    func testSharedEdgeCreatesOneMidpointAndContinuousAdjacency() throws {
+        let source = EditableMesh(vertices: [
+            MeshVertex(position: SIMD3<Float>(0,0,0), normal: .zero), MeshVertex(position: SIMD3<Float>(1,0,0), normal: .zero),
+            MeshVertex(position: SIMD3<Float>(1,1,0), normal: .zero), MeshVertex(position: SIMD3<Float>(0,1,0), normal: .zero)
+        ], indices: [0,1,2, 0,2,3])
+        let estimate = try MeshSubdivision.estimate(source); var result = try MeshSubdivision.subdivideOnce(source)
+        XCTAssertEqual(estimate.uniqueEdges, 5); XCTAssertEqual(result.vertices.count, 9)
+        XCTAssertEqual(result.indices.count / 3, 8)
+        XCTAssertEqual(result.vertices.filter { simd_length($0.position - SIMD3<Float>(0.5,0.5,0)) < 0.00001 }.count, 1)
+        let adjacency = result.adjacency()
+        XCTAssertTrue(adjacency.enumerated().allSatisfy { index, neighbors in neighbors.allSatisfy { adjacency[$0].contains(index) } })
+    }
+
+    func testCubeSubdivisionFormulaManifoldBoundsAndOriginalVertices() throws {
+        let source = try PrimitiveMeshBuilder.cube(size: 2), sourcePositions = source.vertices.map(\.position)
+        let estimate = try MeshSubdivision.estimate(source), result = try MeshSubdivision.subdivideOnce(source)
+        XCTAssertEqual(estimate.uniqueEdges, 18); XCTAssertEqual(result.vertices.count, 26)
+        XCTAssertEqual(result.indices.count / 3, 48); XCTAssertEqual(Array(result.vertices.prefix(8)).map(\.position), sourcePositions)
+        XCTAssertEqual(result.bounds, source.bounds); assertClosedOutwardMesh(result)
+    }
+
+    func testSphereCylinderAndIcosphereSubdivisionRemainValidManifolds() throws {
+        let meshes = [try PrimitiveMeshBuilder.sphere(radius: 1, longitudeSegments: 12, latitudeRings: 6),
+                      try PrimitiveMeshBuilder.cylinder(radius: 1, height: 2, radialSegments: 12, heightSegments: 2),
+                      EditableMesh.icosphere(subdivisions: 2)]
+        for source in meshes {
+            let result = try MeshSubdivision.subdivideOnce(source)
+            XCTAssertEqual(result.indices.count, source.indices.count * 4)
+            XCTAssertEqual(result.bounds, source.bounds); assertClosedOutwardMesh(result)
+        }
+    }
+
+    func testSubdivisionRejectsDegenerateNonManifoldAndNonFiniteInputs() {
+        let v = MeshVertex(position: .zero, normal: SIMD3<Float>(0,1,0))
+        XCTAssertThrowsError(try MeshSubdivision.estimate(EditableMesh(vertices: [v,v,v], indices: [0,1,2])))
+        let finite = [v, MeshVertex(position: SIMD3<Float>(1,0,0), normal: v.normal),
+                      MeshVertex(position: SIMD3<Float>(0,1,0), normal: v.normal),
+                      MeshVertex(position: SIMD3<Float>(0,-1,0), normal: v.normal),
+                      MeshVertex(position: SIMD3<Float>(0,0,1), normal: v.normal)]
+        XCTAssertThrowsError(try MeshSubdivision.estimate(EditableMesh(vertices: finite, indices: [0,1,2, 1,0,3, 0,1,4])))
+        var invalid = finite; invalid[0].position.x = .infinity
+        XCTAssertThrowsError(try MeshSubdivision.estimate(EditableMesh(vertices: invalid, indices: [0,1,2])))
+    }
+
+    @MainActor
+    func testWorkspaceSubdivisionPreservesStateAndUndoRedoSnapshots() throws {
+        let model = WorkspaceModel()
+        model.updateTranslation(SIMD3<Float>(1,2,3)); model.camera.yaw = 0.9
+        model.symmetry = SculptSymmetry(x: true, z: true); model.brush = .crease
+        let source = model.mesh, transform = model.objectTransform, camera = model.camera
+        let historyBefore = model.undoCount
+        try model.subdivideMeshOnce()
+        let subdivided = model.mesh
+        XCTAssertEqual(subdivided.indices.count, source.indices.count * 4)
+        XCTAssertNotEqual(subdivided.runtime.topologyID, source.runtime.topologyID)
+        XCTAssertEqual(model.objectTransform, transform); XCTAssertEqual(model.camera, camera)
+        XCTAssertEqual(model.symmetry, SculptSymmetry(x: true, z: true)); XCTAssertEqual(model.brush, .crease)
+        XCTAssertEqual(model.undoCount, historyBefore + 1)
+        model.undo(); XCTAssertEqual(model.mesh, source); XCTAssertEqual(model.objectTransform, transform); XCTAssertEqual(model.camera, camera)
+        model.redo(); XCTAssertEqual(model.mesh, subdivided)
+        _ = model.mesh.updatePositions([0: model.mesh.vertices[0].position * 0.99])
+        model.undo(); model.redo(); XCTAssertEqual(model.mesh, subdivided)
+    }
+
+    func testSubdivisionSaveLoadAndSTLTriangleCount() throws {
+        let source = try PrimitiveMeshBuilder.cube(size: 1), result = try MeshSubdivision.subdivideOnce(source)
+        let project = ForgeProject(mesh: result, camera: CameraState(), transform: .identity, metadata: [:])
+        let decoded = try ProjectCodec.decode(ProjectCodec.encode(project))
+        XCTAssertEqual(decoded.mesh, result); XCTAssertEqual(decoded.formatVersion, 1)
+        let stl = try BinarySTLExporter.data(for: result)
+        XCTAssertEqual(stl.count, 84 + (result.indices.count / 3) * 50)
     }
 
     private func assertClosedOutwardMesh(_ mesh: EditableMesh, areaEpsilon: Float = 0.000_000_01,

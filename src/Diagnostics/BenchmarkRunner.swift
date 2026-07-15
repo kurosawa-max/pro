@@ -32,6 +32,7 @@ enum BenchmarkCase: String, CaseIterable, Codable {
     case normalRebuild = "Normal rebuild"
     case vertexUpload = "Vertex buffer upload"
     case indexUpload = "Index buffer upload"
+    case subdivide = "Subdivide once"
 
     var metric: PerformanceMetric {
         switch self {
@@ -40,6 +41,7 @@ enum BenchmarkCase: String, CaseIterable, Codable {
         case .normalRebuild: .normalRebuild
         case .vertexUpload: .vertexUpload
         case .indexUpload: .indexUpload
+        case .subdivide: .subdivision
         }
     }
 }
@@ -165,6 +167,16 @@ final class BenchmarkRunner {
             mesh = Self.makeIndexUploadMesh(for: preset)
             installMesh(mesh)
             return await waitForSample(.indexUpload, after: before, profiler: profiler)
+        case .subdivide:
+            let vertexBefore = profiler.sampleCount(for: .vertexUpload)
+            let indexBefore = profiler.sampleCount(for: .indexUpload)
+            guard let subdivided = try? PerformanceProfiler.measure(profiler, metric: .subdivision, operation: {
+                try MeshSubdivision.subdivideOnce(preset.makeMesh())
+            }) else { return false }
+            mesh = subdivided
+            installMesh(mesh)
+            guard await waitForSample(.vertexUpload, after: vertexBefore, profiler: profiler) else { return false }
+            return await waitForSample(.indexUpload, after: indexBefore, profiler: profiler)
         }
         return true
     }
