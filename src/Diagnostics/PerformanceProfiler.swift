@@ -7,6 +7,7 @@ enum PerformanceMetric: CaseIterable, Hashable {
     case normalRebuild
     case vertexUpload
     case indexUpload
+    case subdivision
     case frameCPU
     case frameInterval
 }

@@ -70,6 +70,8 @@ Debug専用RunnerはSmall／Medium／LargeごとにPicking、Draw、Smooth、Gra
 
 Uploadケースはmesh install前後のmetric別sampleCountをDebug Profilerで確認する。5msの非同期sleepでMainActorを解放しながら、各反復で正確に1サンプル増えるまで最大500ms待つ。timeoutまたはcancel時はreportを成功扱いしない。Index uploadは対象presetと同じsubdivisionから毎回新しいtopology identityのmeshを生成するため、reportの規模と実測対象が一致する。GPU完了待ちは行わない。
 
+`Subdivide once`ケースは各Small/Medium/Large presetの同一base meshから毎iteration 1段階だけLinear Subdivisionを行う。連続細分化による指数的増加を避け、CPU subdivision時間と、正規Renderer経路で生じるvertex/index upload acknowledgementを確認する。Debug CPU値であり、GPU完了時間やRelease性能保証、固定しきい値による合否には使わない。
+
 ## Picking BVH
 
 Picking metricはCPU BVHのcache更新、AABB traversal、leaf内Ray–triangle intersectionを含む利用者体感の全処理を計測する。Workspaceはmeshごとのcacheを所有し、topology ID変更でbuild、vertex revision変更でrefit、同一revisionでreuseする。Automated BenchmarkのPickingも同じ通常経路とケースローカルcacheを使う。

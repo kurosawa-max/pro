@@ -105,6 +105,7 @@ SculptとTransformを単一時系列で扱うWorkspace historyを追加する。
 - Pinch
 - Mask
 - Manual subdivision
+- Manual linear triangle subdivision（共有辺midpoint、snapshot Undo、実用上限、Debug benchmark）はFoundationで実装済み。Loop smoothing、adaptive/local subdivision、Dynamic Topologyは未実装。
 - Sculpt layers
 - Alpha/stamp brush
 - 高密度メッシュ最適化

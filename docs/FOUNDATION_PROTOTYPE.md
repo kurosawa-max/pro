@@ -89,6 +89,14 @@ Flattenはstroke最初の有効hit planeを固定し、Creaseは接線方向pinc
 
 symmetryはstroke開始時に固定され、1stroke全体をoriginal／mirror込みの1 Undo commandにする。UI設定はprojectへ保存せず、load後は全軸OFFである。3D symmetry plane表示、radial symmetry、topology mirror、Mask、Dynamic Topologyは未実装である。
 
+## Manual mesh subdivision
+
+通常toolbarの`Subdivide`は現在meshをLinear Triangle Subdivisionで1段階だけ細分化する。元頂点を移動せず、共有辺の中点cacheを再利用し、各triangleを4 trianglesへwindingを保って分割する。確認画面は現在値、予測vertices/triangles、保守的なworking-memory概算を表示する。
+
+処理後はnormal、adjacency、boundsと全runtime cacheを新meshとして再構築する。Transform、camera、brush、symmetry、gizmo modeは維持し、1回の操作を`ReplaceMeshCommand` 1件としてUndo/Redoする。保存形式version 1には結果vertices/indicesだけを保存し、subdivision levelやmidpoint metadataは追加しない。
+
+上限は500,000 vertices／1,000,000 trianglesで、超過・overflow・non-manifold・degenerate・非finite入力はmeshと履歴を変更せず拒否する。初版は原子的な状態管理を優先したMainActor同期処理である。Loop/Catmull-Clark、adaptive/local subdivision、Dynamic Topology、GPU subdivision、元頂点再配置は未実装である。
+
 ## 実機検証項目
 
 1. iPadOS 17+ の iPad で起動し、球体が表示される。

@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var showProjectExporter = false
     @State private var showSTLExporter = false
     @State private var showPrimitiveCreator = false
+    @State private var showSubdivision = false
     @State private var projectExport = ForgeFile(data: Data())
     @State private var stlExport = STLFile(data: Data())
 
@@ -41,6 +42,8 @@ struct ContentView: View {
                     Button("Open", systemImage: "folder") { showImporter = true }
                     Button("Save", systemImage: "square.and.arrow.down") { saveProject() }
                     Button("New Primitive", systemImage: "cube") { showPrimitiveCreator = true }
+                    Button("Subdivide", systemImage: "triangle") { showSubdivision = true }
+                        .accessibilityHint("Each triangle becomes four")
                     #if DEBUG
                     .disabled(model.isBenchmarkRunning)
                     #endif
@@ -80,6 +83,7 @@ struct ContentView: View {
             catch { model.status = "Open failed: \(error.localizedDescription)" }
         }
         .sheet(isPresented: $showPrimitiveCreator) { PrimitiveCreationView(model: model) }
+        .sheet(isPresented: $showSubdivision) { MeshSubdivisionView(model: model) }
         .fileExporter(isPresented: $showProjectExporter, document: projectExport, contentType: .forge3D, defaultFilename: "Untitled.forge3d") { result in
             if case .failure(let error) = result { model.status = "Save failed: \(error.localizedDescription)" }
         }
