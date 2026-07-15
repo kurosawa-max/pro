@@ -78,6 +78,8 @@ SculptとTransformを単一時系列で扱うWorkspace historyを追加する。
 
 ## Milestone 4 — Project and Export
 
+- 1 unit = 1 mm、world dimensions、ObjectTransform bake済みBinary STL、As Displayed/Center at OriginはFoundationで実装済み。STL unit metadata、3MF、OBJ Transform bake、multiple-object exportは未実装。
+
 - `.forge3d`形式
 - 自動保存
 - 復旧

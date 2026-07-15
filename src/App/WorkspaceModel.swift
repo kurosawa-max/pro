@@ -143,7 +143,27 @@ final class WorkspaceModel: ObservableObject {
         } catch { status = "Open failed: \(error.localizedDescription)" }
     }
 
-    func stlData() throws -> Data { try BinarySTLExporter.data(for: mesh) }
+    var objectDimensions: ObjectDimensions? { ObjectDimensions.make(mesh: mesh, transform: objectTransform) }
+
+    func prepareForSTLExport() throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        cancelStroke()
+        cancelAllGizmoDrags()
+        commitTransformPanelTransaction()
+        hoverLocation = nil
+    }
+
+    func stlEstimate(options: STLExportOptions = STLExportOptions()) throws -> STLExportEstimate {
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing else { throw WorkspaceError.activeEditInProgress }
+        return try STLExportPipeline.estimate(mesh: mesh, transform: objectTransform, options: options)
+    }
+
+    func stlData(options: STLExportOptions = STLExportOptions()) throws -> Data {
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing else { throw WorkspaceError.activeEditInProgress }
+        return try BinarySTLExporter.data(for: mesh, transform: objectTransform, options: options)
+    }
 
     var isStrokeActive: Bool { strokeBefore != nil }
     var undoCount: Int { history.undoStack.count }
@@ -564,4 +584,14 @@ final class WorkspaceModel: ObservableObject {
     #endif
 }
 
-enum WorkspaceError: Error { case benchmarkInProgress }
+enum WorkspaceError: Error, LocalizedError {
+    case benchmarkInProgress
+    case activeEditInProgress
+
+    var errorDescription: String? {
+        switch self {
+        case .benchmarkInProgress: "A benchmark is in progress."
+        case .activeEditInProgress: "Finish or cancel the active edit before exporting."
+        }
+    }
+}

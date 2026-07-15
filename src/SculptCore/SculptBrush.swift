@@ -2,7 +2,7 @@ import simd
 
 enum BrushKind: String, Codable, CaseIterable { case draw = "Draw", smooth = "Smooth", grab = "Grab", flatten = "Flatten", crease = "Crease" }
 
-struct BrushSettings { var radius: Float = 0.28; var strength: Float = 0.12 }
+struct BrushSettings { var radius: Float = 2.5; var strength: Float = 0.12 }
 
 struct SculptSymmetry: Codable, Equatable {
     var x = false, y = false, z = false
