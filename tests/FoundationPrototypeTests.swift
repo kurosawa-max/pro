@@ -1724,6 +1724,121 @@ final class FoundationPrototypeTests: XCTestCase {
         XCTAssertEqual(stl.count, 84 + (result.indices.count / 3) * 50)
     }
 
+    func testMillimeterFormatterAndProductDefaults() {
+        XCTAssertEqual(LengthUnit.millimeter.symbol, "mm")
+        XCTAssertEqual(LengthFormatter.string(1), "1.00 mm")
+        XCTAssertEqual(LengthFormatter.string(-2.345, fractionDigits: 2), "-2.35 mm")
+        XCTAssertEqual(LengthFormatter.string(.infinity), "—")
+        let parameters = PrimitiveParameters()
+        XCTAssertEqual(parameters.sphereRadius, 10); XCTAssertEqual(parameters.size, 20)
+        XCTAssertEqual(parameters.cylinderRadius, 10); XCTAssertEqual(parameters.cylinderHeight, 20)
+        XCTAssertEqual(BrushSettings().radius, 2.5)
+        XCTAssertEqual(BenchmarkRunner.settings.radius, 0.28)
+    }
+
+    func testObjectDimensionsUseEightCornersForWorldBounds() throws {
+        let mesh = try PrimitiveMeshBuilder.cube(size: 20)
+        let identity = try XCTUnwrap(ObjectDimensions.make(mesh: mesh, transform: .identity))
+        XCTAssertEqual(identity.localSize, SIMD3<Float>(repeating: 20)); XCTAssertEqual(identity.worldSize, identity.localSize)
+        let translated = ObjectTransform(translation: SIMD3<Float>(100, 20, -30))
+        let translatedDimensions = try XCTUnwrap(ObjectDimensions.make(mesh: mesh, transform: translated))
+        XCTAssertEqual(translatedDimensions.worldSize, SIMD3<Float>(repeating: 20))
+        XCTAssertEqual(translatedDimensions.worldBounds.center, translated.translation)
+        let rotated = ObjectTransform(rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(0, 45, 0)),
+                                      scale: SIMD3<Float>(2, 1, 0.5))
+        let dimensions = try XCTUnwrap(ObjectDimensions.make(mesh: mesh, transform: rotated))
+        XCTAssertEqual(dimensions.worldSize.x, 25 * sqrt(Float(2)), accuracy: 0.001)
+        XCTAssertEqual(dimensions.worldSize.y, 20, accuracy: 0.001)
+        XCTAssertEqual(dimensions.worldSize.z, 25 * sqrt(Float(2)), accuracy: 0.001)
+    }
+
+    func testSTLAsDisplayedBakesTranslationAndCenterAtOriginRemovesIt() throws {
+        let mesh = try PrimitiveMeshBuilder.cube(size: 20)
+        let transform = ObjectTransform(translation: SIMD3<Float>(100, 0, 0))
+        let displayed = try STLExportPipeline.prepare(mesh: mesh, transform: transform)
+        XCTAssertEqual(displayed.estimate.dimensionsMM, SIMD3<Float>(repeating: 20))
+        XCTAssertEqual(displayed.positions.map(\.x).min(), 90)
+        XCTAssertEqual(displayed.positions.map(\.x).max(), 110)
+        let centered = try STLExportPipeline.prepare(mesh: mesh, transform: transform,
+            options: STLExportOptions(origin: .centerAtOrigin))
+        XCTAssertEqual(centered.positions.map(\.x).min(), -10)
+        XCTAssertEqual(centered.positions.map(\.x).max(), 10)
+        XCTAssertEqual((centered.positions.reduce(.zero, +) / Float(centered.positions.count)).x, 0, accuracy: 0.0001)
+    }
+
+    func testSTLCombinedTransformPositionsNormalsHeaderAndByteCount() throws {
+        let mesh = try PrimitiveMeshBuilder.cube(size: 20)
+        let transform = ObjectTransform(translation: SIMD3<Float>(20,30,40),
+            rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(0,45,0)), scale: SIMD3<Float>(2,1,0.5))
+        let prepared = try STLExportPipeline.prepare(mesh: mesh, transform: transform)
+        XCTAssertEqual(prepared.positions[0], transform.worldPosition(fromLocal: mesh.vertices[0].position))
+        let data = try BinarySTLExporter.data(for: prepared)
+        XCTAssertEqual(data.count, 84 + prepared.estimate.triangleCount * 50)
+        XCTAssertTrue(String(decoding: data.prefix(80), as: UTF8.self).contains("unit=mm"))
+        let normal = stlVector(data, offset: 84)
+        XCTAssertTrue(normal.allFinite); XCTAssertEqual(simd_length(normal), 1, accuracy: 0.0001)
+        let a = prepared.positions[Int(prepared.indices[0])], b = prepared.positions[Int(prepared.indices[1])]
+        let c = prepared.positions[Int(prepared.indices[2])]
+        XCTAssertLessThan(simd_distance(normal, simd_normalize(simd_cross(b-a,c-a))), 0.0001)
+    }
+
+    func testSTLRejectsTransformedDegenerateAndInvalidGeometry() {
+        let vertices = [MeshVertex(position: .zero, normal: SIMD3<Float>(0,1,0)),
+                        MeshVertex(position: SIMD3<Float>(1,0,0), normal: SIMD3<Float>(0,1,0)),
+                        MeshVertex(position: SIMD3<Float>(2,0,0), normal: SIMD3<Float>(0,1,0))]
+        XCTAssertThrowsError(try BinarySTLExporter.data(for: EditableMesh(vertices: vertices, indices: [0,1,2])))
+        var invalid = vertices; invalid[0].position.x = .nan
+        XCTAssertThrowsError(try STLExportPipeline.prepare(mesh: EditableMesh(vertices: invalid, indices: [0,1,2]), transform: .identity))
+    }
+
+    func testSTLOptionsSizeEstimateAndExtremeNonUniformScale() throws {
+        XCTAssertEqual(STLExportOptions().origin, .asDisplayed)
+        XCTAssertEqual(try STLExportPipeline.byteCount(triangleCount: 12), 684)
+        XCTAssertThrowsError(try STLExportPipeline.byteCount(triangleCount: -1))
+        XCTAssertThrowsError(try STLExportPipeline.byteCount(triangleCount: 11_000_000))
+        let mesh = try PrimitiveMeshBuilder.cube(size: 20)
+        for scale in [SIMD3<Float>(repeating: ObjectTransform.minimumScaleMagnitude),
+                      SIMD3<Float>(repeating: ObjectTransform.maximumScaleMagnitude),
+                      SIMD3<Float>(0.001, 0.001, 1_000)] {
+            let prepared = try STLExportPipeline.prepare(mesh: mesh, transform: ObjectTransform(scale: scale))
+            XCTAssertTrue(prepared.positions.allSatisfy(\.allFinite))
+            XCTAssertTrue(prepared.estimate.dimensionsMM.allFinite)
+        }
+    }
+
+    @MainActor
+    func testWorkspaceSTLExportIsReadOnlyAndRejectsActiveEditing() throws {
+        let model = WorkspaceModel(); model.updateTranslation(SIMD3<Float>(5,6,7))
+        let mesh = model.mesh, transform = model.objectTransform, camera = model.camera
+        let revision = mesh.runtime.revision, topology = mesh.runtime.topologyID
+        let undo = model.undoCount, redo = model.redoCount
+        let uploads = model.profiler?.snapshot()
+        let data = try model.stlData()
+        XCTAssertFalse(data.isEmpty); XCTAssertEqual(model.mesh, mesh); XCTAssertEqual(model.objectTransform, transform)
+        XCTAssertEqual(model.camera, camera); XCTAssertEqual(model.undoCount, undo); XCTAssertEqual(model.redoCount, redo)
+        XCTAssertEqual(model.mesh.runtime.revision, revision); XCTAssertEqual(model.mesh.runtime.topologyID, topology)
+        XCTAssertEqual(model.profiler?.snapshot()[.vertexUpload].sampleCount, uploads?[.vertexUpload].sampleCount)
+        XCTAssertEqual(model.profiler?.snapshot()[.indexUpload].sampleCount, uploads?[.indexUpload].sampleCount)
+        model.beginStroke(); XCTAssertThrowsError(try model.stlData()); model.cancelStroke()
+    }
+
+    func testSubdividedMeshTransformBakeKeepsTriangleCountAndSourceUnchanged() throws {
+        let source = try MeshSubdivision.subdivideOnce(PrimitiveMeshBuilder.cube(size: 20))
+        let original = source, transform = ObjectTransform(translation: SIMD3<Float>(100,0,0), scale: SIMD3<Float>(2,1,0.5))
+        let data = try BinarySTLExporter.data(for: source, transform: transform)
+        XCTAssertEqual(data.count, 84 + (source.indices.count / 3) * 50)
+        XCTAssertEqual(source, original)
+    }
+
+    private func stlVector(_ data: Data, offset: Int) -> SIMD3<Float> {
+        func value(_ component: Int) -> Float {
+            let start = offset + component * 4
+            let bits = data[start..<(start + 4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
+            return Float(bitPattern: bits)
+        }
+        return SIMD3<Float>(value(0), value(1), value(2))
+    }
+
     private func assertClosedOutwardMesh(_ mesh: EditableMesh, areaEpsilon: Float = 0.000_000_01,
                                          file: StaticString = #filePath, line: UInt = #line) {
         var edgeCounts: [UInt64: Int] = [:], triangles = Set<String>()

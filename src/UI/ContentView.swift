@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var showImporter = false
     @State private var showProjectExporter = false
     @State private var showSTLExporter = false
+    @State private var showSTLOptions = false
     @State private var showPrimitiveCreator = false
     @State private var showSubdivision = false
     @State private var projectExport = ForgeFile(data: Data())
@@ -17,7 +18,7 @@ struct ContentView: View {
                 MetalCanvas(model: model).ignoresSafeArea(edges: .bottom)
                 if let p = model.hoverLocation {
                     Circle().stroke(.white.opacity(0.9), lineWidth: 2)
-                        .frame(width: CGFloat(model.brushSettings.radius * 280), height: CGFloat(model.brushSettings.radius * 280))
+                        .frame(width: brushCursorDiameter, height: brushCursorDiameter)
                         .position(p).allowsHitTesting(false)
                 }
                 VStack { Spacer(); controls.padding() }
@@ -71,7 +72,8 @@ struct ContentView: View {
                     Button("Redo", systemImage: "arrow.uturn.forward") { model.redo() }
                         .disabled(!model.canRedo || model.isGizmoDragging)
                         .keyboardShortcut("z", modifiers: [.command, .shift])
-                    Button("STL", systemImage: "square.and.arrow.up") { exportSTL() }
+                    Button("STL", systemImage: "square.and.arrow.up") { showSTLOptions = true }
+                        .disabled(model.isStrokeActive || model.isGizmoDragging || model.isTransformPanelEditing)
                 }
             }
         }
@@ -84,6 +86,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showPrimitiveCreator) { PrimitiveCreationView(model: model) }
         .sheet(isPresented: $showSubdivision) { MeshSubdivisionView(model: model) }
+        .sheet(isPresented: $showSTLOptions) {
+            STLExportView(model: model) { data in
+                stlExport = STLFile(data: data)
+                showSTLExporter = true
+            }
+        }
         .fileExporter(isPresented: $showProjectExporter, document: projectExport, contentType: .forge3D, defaultFilename: "Untitled.forge3d") { result in
             if case .failure(let error) = result { model.status = "Save failed: \(error.localizedDescription)" }
         }
@@ -105,8 +113,8 @@ struct ContentView: View {
             }
             .disabled(symmetryControlsDisabled)
             VStack(alignment: .leading) {
-                Text("Radius").font(.caption)
-                Slider(value: $model.brushSettings.radius, in: 0.05...0.75)
+                Text("Radius: \(LengthFormatter.string(model.brushSettings.radius, fractionDigits: 1))").font(.caption)
+                Slider(value: $model.brushSettings.radius, in: 0.1...25)
             }.frame(width: 150)
             Text(model.status).font(.caption).lineLimit(1)
         }
@@ -130,13 +138,14 @@ struct ContentView: View {
         #endif
     }
 
+    private var brushCursorDiameter: CGFloat {
+        let projectedRadius = model.brushSettings.radius / max(model.camera.distance, 0.001)
+        return CGFloat(min(max(projectedRadius * 560, 12), 600))
+    }
+
     private func saveProject() {
         do { projectExport = ForgeFile(data: try model.projectData()); showProjectExporter = true }
         catch { model.status = "Save failed: \(error.localizedDescription)" }
-    }
-    private func exportSTL() {
-        do { stlExport = STLFile(data: try model.stlData()); showSTLExporter = true }
-        catch { model.status = "Export failed: \(error.localizedDescription)" }
     }
 }
 

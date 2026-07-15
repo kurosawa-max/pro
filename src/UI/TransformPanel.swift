@@ -27,7 +27,7 @@ struct TransformPanel: View {
             if isExpanded {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        vectorSection("Position", values: translationBindings,
+                        vectorSection("Position (mm)", values: translationBindings,
                                       fields: (0..<3).map(Field.position), step: 0.1)
                         vectorSection("Rotation °", values: rotationBindings,
                                       fields: (0..<3).map(Field.rotation), step: 5)
@@ -36,6 +36,7 @@ struct TransformPanel: View {
                                       fields: (0..<3).map(Field.scale), step: 0.1)
                         Button("Reset Transform", systemImage: "arrow.counterclockwise") { model.resetTransform() }
                             .buttonStyle(.bordered).controlSize(.small)
+                        dimensionsSection
                     }
                     .padding(10)
                 }
@@ -49,6 +50,20 @@ struct TransformPanel: View {
             if newValue != nil { model.beginTransformPanelTransaction() }
         }
         .onDisappear { model.commitTransformPanelTransaction() }
+    }
+
+    private var dimensionsSection: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Dimensions").font(.caption.bold())
+            ForEach(0..<3, id: \.self) { axis in
+                let label = ["X", "Y", "Z"][axis]
+                let value = model.objectDimensions.map { LengthFormatter.string($0.worldSize[axis]) } ?? "—"
+                LabeledContent(label, value: value)
+                    .font(.caption)
+                    .accessibilityLabel("Dimension \(label)")
+                    .accessibilityValue(value)
+            }
+        }
     }
 
     private func vectorSection(_ title: String, values: [Binding<Float>],

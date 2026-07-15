@@ -36,18 +36,18 @@ struct PrimitiveCreationView: View {
         switch parameters.kind {
         case .sphere:
             Section("UV Sphere") {
-                floatField("Radius", value: $parameters.sphereRadius)
+                floatField("Radius (mm)", value: $parameters.sphereRadius)
                 Stepper("Longitude segments: \(parameters.sphereSegments)",
                         value: $parameters.sphereSegments, in: PrimitiveMeshBuilder.sphereSegmentRange)
                 Stepper("Latitude rings: \(parameters.sphereRings)",
                         value: $parameters.sphereRings, in: PrimitiveMeshBuilder.sphereRingRange)
             }
         case .cube:
-            Section("Cube") { floatField("Size", value: $parameters.size) }
+            Section("Cube") { floatField("Size (mm)", value: $parameters.size) }
         case .cylinder:
             Section("Cylinder") {
-                floatField("Radius", value: $parameters.cylinderRadius)
-                floatField("Height", value: $parameters.cylinderHeight)
+                floatField("Radius (mm)", value: $parameters.cylinderRadius)
+                floatField("Height (mm)", value: $parameters.cylinderHeight)
                 Stepper("Radial segments: \(parameters.cylinderRadialSegments)",
                         value: $parameters.cylinderRadialSegments,
                         in: PrimitiveMeshBuilder.cylinderRadialSegmentRange)

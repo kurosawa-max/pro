@@ -97,6 +97,14 @@ symmetryはstroke開始時に固定され、1stroke全体をoriginal／mirror込
 
 上限は500,000 vertices／1,000,000 trianglesで、超過・overflow・non-manifold・degenerate・非finite入力はmeshと履歴を変更せず拒否する。初版は原子的な状態管理を優先したMainActor同期処理である。Loop/Catmull-Clark、adaptive/local subdivision、Dynamic Topology、GPU subdivision、元頂点再配置は未実装である。
 
+## Millimeter units and STL export
+
+内部1 unitは1 mmであり、既存projectの数値は自動scaleせずそのままmmと解釈する。新規Primitive UIの既定値はSphere radius 10 mm、Cube 20 mm、Cylinder radius 10 mm/height 20 mm、product Brush radiusは2.5 mmである。Debug Benchmarkの固定0.28は比較継続性のため維持する。
+
+Transform panelはlocal AABBの8 cornersから求めたworld-space X/Y/Z実寸をmm表示する。STL export sheetはBinary STL、Millimeters、As Displayed/Center at Origin、dimensions、triangle count、予測file sizeを表示する。export時だけTransformを軽量positions配列へ適用し、変換後triangleからnormalを再計算する。source mesh、Transform、camera、history、revision、topology ID、GPU uploadは変更しない。
+
+STLはunit metadataを標準化していないため、Forge3Dは座標をmmとし、header hintは保証として扱わない。formatVersion 1、local mesh、別Transformを維持し、export optionsは保存しない。3MF/OBJ/STEP、multiple object、print-bed placement、repairは未実装である。
+
 ## 実機検証項目
 
 1. iPadOS 17+ の iPad で起動し、球体が表示される。

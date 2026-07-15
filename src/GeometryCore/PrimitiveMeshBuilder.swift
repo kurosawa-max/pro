@@ -18,14 +18,14 @@ enum PrimitiveKind: String, Codable, CaseIterable, Identifiable {
 
 struct PrimitiveParameters: Equatable {
     var kind: PrimitiveKind = .sphere
-    var size: Float = 1
-    var sphereRadius: Float = 0.5
+    var size: Float = 20
+    var sphereRadius: Float = 10
     var sphereSegments = 32
     var sphereRings = 16
     var cylinderRadialSegments = 32
     var cylinderHeightSegments = 1
-    var cylinderRadius: Float = 0.5
-    var cylinderHeight: Float = 1
+    var cylinderRadius: Float = 10
+    var cylinderHeight: Float = 20
 
     var isValid: Bool { (try? PrimitiveMeshBuilder.validate(self)) != nil }
 }
