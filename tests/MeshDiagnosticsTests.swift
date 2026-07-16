@@ -63,6 +63,8 @@ final class MeshDiagnosticsTests: XCTestCase {
         XCTAssertEqual(report.topology.inconsistentWindingEdgeCount, 1)
         XCTAssertFalse(report.topology.hasConsistentOrientation)
         XCTAssertEqual(report.overlay.windingConflicts.count, 1)
+        XCTAssertTrue(report.canExportSTL)
+        XCTAssertTrue(report.stlExport.hasPrintabilityWarning)
     }
 
     func testOppositeWindingDuplicateIsDetectedWithoutWindingConflict() {
@@ -70,9 +72,11 @@ final class MeshDiagnosticsTests: XCTestCase {
             [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)],
             [0, 1, 2, 2, 1, 0]
         )
-        let topology = MeshTopologyDiagnostics.analyze(mesh)
-        XCTAssertEqual(topology.duplicateTriangleCount, 1)
-        XCTAssertEqual(topology.inconsistentWindingEdgeCount, 0)
+        let report = analyze(mesh)
+        XCTAssertEqual(report.topology.duplicateTriangleCount, 1)
+        XCTAssertEqual(report.topology.inconsistentWindingEdgeCount, 0)
+        XCTAssertTrue(report.canExportSTL)
+        XCTAssertTrue(report.stlExport.hasPrintabilityWarning)
     }
 
     func testOutwardAndInwardCubeHaveOppositeSignedVolume() throws {
@@ -84,6 +88,8 @@ final class MeshDiagnosticsTests: XCTestCase {
                        accuracy: 0.000_01)
         XCTAssertTrue(inside.issues.contains { $0.kind == .inwardOrientation })
         XCTAssertEqual(inside.severity, .warning)
+        XCTAssertTrue(inside.canExportSTL)
+        XCTAssertTrue(inside.stlExport.hasPrintabilityWarning)
     }
 
     func testRepeatedIndexAndCollinearTrianglesAreDegenerate() {
@@ -99,7 +105,10 @@ final class MeshDiagnosticsTests: XCTestCase {
             [SIMD3(0, 0, 0), SIMD3(0.000_01, 0, 0), SIMD3(0, 0.000_01, 0), SIMD3(1_000_000, 0, 0)],
             [0, 1, 2]
         )
-        XCTAssertEqual(analyze(mesh).topology.degenerateTriangleCount, 1)
+        let report = analyze(mesh)
+        XCTAssertEqual(report.topology.degenerateTriangleCount, 1)
+        XCTAssertEqual(report.localMetrics.surfaceAreaMM2, 0)
+        XCTAssertEqual(report.worldMetrics.surfaceAreaMM2, 0)
     }
 
     func testNaNInfinityAndInvalidIndicesAreFatalIssues() {
@@ -107,6 +116,15 @@ final class MeshDiagnosticsTests: XCTestCase {
         XCTAssertEqual(analyze(nan).topology.nonFiniteVertexCount, 1)
         let infinity = makeMesh([SIMD3(.infinity, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)], [0, 1, 2])
         XCTAssertEqual(analyze(infinity).severity, .error)
+        let invalidNormal = EditableMesh(
+            vertices: [MeshVertex(position: SIMD3(0, 0, 0), normal: SIMD3<Float>(.nan, 0, 1)),
+                       MeshVertex(position: SIMD3(1, 0, 0), normal: SIMD3(0, 0, 1)),
+                       MeshVertex(position: SIMD3(0, 1, 0), normal: SIMD3(0, 0, 1))],
+            indices: [0, 1, 2]
+        )
+        let invalidNormalReport = analyze(invalidNormal)
+        XCTAssertEqual(invalidNormalReport.topology.nonFiniteVertexCount, 1)
+        XCTAssertEqual(invalidNormalReport.severity, .error)
         let invalid = makeMesh([SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)], [0, 1, 9])
         let invalidReport = analyze(invalid)
         XCTAssertEqual(invalidReport.topology.invalidIndexTriangleCount, 1)
@@ -264,6 +282,8 @@ final class MeshDiagnosticsTests: XCTestCase {
         let model = WorkspaceModel()
         let beforeMesh = model.mesh, beforeRuntime = model.mesh.runtime
         let beforeTransform = model.objectTransform, beforeCamera = model.camera
+        let beforeProject = try model.projectData()
+        let beforeProfiler = model.profiler?.snapshot()
         let undo = model.undoCount, redo = model.redoCount
         let report = try model.analyzeCurrentMesh()
         XCTAssertEqual(model.mesh, beforeMesh)
@@ -272,18 +292,34 @@ final class MeshDiagnosticsTests: XCTestCase {
         XCTAssertEqual(model.camera, beforeCamera)
         XCTAssertEqual(model.undoCount, undo)
         XCTAssertEqual(model.redoCount, redo)
+        XCTAssertEqual(try model.projectData(), beforeProject)
+        XCTAssertEqual(model.profiler?.snapshot(), beforeProfiler)
         XCTAssertEqual(model.currentMeshDiagnosticsReport, report)
     }
 
     @MainActor func testWorkspaceReportBecomesStaleAfterTransformUndoAndSculptRevision() throws {
         let model = WorkspaceModel()
         _ = try model.analyzeCurrentMesh()
+        let initialOverlayRevision = model.meshDiagnosticsOverlayRevision
         model.updateTransform(ObjectTransform(translation: SIMD3<Float>(1, 0, 0)))
         XCTAssertTrue(model.isMeshDiagnosticsStale)
         XCTAssertNil(model.currentMeshDiagnosticsReport)
         model.undo()
+        XCTAssertTrue(model.isMeshDiagnosticsStale)
+        XCTAssertNil(model.currentMeshDiagnosticsReport)
+        _ = try model.analyzeCurrentMesh()
         XCTAssertFalse(model.isMeshDiagnosticsStale)
         XCTAssertNotNil(model.currentMeshDiagnosticsReport)
+        XCTAssertEqual(model.meshDiagnosticsOverlayRevision, initialOverlayRevision)
+
+        let originalMesh = model.mesh
+        model.mesh = try PrimitiveMeshBuilder.cube(size: 2)
+        model.mesh = originalMesh
+        XCTAssertTrue(model.isMeshDiagnosticsStale)
+        XCTAssertNil(model.currentMeshDiagnosticsReport)
+        _ = try model.analyzeCurrentMesh()
+        XCTAssertEqual(model.meshDiagnosticsOverlayRevision, initialOverlayRevision)
+
         _ = model.mesh.updatePositions([0: model.mesh.vertices[0].position + SIMD3<Float>(0.001, 0, 0)])
         XCTAssertTrue(model.isMeshDiagnosticsStale)
     }

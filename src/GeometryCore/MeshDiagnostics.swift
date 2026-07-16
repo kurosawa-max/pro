@@ -233,13 +233,15 @@ enum MeshTopologyDiagnostics {
         let triangleCount = mesh.indices.count / 3
         let hasInvalidStructure = mesh.indices.isEmpty || !mesh.indices.count.isMultiple(of: 3)
         let nonFiniteVertexCount = mesh.vertices.reduce(into: 0) { count, vertex in
-            if !vertex.position.allFinite { count += 1 }
+            if !vertex.position.allFinite || !vertex.normal.allFinite { count += 1 }
         }
         var referenced = Array(repeating: false, count: vertexCount)
         var activeTriangles = Array(repeating: false, count: triangleCount)
         var unionFind = DiagnosticUnionFind(count: triangleCount)
         var edges: [DiagnosticEdgeKey: DiagnosticEdgeUse] = [:]
         edges.reserveCapacity(min(mesh.indices.count, triangleCount * 2))
+        var edgeOrder: [DiagnosticEdgeKey] = []
+        edgeOrder.reserveCapacity(min(mesh.indices.count, triangleCount * 2))
         var seenTriangles: [DiagnosticTriangleKey: Int] = [:]
         seenTriangles.reserveCapacity(triangleCount)
         var duplicateTriangleCount = 0
@@ -294,6 +296,7 @@ enum MeshTopologyDiagnostics {
                     edges[key] = use
                 } else {
                     edges[key] = DiagnosticEdgeUse(firstTriangle: triangle, isForward: from == key.low)
+                    edgeOrder.append(key)
                 }
             }
         }
@@ -302,7 +305,7 @@ enum MeshTopologyDiagnostics {
         var boundary: [MeshDiagnosticSegment] = []
         var nonManifold: [MeshDiagnosticSegment] = []
         var winding: [MeshDiagnosticSegment] = []
-        for key in edges.keys.sorted() {
+        for key in edgeOrder {
             guard let use = edges[key], Int(key.low) < vertexCount, Int(key.high) < vertexCount else { continue }
             let segment = MeshDiagnosticSegment(start: mesh.vertices[Int(key.low)].position,
                                                 end: mesh.vertices[Int(key.high)].position)
@@ -324,8 +327,10 @@ enum MeshTopologyDiagnostics {
 
         var componentCounts: [Int: Int] = [:]
         var componentPoints: [Int: SIMD3<Float>] = [:]
+        var componentOrder: [Int] = []
         for triangle in 0..<triangleCount where activeTriangles[triangle] {
             let root = unionFind.find(triangle)
+            if componentCounts[root] == nil { componentOrder.append(root) }
             componentCounts[root, default: 0] += 1
             if componentPoints[root] == nil {
                 let offset = triangle * 3
@@ -335,17 +340,38 @@ enum MeshTopologyDiagnostics {
                 componentPoints[root] = (a + b + c) / 3
             }
         }
-        let orderedComponents = componentCounts.sorted { lhs, rhs in
-            lhs.value == rhs.value ? lhs.key < rhs.key : lhs.value > rhs.value
+        var largestComponentRoot: Int?
+        var largestComponentTriangleCount = 0
+        for root in componentOrder {
+            let count = componentCounts[root] ?? 0
+            if count > largestComponentTriangleCount {
+                largestComponentRoot = root
+                largestComponentTriangleCount = count
+            }
         }
-        let orderedComponentCounts = orderedComponents.map(\.value)
-        let smallComponentPoints = orderedComponents.dropFirst().prefix(representativeLimit).compactMap {
-            componentPoints[$0.key]
+        var orderedComponentCounts: [Int] = []
+        orderedComponentCounts.reserveCapacity(componentOrder.count)
+        if let largestComponentRoot {
+            orderedComponentCounts.append(largestComponentTriangleCount)
+            for root in componentOrder where root != largestComponentRoot {
+                orderedComponentCounts.append(componentCounts[root] ?? 0)
+            }
         }
-        let isolatedIDs = referenced.indices.filter { !referenced[$0] }
-        let isolatedPoints = isolatedIDs.prefix(representativeLimit).compactMap { index -> SIMD3<Float>? in
+        let smallComponentPoints = componentOrder.lazy
+            .filter { $0 != largestComponentRoot }
+            .prefix(representativeLimit)
+            .compactMap { componentPoints[$0] }
+        var isolatedVertexCount = 0
+        var isolatedIDs: [Int] = []
+        var isolatedPoints: [SIMD3<Float>] = []
+        isolatedIDs.reserveCapacity(min(vertexCount, representativeLimit))
+        isolatedPoints.reserveCapacity(min(vertexCount, representativeLimit))
+        for index in referenced.indices where !referenced[index] {
+            isolatedVertexCount += 1
+            guard isolatedIDs.count < representativeLimit else { continue }
+            isolatedIDs.append(index)
             let position = mesh.vertices[index].position
-            return position.allFinite ? position : nil
+            if position.allFinite { isolatedPoints.append(position) }
         }
         return MeshTopologyReport(
             vertexCount: vertexCount,
@@ -356,10 +382,10 @@ enum MeshTopologyDiagnostics {
             nonManifoldEdgeCount: nonManifoldCount,
             degenerateTriangleCount: degenerateTriangleCount,
             duplicateTriangleCount: duplicateTriangleCount,
-            isolatedVertexCount: isolatedIDs.count,
+            isolatedVertexCount: isolatedVertexCount,
             connectedComponentCount: orderedComponentCounts.count,
             componentTriangleCounts: orderedComponentCounts,
-            largestComponentTriangleCount: orderedComponentCounts.first ?? 0,
+            largestComponentTriangleCount: largestComponentTriangleCount,
             inconsistentWindingEdgeCount: windingCount,
             invalidIndexTriangleCount: invalidIndexTriangleCount,
             nonFiniteVertexCount: nonFiniteVertexCount,
@@ -369,7 +395,7 @@ enum MeshTopologyDiagnostics {
             representativeWindingConflicts: winding,
             representativeDegenerateTriangleIDs: degenerateTriangleIDs,
             representativeDuplicateTriangleIDs: duplicateTriangleIDs,
-            representativeIsolatedVertexIDs: Array(isolatedIDs.prefix(representativeLimit)),
+            representativeIsolatedVertexIDs: isolatedIDs,
             representativeSmallComponentPoints: Array(smallComponentPoints),
             representativeDegeneratePoints: Array(degeneratePoints.prefix(representativeLimit)),
             representativeIsolatedPoints: Array(isolatedPoints)
@@ -404,9 +430,13 @@ enum MeshMetricDiagnostics {
         }
         let safe = transform.sanitized()
         var surfaceArea = 0.0
+        let localScale = max(Double(simd_length(mesh.bounds.extent)), 1.0e-12)
+        let localTwiceAreaEpsilon = max(localScale * localScale * 1.0e-12, Double.leastNonzeroMagnitude)
         let worldScale = max(Double(simd_length(dimensions.worldSize)), 1.0e-12)
         let twiceAreaEpsilon = max(worldScale * worldScale * 1.0e-15, Double.leastNonzeroMagnitude)
         forEachFiniteTriangle(mesh: mesh) { a, b, c in
+            let localTwiceArea = simd_length(simd_cross(b - a, c - a))
+            guard localTwiceArea.isFinite, localTwiceArea > localTwiceAreaEpsilon else { return }
             let wa = DiagnosticMath.double(safe.worldPosition(fromLocal: DiagnosticMath.float(a)))
             let wb = DiagnosticMath.double(safe.worldPosition(fromLocal: DiagnosticMath.float(b)))
             let wc = DiagnosticMath.double(safe.worldPosition(fromLocal: DiagnosticMath.float(c)))
@@ -462,7 +492,7 @@ enum MeshDiagnostics {
             trustedLocalSignedVolume: volumeReliable ? local.signedVolumeMM3 : nil
         )
         let subdivision = subdivisionDiagnostic(mesh)
-        let export = exportDiagnostic(mesh: mesh, transform: transform, topology: topology)
+        let export = exportDiagnostic(mesh: mesh, transform: transform, topology: topology, local: local)
         let issues = makeIssues(topology: topology, local: local, volumeReliable: volumeReliable,
                                 transformIsFinite: transform.isFinite)
         return MeshDiagnosticsReport(
@@ -494,11 +524,15 @@ enum MeshDiagnostics {
     }
 
     private static func exportDiagnostic(mesh: EditableMesh, transform: ObjectTransform,
-                                         topology: MeshTopologyReport) -> MeshSTLExportDiagnostic {
+                                         topology: MeshTopologyReport,
+                                         local: MeshLocalMetrics) -> MeshSTLExportDiagnostic {
         do {
             let estimate = try STLExportPipeline.estimate(mesh: mesh, transform: transform)
-            let warning = topology.boundaryEdgeCount > 0 || topology.nonManifoldEdgeCount > 0
-                || topology.connectedComponentCount > 1 || topology.isolatedVertexCount > 0
+            let volumeScale = max(pow(max(local.surfaceAreaMM2, 0), 1.5), 1.0)
+            let volumeEpsilon = volumeScale * 1.0e-12
+            let warning = !topology.isClosed || !topology.hasConsistentOrientation
+                || topology.connectedComponentCount != 1 || topology.isolatedVertexCount > 0
+                || local.signedVolumeMM3 <= volumeEpsilon
             return MeshSTLExportDiagnostic(canExport: true, estimate: estimate,
                                            hasPrintabilityWarning: warning, failureReason: nil)
         } catch {

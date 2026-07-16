@@ -476,8 +476,8 @@ Filesのconfirmation sheetはformat、source triangle、welded vertex、mm dimen
 
 ### 17.12 Read-only mesh diagnostics
 
-`MeshTopologyDiagnostics`は無向edge使用数でboundary/manifold/non-manifoldをO(T)分類し、2使用edgeの有向方向でwinding conflictを判定する。unordered triangle keyでduplicate、scale-relative cross productでdegenerate、index参照表でisolated vertexを検出する。componentはtriangleのshared-edge接続に対するUnion-Findであり、vertex-only接触は別componentである。修復より診断を先行し、入力mesh、runtime identity、historyを変更しない。
+`MeshTopologyDiagnostics`は無向edge使用数をhash tableへ集計し、初出順の線形走査でboundary/manifold/non-manifoldを期待O(V + T + E)分類する。2使用edgeの有向方向でwinding conflictを判定する。unordered triangle keyでduplicate、scale-relative cross productでdegenerate、index参照表でisolated vertexを検出する。componentはtriangleのshared-edge接続に対するUnion-Findであり、vertex-only接触は別componentである。修復より診断を先行し、入力mesh、runtime identity、historyを変更しない。
 
 `MeshMetricDiagnostics`はDoubleでlocal area/signed volumeを累積し、world areaは非一様scale対応のため変換後triangleから再計算する。volumeはclosed/manifold/oriented時のみ信頼し、world値はscale determinantで変換する。world boundsは既存8-corner規則を再利用する。Subdivision/STL capabilityはそれぞれ既存validation境界を呼ぶ。
 
-runtime cache keyは`topologyID/topologyRevision/revision/ObjectTransform`で、stale reportはUI/Rendererへ渡さない。Metal diagnostics overlayはmesh/gizmoとは別のline/point pipeline、buffer、revisionを持ち、最大1,000代表/categoryをcache更新時のみuploadする。depth compareは常時表示、depth writeなしで、picking/inputには参加しない。report/overlay設定はprojectへ永続化しない。詳細は`MESH_DIAGNOSTICS.md`を参照する。
+runtime cache keyは`topologyID/topologyRevision/revision/ObjectTransform`で、変更eventをlatched staleとして扱い、Undo/Redoで同じkeyへ戻ってもRefreshまではstale reportをUI/Rendererへ渡さない。Metal diagnostics overlayはmesh/gizmoとは別のline/point pipeline、buffer、revisionを持ち、最大1,000代表/categoryを内容変更時のみuploadする。depth compareは常時表示、depth writeなしで、picking/inputには参加しない。report/overlay設定はprojectへ永続化しない。詳細は`MESH_DIAGNOSTICS.md`を参照する。

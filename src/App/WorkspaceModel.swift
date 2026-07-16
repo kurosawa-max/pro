@@ -10,9 +10,17 @@ final class WorkspaceModel: ObservableObject {
     #else
     let profiler: PerformanceProfiler? = nil
     #endif
-    @Published var mesh = EditableMesh.icosphere()
+    @Published var mesh = EditableMesh.icosphere() {
+        didSet {
+            if oldValue != mesh || oldValue.runtime != mesh.runtime { markMeshDiagnosticsStale() }
+        }
+    }
     @Published var camera = CameraState()
-    @Published private(set) var objectTransform = ObjectTransform.identity
+    @Published private(set) var objectTransform = ObjectTransform.identity {
+        didSet {
+            if oldValue.sanitized() != objectTransform.sanitized() { markMeshDiagnosticsStale() }
+        }
+    }
     @Published var showsTranslationGizmo = true
     @Published private(set) var gizmoMode = GizmoMode.translate
     @Published private(set) var translationGizmoState = TranslationGizmoState()
@@ -44,6 +52,7 @@ final class WorkspaceModel: ObservableObject {
     private let pickingCache = MeshBVHCache()
     private let sculptSpatialIndex = VertexSpatialIndex()
     private let meshDiagnosticsCache = MeshDiagnosticsCache()
+    private var meshDiagnosticsNeedsRefresh = false
     private var strokeBefore: [Int: SIMD3<Float>]?
     private var lastHit: SIMD3<Float>?
     private var strokeSymmetry = SculptSymmetry.none
@@ -155,7 +164,8 @@ final class WorkspaceModel: ObservableObject {
 
     var isMeshDiagnosticsStale: Bool {
         guard let report = meshDiagnosticsReport else { return false }
-        return report.sourceTopologyID != mesh.runtime.topologyID
+        return meshDiagnosticsNeedsRefresh
+            || report.sourceTopologyID != mesh.runtime.topologyID
             || report.sourceTopologyRevision != mesh.runtime.topologyRevision
             || report.sourceRevision != mesh.runtime.revision
             || report.sourceTransform != objectTransform.sanitized()
@@ -179,9 +189,12 @@ final class WorkspaceModel: ObservableObject {
         isMeshDiagnosticsRunning = true
         meshDiagnosticsError = nil
         defer { isMeshDiagnosticsRunning = false }
+        let previousOverlay = meshDiagnosticsReport?.overlay
         let report = meshDiagnosticsCache.report(mesh: mesh, transform: objectTransform)
         meshDiagnosticsReport = report
-        meshDiagnosticsOverlayRevision &+= 1
+        meshDiagnosticsNeedsRefresh = false
+        let overlayChanged = previousOverlay.map { $0 != report.overlay } ?? true
+        if overlayChanged { meshDiagnosticsOverlayRevision &+= 1 }
         status = "Mesh diagnostics: \(report.severity.displayName)"
         return report
     }
@@ -196,9 +209,14 @@ final class WorkspaceModel: ObservableObject {
 
     func clearMeshDiagnostics() {
         meshDiagnosticsReport = nil
+        meshDiagnosticsNeedsRefresh = false
         meshDiagnosticsError = nil
         meshDiagnosticsCache.invalidate()
         meshDiagnosticsOverlayRevision &+= 1
+    }
+
+    private func markMeshDiagnosticsStale() {
+        if meshDiagnosticsReport != nil { meshDiagnosticsNeedsRefresh = true }
     }
 
     func prepareForSTLExport() throws {
