@@ -436,7 +436,7 @@ final class MeshCleanupTests: XCTestCase {
 
     private func scaleRelativeTinyMesh() -> EditableMesh {
         makeMesh([SIMD3(0, 0, 0), SIMD3(0.000_01, 0, 0), SIMD3(0, 0.000_01, 0),
-                  SIMD3(1_000_000, 0, 0), SIMD3(1_000_000, 1, 0), SIMD3(1_000_000, 0, 1)],
+                  SIMD3(1_000_000, 0, 0), SIMD3(1_000_000, 10, 0), SIMD3(1_000_000, 0, 10)],
                  [0, 1, 2, 3, 4, 5])
     }
 
