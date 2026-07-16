@@ -26,6 +26,11 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
     @Published private(set) var isSTLImporting = false
+    @Published private(set) var meshDiagnosticsReport: MeshDiagnosticsReport? = nil
+    @Published private(set) var isMeshDiagnosticsRunning = false
+    @Published private(set) var meshDiagnosticsError: String? = nil
+    @Published var meshDiagnosticsOverlayOptions = MeshDiagnosticsOverlayOptions()
+    @Published private(set) var meshDiagnosticsOverlayRevision: UInt64 = 0
     #if DEBUG
     @Published private(set) var benchmarkPreset: BenchmarkPreset?
     @Published private(set) var isBenchmarkRunning = false
@@ -38,6 +43,7 @@ final class WorkspaceModel: ObservableObject {
     private var history = WorkspaceHistory()
     private let pickingCache = MeshBVHCache()
     private let sculptSpatialIndex = VertexSpatialIndex()
+    private let meshDiagnosticsCache = MeshDiagnosticsCache()
     private var strokeBefore: [Int: SIMD3<Float>]?
     private var lastHit: SIMD3<Float>?
     private var strokeSymmetry = SculptSymmetry.none
@@ -135,6 +141,7 @@ final class WorkspaceModel: ObservableObject {
             let project = try ProjectCodec.decode(data)
             discardTransformPanelTransaction()
             mesh = project.mesh; camera = project.camera; objectTransform = project.transform.sanitized()
+            clearMeshDiagnostics()
             symmetry = .none
             history.removeAll(); syncHistoryAvailability(); status = "Project loaded"
             #if DEBUG
@@ -145,6 +152,54 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var objectDimensions: ObjectDimensions? { ObjectDimensions.make(mesh: mesh, transform: objectTransform) }
+
+    var isMeshDiagnosticsStale: Bool {
+        guard let report = meshDiagnosticsReport else { return false }
+        return report.sourceTopologyID != mesh.runtime.topologyID
+            || report.sourceTopologyRevision != mesh.runtime.topologyRevision
+            || report.sourceRevision != mesh.runtime.revision
+            || report.sourceTransform != objectTransform.sanitized()
+    }
+
+    var currentMeshDiagnosticsReport: MeshDiagnosticsReport? {
+        isMeshDiagnosticsStale ? nil : meshDiagnosticsReport
+    }
+
+    var currentMeshDiagnosticsOverlay: MeshDiagnosticsOverlayData? {
+        return currentMeshDiagnosticsReport?.overlay
+    }
+
+    @discardableResult
+    func analyzeCurrentMesh() throws -> MeshDiagnosticsReport {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isMeshDiagnosticsRunning else { throw WorkspaceError.diagnosticsInProgress }
+        guard !isStrokeActive, !isGizmoDragging else { throw WorkspaceError.activeDiagnosticsEdit }
+        isMeshDiagnosticsRunning = true
+        meshDiagnosticsError = nil
+        defer { isMeshDiagnosticsRunning = false }
+        let report = meshDiagnosticsCache.report(mesh: mesh, transform: objectTransform)
+        meshDiagnosticsReport = report
+        meshDiagnosticsOverlayRevision &+= 1
+        status = "Mesh diagnostics: \(report.severity.displayName)"
+        return report
+    }
+
+    func refreshMeshDiagnostics() {
+        do { _ = try analyzeCurrentMesh() }
+        catch {
+            meshDiagnosticsError = error.localizedDescription
+            status = "Diagnostics failed: \(error.localizedDescription)"
+        }
+    }
+
+    func clearMeshDiagnostics() {
+        meshDiagnosticsReport = nil
+        meshDiagnosticsError = nil
+        meshDiagnosticsCache.invalidate()
+        meshDiagnosticsOverlayRevision &+= 1
+    }
 
     func prepareForSTLExport() throws {
         #if DEBUG
@@ -576,6 +631,7 @@ final class WorkspaceModel: ObservableObject {
         history.removeAll()
         syncHistoryAvailability()
         mesh = preset.makeMesh()
+        clearMeshDiagnostics()
         objectTransform = .identity
         benchmarkPreset = preset
         profiler?.reset(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
@@ -597,6 +653,7 @@ final class WorkspaceModel: ObservableObject {
         let originalSettings = brushSettings, originalPreset = benchmarkPreset, originalHistory = history
         let originalSymmetry = symmetry
         let originalTransform = objectTransform
+        clearMeshDiagnostics()
         let runner = BenchmarkRunner(); benchmarkRunner = runner
         objectTransform = .identity
         symmetry = .none
@@ -627,16 +684,20 @@ final class WorkspaceModel: ObservableObject {
     #endif
 }
 
-enum WorkspaceError: Error, LocalizedError {
+enum WorkspaceError: Error, LocalizedError, Equatable {
     case benchmarkInProgress
     case activeEditInProgress
     case importInProgress
+    case diagnosticsInProgress
+    case activeDiagnosticsEdit
 
     var errorDescription: String? {
         switch self {
         case .benchmarkInProgress: "A benchmark is in progress."
         case .activeEditInProgress: "Finish or cancel the active edit before exporting."
         case .importInProgress: "An STL import is already in progress."
+        case .diagnosticsInProgress: "Mesh diagnostics are already running."
+        case .activeDiagnosticsEdit: "Finish or cancel the active Sculpt or Gizmo edit before analyzing."
         }
     }
 }

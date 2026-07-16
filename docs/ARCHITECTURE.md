@@ -473,3 +473,11 @@ SculptCoreはDraw／Smooth／GrabにFlatten／Creaseを追加する。Flattenは
 `STLImporter`はUIから独立した軽量Import境界で、Binaryの`84 + 50T`一致をASCIIの`solid`文字列より優先する。ASCIIは行単位grammarで解析し、どちらもtriangle soupを正規化したFloat bit patternでexact weldする。`-0/+0`以外のepsilon weld、winding修正、repairは行わない。duplicate、degenerate、edge useが2を超えるnon-manifold、non-finiteはWorkspace install前に拒否する。boundaryとclosed manifoldは許可する。
 
 Filesのconfirmation sheetはformat、source triangle、welded vertex、mm dimensions、file sizeとunit警告を表示する。installは進行中編集を整理し、identity Transformとauto-frame cameraで新meshを置く。Brush/symmetry/Gizmo modeを維持し、置換は統合historyの`ReplaceMeshCommand`一件でUndo/Redoする。source 256 MiB、1,000,000 triangles、500,000 welded verticesを上限とし、初版は同期parseである。projectはformatVersion 1のmeshとして保存し、import metadataを永続化しない。
+
+### 17.12 Read-only mesh diagnostics
+
+`MeshTopologyDiagnostics`は無向edge使用数でboundary/manifold/non-manifoldをO(T)分類し、2使用edgeの有向方向でwinding conflictを判定する。unordered triangle keyでduplicate、scale-relative cross productでdegenerate、index参照表でisolated vertexを検出する。componentはtriangleのshared-edge接続に対するUnion-Findであり、vertex-only接触は別componentである。修復より診断を先行し、入力mesh、runtime identity、historyを変更しない。
+
+`MeshMetricDiagnostics`はDoubleでlocal area/signed volumeを累積し、world areaは非一様scale対応のため変換後triangleから再計算する。volumeはclosed/manifold/oriented時のみ信頼し、world値はscale determinantで変換する。world boundsは既存8-corner規則を再利用する。Subdivision/STL capabilityはそれぞれ既存validation境界を呼ぶ。
+
+runtime cache keyは`topologyID/topologyRevision/revision/ObjectTransform`で、stale reportはUI/Rendererへ渡さない。Metal diagnostics overlayはmesh/gizmoとは別のline/point pipeline、buffer、revisionを持ち、最大1,000代表/categoryをcache更新時のみuploadする。depth compareは常時表示、depth writeなしで、picking/inputには参加しない。report/overlay設定はprojectへ永続化しない。詳細は`MESH_DIAGNOSTICS.md`を参照する。

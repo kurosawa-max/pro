@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var showSTLOptions = false
     @State private var showPrimitiveCreator = false
     @State private var showSubdivision = false
+    @State private var showMeshDiagnostics = false
     @State private var projectExport = ForgeFile(data: Data())
     @State private var stlExport = STLFile(data: Data())
     @State private var stlImportResult: STLImportResult?
@@ -55,6 +56,8 @@ struct ContentView: View {
                     #if DEBUG
                     .disabled(model.isBenchmarkRunning)
                     #endif
+                    Button("Diagnostics", systemImage: "stethoscope") { showMeshDiagnostics = true }
+                        .accessibilityHint("Inspect mesh topology, dimensions, and printability warnings")
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Picker("Gizmo Mode", selection: Binding(get: { model.gizmoMode },
@@ -98,6 +101,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showPrimitiveCreator) { PrimitiveCreationView(model: model) }
         .sheet(isPresented: $showSubdivision) { MeshSubdivisionView(model: model) }
+        .sheet(isPresented: $showMeshDiagnostics) { MeshDiagnosticsView(model: model) }
         .sheet(isPresented: $showSTLImportConfirmation, onDismiss: { stlImportResult = nil }) {
             if let stlImportResult {
                 STLImportView(model: model, result: stlImportResult, fileName: stlImportFileName)

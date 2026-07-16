@@ -32,6 +32,8 @@ SculptとTransformを単一時系列で扱うWorkspace historyを追加する。
 
 Binary／ASCII STL importを追加する。Binary exact byte layoutとASCII grammarを明示的に判定し、bit-pattern exact weld、degenerate／duplicate／non-manifold／non-finite検証をinstall前に行う。入力座標は変換せずmmと解釈し、identity Transformとauto-frame cameraのmesh置換を1件のUndo／Redoにする。repair、unit自動推測、epsilon weld、multiple objectは含まない。
 
+read-only Mesh Diagnosticsとしてedge分類、winding、duplicate/degenerate、isolated vertices、edge-connected components、Double area/signed volume、world metrics、Subdivision/STL capability、runtime cache、Metal issue overlayを追加する。automatic repair、self-intersection完全検出、wall thicknessはMilestone 7以降の独立作業とする。
+
 ## Milestone 0 — Repository Foundation
 
 - Xcode workspace作成

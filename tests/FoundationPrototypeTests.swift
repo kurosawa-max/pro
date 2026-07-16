@@ -324,7 +324,7 @@ final class FoundationPrototypeTests: XCTestCase {
 
     @MainActor
     func testAutomatedBenchmarkCasesAndConfigurationAreDeterministic() {
-        XCTAssertEqual(BenchmarkCase.allCases.map(\.rawValue), ["Picking", "Draw brush", "Smooth brush", "Grab brush", "Flatten brush", "Crease brush", "Draw brush X symmetry", "Draw brush XYZ symmetry", "Crease brush XYZ symmetry", "Normal rebuild", "Vertex buffer upload", "Index buffer upload", "Subdivide once"])
+        XCTAssertEqual(BenchmarkCase.allCases.map(\.rawValue), ["Picking", "Draw brush", "Smooth brush", "Grab brush", "Flatten brush", "Crease brush", "Draw brush X symmetry", "Draw brush XYZ symmetry", "Crease brush XYZ symmetry", "Normal rebuild", "Vertex buffer upload", "Index buffer upload", "Subdivide once", "Diagnostics topology", "Diagnostics geometry metrics", "Diagnostics world metrics", "Diagnostics overlay generation"])
         XCTAssertEqual(BenchmarkRunConfiguration.standard.warmUpIterations, 10)
         XCTAssertEqual(BenchmarkRunConfiguration.standard.measuredIterations, 60)
         XCTAssertEqual(BenchmarkRunner.fixedRay.origin, SIMD3<Float>(0, 0, 3))

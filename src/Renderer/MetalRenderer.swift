@@ -9,6 +9,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private let gizmoRenderer: TranslationGizmoRenderer
     private let rotationGizmoRenderer: RotationGizmoRenderer
     private let scaleGizmoRenderer: ScaleGizmoRenderer
+    private let diagnosticsOverlayRenderer: MeshDiagnosticsOverlayRenderer
     private let profiler: PerformanceProfiler?
     private var depthState: MTLDepthStencilState
     private var vertexBuffer: MTLBuffer?
@@ -23,6 +24,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     var scaleGizmoState = ScaleGizmoState()
     var gizmoMode = GizmoMode.translate
     var showsTranslationGizmo = true
+    var diagnosticsOverlayOptions = MeshDiagnosticsOverlayOptions()
     private(set) var gizmoWorldScale: Float = 1
     private(set) var viewProjection = matrix_identity_float4x4
 
@@ -47,11 +49,15 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
                                                                  depthPixelFormat: view.depthStencilPixelFormat),
               let scaleGizmoRenderer = ScaleGizmoRenderer(device: device, library: library,
                                                            colorPixelFormat: view.colorPixelFormat,
-                                                           depthPixelFormat: view.depthStencilPixelFormat) else { return nil }
+                                                           depthPixelFormat: view.depthStencilPixelFormat),
+              let diagnosticsOverlayRenderer = MeshDiagnosticsOverlayRenderer(
+                device: device, library: library, colorPixelFormat: view.colorPixelFormat,
+                depthPixelFormat: view.depthStencilPixelFormat) else { return nil }
         self.pipeline = pipeline
         self.gizmoRenderer = gizmoRenderer
         self.rotationGizmoRenderer = rotationGizmoRenderer
         self.scaleGizmoRenderer = scaleGizmoRenderer
+        self.diagnosticsOverlayRenderer = diagnosticsOverlayRenderer
         let depth = MTLDepthStencilDescriptor(); depth.isDepthWriteEnabled = true; depth.depthCompareFunction = .less
         guard let depthState = device.makeDepthStencilState(descriptor: depth) else { return nil }
         self.depthState = depthState
@@ -82,6 +88,13 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             } else { copy(mesh.vertices, to: vertexBuffer, byteCount: vertexByteCount) }
             uploadedRevision = mesh.runtime.revision
         }
+    }
+
+    func updateDiagnostics(data: MeshDiagnosticsOverlayData?, revision: UInt64,
+                           options: MeshDiagnosticsOverlayOptions) {
+        diagnosticsOverlayOptions = options
+        if data == nil { diagnosticsOverlayOptions.isVisible = false }
+        _ = diagnosticsOverlayRenderer.update(data: data, revision: revision)
     }
 
     private func makeOrReuse(buffer: MTLBuffer?, requiredLength: Int) -> MTLBuffer? {
@@ -127,6 +140,9 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
         encoder.drawIndexedPrimitives(type: .triangle, indexCount: indexCount, indexType: .uint32,
                                       indexBuffer: indexBuffer, indexBufferOffset: 0)
+        diagnosticsOverlayRenderer.encode(encoder: encoder, viewProjection: viewProjection,
+                                          model: objectTransform.modelMatrix,
+                                          options: diagnosticsOverlayOptions)
         if showsTranslationGizmo {
             switch gizmoMode {
             case .translate:
