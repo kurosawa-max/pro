@@ -73,11 +73,13 @@ struct MeshCleanupSourceKey: Equatable {
     let topologyID: UUID
     let topologyRevision: UInt64
     let revision: UInt64
+    let workspaceMutationGeneration: UInt64
 
-    init(mesh: EditableMesh) {
+    init(mesh: EditableMesh, workspaceMutationGeneration: UInt64) {
         topologyID = mesh.runtime.topologyID
         topologyRevision = mesh.runtime.topologyRevision
         revision = mesh.runtime.revision
+        self.workspaceMutationGeneration = workspaceMutationGeneration
     }
 }
 

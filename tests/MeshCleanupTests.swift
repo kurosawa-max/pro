@@ -105,6 +105,41 @@ final class MeshCleanupTests: XCTestCase {
         XCTAssertTrue(first.mesh.indices.contains(3))
     }
 
+    func testDegenerateDuplicateOverlapHonorsSelectedOptionsWithoutDoubleCounting() throws {
+        let source = makeMesh(
+            [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(2, 0, 0),
+             SIMD3(0, 0, 1), SIMD3(1, 0, 1), SIMD3(0, 1, 1)],
+            [0, 1, 2, 2, 1, 0, 3, 4, 5]
+        )
+        let sourceTopology = MeshTopologyDiagnostics.analyze(source)
+        XCTAssertEqual(sourceTopology.degenerateTriangleCount, 2)
+        XCTAssertEqual(sourceTopology.duplicateTriangleCount, 1)
+
+        let degenerateOnly = try MeshCleanup.clean(
+            mesh: source, options: MeshCleanupOptions(removeDegenerateTriangles: true))
+        XCTAssertEqual(degenerateOnly.removedDegenerateTriangleCount, 2)
+        XCTAssertEqual(degenerateOnly.removedDuplicateTriangleCount, 0)
+        XCTAssertEqual(degenerateOnly.resultingTriangleCount, 1)
+        XCTAssertEqual(MeshTopologyDiagnostics.analyze(degenerateOnly.mesh).degenerateTriangleCount, 0)
+
+        let duplicateOnly = try MeshCleanup.clean(
+            mesh: source, options: MeshCleanupOptions(removeDuplicateTriangles: true))
+        XCTAssertEqual(duplicateOnly.removedDegenerateTriangleCount, 0)
+        XCTAssertEqual(duplicateOnly.removedDuplicateTriangleCount, 1)
+        XCTAssertEqual(duplicateOnly.resultingTriangleCount, 2)
+        let duplicateOnlyTopology = MeshTopologyDiagnostics.analyze(duplicateOnly.mesh)
+        XCTAssertEqual(duplicateOnlyTopology.degenerateTriangleCount, 1)
+        XCTAssertEqual(duplicateOnlyTopology.duplicateTriangleCount, 0)
+
+        let combined = try MeshCleanup.clean(
+            mesh: source,
+            options: MeshCleanupOptions(removeDegenerateTriangles: true,
+                                        removeDuplicateTriangles: true))
+        XCTAssertEqual(combined.removedDegenerateTriangleCount, 2)
+        XCTAssertEqual(combined.removedDuplicateTriangleCount, 0)
+        XCTAssertEqual(combined.resultingTriangleCount, 1)
+    }
+
     func testIsolatedVertexCompactionPreservesRelativeOrderAndRemapsIndices() throws {
         let positions = [SIMD3<Float>(9, 9, 9), SIMD3(8, 8, 8), SIMD3(0, 0, 0),
                          SIMD3(0, 1, 0), SIMD3(1, 0, 0)]
@@ -307,6 +342,39 @@ final class MeshCleanupTests: XCTestCase {
     }
 
     @MainActor
+    func testPreviewRemainsStaleAfterUndoRestoresExactMeshAndRuntimeIdentity() throws {
+        let primitiveModel = WorkspaceModel(); primitiveModel.mesh = combinedMesh()
+        let primitivePreview = try primitiveModel.previewMeshCleanup(options: allOptions)
+        let primitiveSource = primitiveModel.mesh
+        let primitiveSourceRuntime = primitiveModel.mesh.runtime
+        var cube = PrimitiveParameters(kind: .cube)
+        cube.size = 20
+        try primitiveModel.createPrimitive(parameters: cube)
+        primitiveModel.undo()
+        XCTAssertEqual(primitiveModel.mesh, primitiveSource)
+        XCTAssertEqual(primitiveModel.mesh.runtime, primitiveSourceRuntime)
+        let beforePrimitiveStaleApply = try observation(primitiveModel)
+        XCTAssertThrowsError(try primitiveModel.applyMeshCleanup(preview: primitivePreview)) {
+            XCTAssertEqual($0 as? MeshCleanupError, .stalePreview)
+        }
+        XCTAssertEqual(try observation(primitiveModel), beforePrimitiveStaleApply)
+
+        let cleanupModel = WorkspaceModel(); cleanupModel.mesh = combinedMesh()
+        let cleanupPreview = try cleanupModel.previewMeshCleanup(options: allOptions)
+        let cleanupSource = cleanupModel.mesh
+        let cleanupSourceRuntime = cleanupModel.mesh.runtime
+        _ = try cleanupModel.applyMeshCleanup(preview: cleanupPreview)
+        cleanupModel.undo()
+        XCTAssertEqual(cleanupModel.mesh, cleanupSource)
+        XCTAssertEqual(cleanupModel.mesh.runtime, cleanupSourceRuntime)
+        let beforeCleanupStaleApply = try observation(cleanupModel)
+        XCTAssertThrowsError(try cleanupModel.applyMeshCleanup(preview: cleanupPreview)) {
+            XCTAssertEqual($0 as? MeshCleanupError, .stalePreview)
+        }
+        XCTAssertEqual(try observation(cleanupModel), beforeCleanupStaleApply)
+    }
+
+    @MainActor
     func testCleanupPreparationCancelsStrokeGizmoAndCommitsPanelBeforeAtomicPreview() throws {
         let model = WorkspaceModel(); model.mesh = combinedMesh()
         model.beginStroke()
@@ -457,7 +525,10 @@ final class MeshCleanupTests: XCTestCase {
                              undoCount: model.undoCount, redoCount: model.redoCount,
                              canUndo: model.canUndo, canRedo: model.canRedo,
                              profiler: model.profiler?.snapshot(), diagnostics: model.meshDiagnosticsReport,
+                             diagnosticsStale: model.isMeshDiagnosticsStale,
                              overlayRevision: model.meshDiagnosticsOverlayRevision,
+                             pickingCacheBuildCount: model.pickingCacheBuildCount,
+                             spatialIndexBuildCount: model.sculptSpatialIndexBuildCount,
                              cleanupSummary: model.lastMeshCleanupSummary,
                              projectData: try? model.projectData())
     }
@@ -474,7 +545,10 @@ private struct WorkspaceObservation: Equatable {
     let canRedo: Bool
     let profiler: PerformanceSnapshot?
     let diagnostics: MeshDiagnosticsReport?
+    let diagnosticsStale: Bool
     let overlayRevision: UInt64
+    let pickingCacheBuildCount: Int
+    let spatialIndexBuildCount: Int
     let cleanupSummary: MeshCleanupSummary?
     let projectData: Data?
 }

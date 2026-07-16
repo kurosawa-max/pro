@@ -13,6 +13,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var mesh = EditableMesh.icosphere() {
         didSet {
             if oldValue != mesh || oldValue.runtime != mesh.runtime {
+                meshMutationGeneration &+= 1
                 markMeshDiagnosticsStale()
                 if !isInstallingMeshCleanup { lastMeshCleanupSummary = nil }
             }
@@ -59,6 +60,7 @@ final class WorkspaceModel: ObservableObject {
     private let meshDiagnosticsCache = MeshDiagnosticsCache()
     private var meshDiagnosticsNeedsRefresh = false
     private var isInstallingMeshCleanup = false
+    private var meshMutationGeneration: UInt64 = 0
     private var strokeBefore: [Int: SIMD3<Float>]?
     private var lastHit: SIMD3<Float>?
     private var strokeSymmetry = SculptSymmetry.none
@@ -251,7 +253,7 @@ final class WorkspaceModel: ObservableObject {
         return MeshCleanupPreview(
             options: options,
             estimate: try MeshCleanup.estimate(mesh: mesh, options: options),
-            source: MeshCleanupSourceKey(mesh: mesh)
+            source: MeshCleanupSourceKey(mesh: mesh, workspaceMutationGeneration: meshMutationGeneration)
         )
     }
 
@@ -264,7 +266,9 @@ final class WorkspaceModel: ObservableObject {
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing else {
             throw MeshCleanupError.activeEdit
         }
-        guard preview.source == MeshCleanupSourceKey(mesh: mesh) else { throw MeshCleanupError.stalePreview }
+        guard preview.source == MeshCleanupSourceKey(
+            mesh: mesh, workspaceMutationGeneration: meshMutationGeneration
+        ) else { throw MeshCleanupError.stalePreview }
         isMeshCleanupRunning = true
         defer { isMeshCleanupRunning = false }
 
@@ -274,9 +278,11 @@ final class WorkspaceModel: ObservableObject {
         let rebuiltPickingIndex = try MeshBVH(mesh: result.mesh)
 
         let before = workspaceSnapshot
-        isInstallingMeshCleanup = true
-        mesh = result.mesh
-        isInstallingMeshCleanup = false
+        do {
+            isInstallingMeshCleanup = true
+            defer { isInstallingMeshCleanup = false }
+            mesh = result.mesh
+        }
         hoverLocation = nil
         #if DEBUG
         benchmarkPreset = nil

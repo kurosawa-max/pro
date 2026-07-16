@@ -486,6 +486,6 @@ runtime cache keyは`topologyID/topologyRevision/revision/ObjectTransform`で、
 
 `MeshCleanup`はDiagnosticsとscale-relative degenerate判定およびunordered triangle keyを共有する、UI/Workspace/Renderer非依存の境界である。previewで選択されたdegenerate、duplicate、isolatedだけを対象とし、source triangle順に最初のduplicateを保持する。triangle削除後に新たにunreferencedになったvertexは常に圧縮し、元からisolatedのvertexはoption選択時だけ除く。旧index順vertex copyと`UInt32?` remapで位置、triangle順序、windingを維持する。
 
-新しい`EditableMesh`をWorkspace外で完成させ、全normal、adjacency、bounds、finite/index/selected-issue validationを通過した場合だけinstallする。previewはtopology identity/revisionとmesh revisionでstaleを検出する。installはObjectTransform、camera、tool設定を維持し、既存`ReplaceMeshCommand` 1件として統合historyへ記録する。新topologyに対してPicking BVH、Vertex Spatial Index、Metal vertex/index bufferの正規再構築経路を使い、Diagnostics report/overlayはstaleにする。
+新しい`EditableMesh`をWorkspace外で完成させ、全normal、adjacency、bounds、finite/index/selected-issue validationを通過した場合だけinstallする。previewはtopology identity/revision、mesh revision、およびWorkspaceの単調増加mesh mutation generationでstaleを検出する。このgenerationはprojectへ保存せず、Undo/Redoによる完全なruntime snapshot復元でも巻き戻さないため、過去のpreviewが再有効化されない。installはObjectTransform、camera、tool設定を維持し、既存`ReplaceMeshCommand` 1件として統合historyへ記録する。新topologyに対してPicking BVH、Vertex Spatial Index、Metal vertex/index bufferの正規再構築経路を使い、Diagnostics report/overlayはstaleにする。
 
 Cleanupはautomatic full repairではない。epsilon weld、vertex移動、hole fill、boundary stitching、non-manifold repair、winding correction、component削除を行わない。Cleanup optionsとsummaryはprojectへ保存せず、formatVersion 1には通常のcleaned vertices/indicesだけを保存する。詳細は`MESH_CLEANUP.md`を参照する。
