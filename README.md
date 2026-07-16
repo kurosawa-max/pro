@@ -26,3 +26,5 @@
 `Forge3D.xcodeproj` に iPadOS 17+ 向けの最小縦切りを実装済み。Xcode で `Forge3D` scheme を選択し、iPad Simulator または実機で実行する。
 
 実装範囲、操作、保存形式、既知の性能制限、実機検証項目は `docs/FOUNDATION_PROTOTYPE.md` を参照。
+
+STLは`1 coordinate = 1 mm`としてBinary／ASCIIをimportでき、Binary STL export時だけ非破壊ObjectTransformをbakeする。importのexact weld、安全上限、非対応repairは`docs/STL_IMPORT.md`、exportは`docs/STL_EXPORT.md`を参照。
