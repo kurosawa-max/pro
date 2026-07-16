@@ -1956,6 +1956,17 @@ final class FoundationPrototypeTests: XCTestCase {
         XCTAssertThrowsError(try STLImporter.importMesh(from: nonFinite)) { error in
             XCTAssertEqual(error as? STLImportError, .nonFiniteValue)
         }
+        let finiteTriangle = EditableMesh(vertices: [
+            MeshVertex(position: SIMD3<Float>(0,0,0), normal: SIMD3<Float>(0,0,1)),
+            MeshVertex(position: SIMD3<Float>(1,0,0), normal: SIMD3<Float>(0,0,1)),
+            MeshVertex(position: SIMD3<Float>(0,1,0), normal: SIMD3<Float>(0,0,1)),
+        ], indices: [0,1,2])
+        var infiniteBinary = try BinarySTLExporter.data(for: finiteTriangle)
+        let infinity = Float.infinity.bitPattern.littleEndian
+        withUnsafeBytes(of: infinity) { infiniteBinary.replaceSubrange(96..<100, with: $0) }
+        XCTAssertThrowsError(try STLImporter.importMesh(from: infiniteBinary)) { error in
+            XCTAssertEqual(error as? STLImportError, .nonFiniteValue)
+        }
         let missingVertex = Data("""
         solid bad
         facet normal 0 0 1
@@ -2066,12 +2077,16 @@ final class FoundationPrototypeTests: XCTestCase {
         let model = WorkspaceModel()
         let beforeMesh = model.mesh, beforeCamera = model.camera, beforeTransform = model.objectTransform
         let beforeUndo = model.undoCount, beforeRedo = model.redoCount
+        let beforeRevision = model.mesh.runtime.revision
+        let beforeTopology = model.mesh.runtime.topologyID
         XCTAssertThrowsError(try model.importSTL(data: Data("broken".utf8), fileName: "broken.stl"))
         XCTAssertEqual(model.mesh, beforeMesh)
         XCTAssertEqual(model.camera, beforeCamera)
         XCTAssertEqual(model.objectTransform, beforeTransform)
         XCTAssertEqual(model.undoCount, beforeUndo)
         XCTAssertEqual(model.redoCount, beforeRedo)
+        XCTAssertEqual(model.mesh.runtime.revision, beforeRevision)
+        XCTAssertEqual(model.mesh.runtime.topologyID, beforeTopology)
         XCTAssertFalse(model.isSTLImporting)
 
         let sourceData = try BinarySTLExporter.data(for: PrimitiveMeshBuilder.cube(size: 20))
@@ -2129,6 +2144,90 @@ final class FoundationPrototypeTests: XCTestCase {
         renderer.update(mesh: imported)
         XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 1)
         XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 1)
+    }
+
+    @MainActor
+    func testImportedMeshSupportsSculptTransformSubdivisionAndUnpollutedHistorySnapshots() throws {
+        let model = WorkspaceModel()
+        let originalMesh = model.mesh, originalCamera = model.camera, originalTransform = model.objectTransform
+        let source = EditableMesh.icosphere(subdivisions: 1)
+        try model.importSTL(data: BinarySTLExporter.data(for: source), fileName: "sculptable.stl")
+        let imported = model.mesh
+        XCTAssertEqual(model.undoCount, 1)
+        XCTAssertTrue(model.objectTransform.isIdentity)
+
+        model.brush = .draw
+        model.brushSettings = BrushSettings(radius: 0.8, strength: 0.2)
+        model.beginStroke()
+        model.updateStroke(
+            sample: PencilSample(location: .zero, force: 1, maximumForce: 1,
+                                 altitude: 1, azimuth: 0, timestamp: 0),
+            ray: Ray(origin: SIMD3<Float>(0, 0, 5), direction: SIMD3<Float>(0, 0, -1)))
+        model.endStroke()
+        XCTAssertNotEqual(model.mesh, imported)
+        XCTAssertEqual(model.undoCount, 2)
+
+        model.undo()
+        XCTAssertEqual(model.mesh, imported)
+        model.undo()
+        XCTAssertEqual(model.mesh, originalMesh)
+        XCTAssertEqual(model.camera, originalCamera)
+        XCTAssertEqual(model.objectTransform, originalTransform)
+        model.redo()
+        XCTAssertEqual(model.mesh, imported)
+        XCTAssertTrue(model.objectTransform.isIdentity)
+
+        let importedRevision = model.mesh.runtime.revision
+        let importedTopology = model.mesh.runtime.topologyID
+        model.updateTransform(ObjectTransform(
+            translation: SIMD3<Float>(25, -10, 5),
+            rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(10, 20, 30)),
+            scale: SIMD3<Float>(2, 1, 0.5)))
+        let transformed = model.objectTransform
+        XCTAssertEqual(model.mesh, imported)
+        XCTAssertEqual(model.mesh.runtime.revision, importedRevision)
+        XCTAssertEqual(model.mesh.runtime.topologyID, importedTopology)
+
+        let trianglesBeforeSubdivision = model.mesh.indices.count / 3
+        try model.subdivideMeshOnce()
+        XCTAssertEqual(model.mesh.indices.count / 3, trianglesBeforeSubdivision * 4)
+        XCTAssertEqual(model.objectTransform, transformed)
+        XCTAssertNotEqual(model.mesh.runtime.topologyID, importedTopology)
+        XCTAssertNoThrow(try model.mesh.validated())
+    }
+
+    @MainActor
+    func testImportedMeshReexportBakesTransformForBothOriginOptionsWithoutMutation() throws {
+        let model = WorkspaceModel()
+        try model.importSTL(data: BinarySTLExporter.data(for: PrimitiveMeshBuilder.cube(size: 20)),
+                            fileName: "cube.stl")
+        model.updateTransform(ObjectTransform(
+            translation: SIMD3<Float>(100, -25, 40),
+            rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(15, 35, 5)),
+            scale: SIMD3<Float>(2, 1, 0.5)))
+        let sourceMesh = model.mesh, sourceTransform = model.objectTransform, sourceCamera = model.camera
+        let revision = model.mesh.runtime.revision, topology = model.mesh.runtime.topologyID
+        let undo = model.undoCount, redo = model.redoCount
+
+        let displayedData = try model.stlData(options: STLExportOptions(origin: .asDisplayed))
+        let centeredData = try model.stlData(options: STLExportOptions(origin: .centerAtOrigin))
+        let displayed = try STLImporter.importMesh(from: displayedData)
+        let centered = try STLImporter.importMesh(from: centeredData)
+        XCTAssertEqual(displayed.format, .binary)
+        XCTAssertEqual(centered.format, .binary)
+        XCTAssertEqual(displayed.sourceTriangleCount, sourceMesh.indices.count / 3)
+        XCTAssertEqual(centered.sourceTriangleCount, sourceMesh.indices.count / 3)
+        XCTAssertLessThan(simd_distance(displayed.bounds.center, sourceTransform.translation), 0.001)
+        XCTAssertLessThan(simd_length(centered.bounds.center), 0.001)
+        XCTAssertLessThan(simd_distance(displayed.bounds.extent, centered.bounds.extent), 0.001)
+
+        XCTAssertEqual(model.mesh, sourceMesh)
+        XCTAssertEqual(model.objectTransform, sourceTransform)
+        XCTAssertEqual(model.camera, sourceCamera)
+        XCTAssertEqual(model.mesh.runtime.revision, revision)
+        XCTAssertEqual(model.mesh.runtime.topologyID, topology)
+        XCTAssertEqual(model.undoCount, undo)
+        XCTAssertEqual(model.redoCount, redo)
     }
 
     @MainActor
