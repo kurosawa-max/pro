@@ -5,6 +5,9 @@ import simd
 struct MeshDiagnosticsView: View {
     @ObservedObject var model: WorkspaceModel
     @Environment(\.dismiss) private var dismiss
+    @State private var showCleanup = false
+    @State private var cleanupReport: MeshDiagnosticsReport?
+    @State private var cleanupLaunchError: String?
 
     var body: some View {
         NavigationStack {
@@ -12,6 +15,8 @@ struct MeshDiagnosticsView: View {
                 if model.isMeshDiagnosticsRunning {
                     ProgressView("Analyzing mesh…")
                         .accessibilityLabel("Analyzing mesh")
+                } else if let summary = model.lastMeshCleanupSummary {
+                    cleanupCompleteView(summary)
                 } else if let report = model.currentMeshDiagnosticsReport {
                     reportView(report)
                 } else {
@@ -40,7 +45,7 @@ struct MeshDiagnosticsView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                if let error = model.meshDiagnosticsError {
+                if let error = cleanupLaunchError ?? model.meshDiagnosticsError {
                     Text(error)
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -50,6 +55,9 @@ struct MeshDiagnosticsView: View {
                         .accessibilityLabel("Diagnostics error: \(error)")
                 }
             }
+        }
+        .sheet(isPresented: $showCleanup, onDismiss: { cleanupReport = nil }) {
+            if let cleanupReport { MeshCleanupView(model: model, diagnostics: cleanupReport) }
         }
     }
 
@@ -122,6 +130,15 @@ struct MeshDiagnosticsView: View {
                 }
             }
 
+            Section("Safe Cleanup") {
+                Button("Cleanup…", systemImage: "eraser") { beginCleanup(report) }
+                    .disabled(!cleanupAvailable(report) || model.isMeshCleanupRunning)
+                    .accessibilityHint("Previews removal of selected degenerate triangles, duplicate triangles, and isolated vertices")
+                Text("Cleanup is explicit and destructive. It never welds nearby vertices, fills holes, repairs non-manifold edges, or changes winding.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Viewport Overlay") {
                 Toggle("Show diagnostics overlay", isOn: $model.meshDiagnosticsOverlayOptions.isVisible)
                 Toggle("Boundary edges", isOn: $model.meshDiagnosticsOverlayOptions.boundaryEdges)
@@ -153,6 +170,49 @@ struct MeshDiagnosticsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func cleanupCompleteView(_ summary: MeshCleanupSummary) -> some View {
+        List {
+            Section {
+                Label("Cleanup complete", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.headline)
+                countRow("Removed degenerate triangles", summary.removedDegenerateTriangleCount)
+                countRow("Removed duplicate triangles", summary.removedDuplicateTriangleCount)
+                countRow("Removed isolated vertices", summary.removedIsolatedVertexCount)
+                countRow("Removed newly unreferenced vertices", summary.removedUnreferencedVertexCount)
+                countRow("Result vertices", summary.resultingVertexCount)
+                countRow("Result triangles", summary.resultingTriangleCount)
+            }
+            Section {
+                Label("Diagnostics are stale", systemImage: "arrow.clockwise.circle")
+                Text("Analyze again to verify the selected issues are gone and inspect remaining boundary, component, non-manifold, or winding warnings.")
+                    .foregroundStyle(.secondary)
+                Button("Analyze Again", systemImage: "stethoscope") { model.refreshMeshDiagnostics() }
+                    .disabled(model.isMeshDiagnosticsRunning)
+            }
+        }
+    }
+
+    private func cleanupAvailable(_ report: MeshDiagnosticsReport) -> Bool {
+        let topology = report.topology
+        let hasCandidate = topology.degenerateTriangleCount > 0 || topology.duplicateTriangleCount > 0
+            || topology.isolatedVertexCount > 0
+        return hasCandidate && !topology.hasInvalidStructure && topology.invalidIndexTriangleCount == 0
+            && topology.nonFiniteVertexCount == 0
+    }
+
+    private func beginCleanup(_ report: MeshDiagnosticsReport) {
+        cleanupLaunchError = nil
+        do {
+            try model.prepareForMeshCleanup()
+            guard !model.isMeshDiagnosticsStale else {
+                throw MeshCleanupError.stalePreview
+            }
+            cleanupReport = report
+            showCleanup = true
+        } catch { cleanupLaunchError = error.localizedDescription }
     }
 
     private func countRow(_ label: String, _ value: Int, suffix: String = "") -> some View {

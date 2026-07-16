@@ -242,7 +242,7 @@ enum MeshTopologyDiagnostics {
         edges.reserveCapacity(min(mesh.indices.count, triangleCount * 2))
         var edgeOrder: [DiagnosticEdgeKey] = []
         edgeOrder.reserveCapacity(min(mesh.indices.count, triangleCount * 2))
-        var seenTriangles: [DiagnosticTriangleKey: Int] = [:]
+        var seenTriangles: [MeshDiagnosticTriangleKey: Int] = [:]
         seenTriangles.reserveCapacity(triangleCount)
         var duplicateTriangleCount = 0
         var degenerateTriangleCount = 0
@@ -252,9 +252,7 @@ enum MeshTopologyDiagnostics {
         var degeneratePoints: [SIMD3<Float>] = []
         degeneratePoints.reserveCapacity(min(triangleCount, representativeLimit))
 
-        let localBounds = mesh.bounds
-        let scale = max(Double(simd_length(localBounds.extent)), 1.0e-12)
-        let twiceAreaEpsilon = max(scale * scale * 1.0e-12, Double.leastNonzeroMagnitude)
+        let twiceAreaEpsilon = MeshDiagnosticTriangleRules.twiceAreaEpsilon(for: mesh)
 
         for triangle in 0..<triangleCount {
             let offset = triangle * 3
@@ -272,8 +270,9 @@ enum MeshTopologyDiagnostics {
             guard pa.allFinite, pb.allFinite, pc.allFinite else { continue }
             let centroid = (pa + pb + pc) / 3
             let repeated = a == b || b == c || c == a
-            let twiceArea = DiagnosticMath.twiceArea(pa, pb, pc)
-            let degenerate = repeated || !twiceArea.isFinite || twiceArea <= twiceAreaEpsilon
+            let degenerate = MeshDiagnosticTriangleRules.isDegenerate(
+                a, b, c, vertices: mesh.vertices, twiceAreaEpsilon: twiceAreaEpsilon
+            )
             if degenerate {
                 degenerateTriangleCount += 1
                 if degeneratePoints.count < representativeLimit {
@@ -282,7 +281,7 @@ enum MeshTopologyDiagnostics {
                 }
             }
 
-            if seenTriangles.updateValue(triangle, forKey: DiagnosticTriangleKey(a, b, c)) != nil {
+            if seenTriangles.updateValue(triangle, forKey: MeshDiagnosticTriangleKey(a, b, c)) != nil {
                 duplicateTriangleCount += 1
                 if duplicateTriangleIDs.count < representativeLimit { duplicateTriangleIDs.append(triangle) }
             }
@@ -407,8 +406,7 @@ enum MeshMetricDiagnostics {
     static func localMetrics(mesh: EditableMesh) -> MeshLocalMetrics {
         var surfaceArea = 0.0
         var signedVolume = 0.0
-        let scale = max(Double(simd_length(mesh.bounds.extent)), 1.0e-12)
-        let twiceAreaEpsilon = max(scale * scale * 1.0e-12, Double.leastNonzeroMagnitude)
+        let twiceAreaEpsilon = MeshDiagnosticTriangleRules.twiceAreaEpsilon(for: mesh)
         forEachFiniteTriangle(mesh: mesh) { a, b, c in
             let cross = simd_cross(b - a, c - a)
             let twiceArea = simd_length(cross)
@@ -430,8 +428,7 @@ enum MeshMetricDiagnostics {
         }
         let safe = transform.sanitized()
         var surfaceArea = 0.0
-        let localScale = max(Double(simd_length(mesh.bounds.extent)), 1.0e-12)
-        let localTwiceAreaEpsilon = max(localScale * localScale * 1.0e-12, Double.leastNonzeroMagnitude)
+        let localTwiceAreaEpsilon = MeshDiagnosticTriangleRules.twiceAreaEpsilon(for: mesh)
         let worldScale = max(Double(simd_length(dimensions.worldSize)), 1.0e-12)
         let twiceAreaEpsilon = max(worldScale * worldScale * 1.0e-15, Double.leastNonzeroMagnitude)
         forEachFiniteTriangle(mesh: mesh) { a, b, c in
@@ -601,7 +598,7 @@ private struct DiagnosticEdgeUse {
     }
 }
 
-private struct DiagnosticTriangleKey: Hashable {
+struct MeshDiagnosticTriangleKey: Hashable {
     let first: UInt32
     let second: UInt32
     let third: UInt32
@@ -611,6 +608,30 @@ private struct DiagnosticTriangleKey: Hashable {
         first = sorted[0]
         second = sorted[1]
         third = sorted[2]
+    }
+}
+
+enum MeshDiagnosticTriangleRules {
+    static func twiceAreaEpsilon(for mesh: EditableMesh) -> Double {
+        let scale = max(Double(simd_length(mesh.bounds.extent)), 1.0e-12)
+        return max(scale * scale * 1.0e-12, Double.leastNonzeroMagnitude)
+    }
+
+    static func isDegenerate(
+        _ a: UInt32,
+        _ b: UInt32,
+        _ c: UInt32,
+        vertices: [MeshVertex],
+        twiceAreaEpsilon: Double
+    ) -> Bool {
+        guard a != b, b != c, c != a,
+              Int(a) < vertices.count, Int(b) < vertices.count, Int(c) < vertices.count else { return true }
+        let pa = vertices[Int(a)].position
+        let pb = vertices[Int(b)].position
+        let pc = vertices[Int(c)].position
+        guard pa.allFinite, pb.allFinite, pc.allFinite else { return true }
+        let twiceArea = DiagnosticMath.twiceArea(pa, pb, pc)
+        return !twiceArea.isFinite || twiceArea <= twiceAreaEpsilon
     }
 }
 
@@ -644,7 +665,7 @@ private struct DiagnosticUnionFind {
     }
 }
 
-private enum DiagnosticMath {
+enum DiagnosticMath {
     static func double(_ value: SIMD3<Float>) -> SIMD3<Double> {
         SIMD3<Double>(Double(value.x), Double(value.y), Double(value.z))
     }

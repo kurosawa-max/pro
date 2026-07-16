@@ -8,6 +8,7 @@
 - `STL_EXPORT.md` — mm単位、ObjectTransform bake、Binary STL出力
 - `STL_IMPORT.md` — Binary/ASCII STL解析、exact weld、安全上限、Workspace置換
 - `MESH_DIAGNOSTICS.md` — read-only mesh解析、area/volume、capability、cache、viewport overlay
+- `MESH_CLEANUP.md` — preview必須の限定Cleanup、index remap、Undo、runtime再構築
 - `adr/` — 重要な設計判断
 - `../AGENTS.md` — Codex等の恒常的な作業規則
 - `../CODEX_FIRST_TASK.md` — 最初の実装タスク

@@ -12,7 +12,10 @@ final class WorkspaceModel: ObservableObject {
     #endif
     @Published var mesh = EditableMesh.icosphere() {
         didSet {
-            if oldValue != mesh || oldValue.runtime != mesh.runtime { markMeshDiagnosticsStale() }
+            if oldValue != mesh || oldValue.runtime != mesh.runtime {
+                markMeshDiagnosticsStale()
+                if !isInstallingMeshCleanup { lastMeshCleanupSummary = nil }
+            }
         }
     }
     @Published var camera = CameraState()
@@ -39,6 +42,8 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var meshDiagnosticsError: String? = nil
     @Published var meshDiagnosticsOverlayOptions = MeshDiagnosticsOverlayOptions()
     @Published private(set) var meshDiagnosticsOverlayRevision: UInt64 = 0
+    @Published private(set) var isMeshCleanupRunning = false
+    @Published private(set) var lastMeshCleanupSummary: MeshCleanupSummary? = nil
     #if DEBUG
     @Published private(set) var benchmarkPreset: BenchmarkPreset?
     @Published private(set) var isBenchmarkRunning = false
@@ -53,6 +58,7 @@ final class WorkspaceModel: ObservableObject {
     private let sculptSpatialIndex = VertexSpatialIndex()
     private let meshDiagnosticsCache = MeshDiagnosticsCache()
     private var meshDiagnosticsNeedsRefresh = false
+    private var isInstallingMeshCleanup = false
     private var strokeBefore: [Int: SIMD3<Float>]?
     private var lastHit: SIMD3<Float>?
     private var strokeSymmetry = SculptSymmetry.none
@@ -193,6 +199,7 @@ final class WorkspaceModel: ObservableObject {
         let report = meshDiagnosticsCache.report(mesh: mesh, transform: objectTransform)
         meshDiagnosticsReport = report
         meshDiagnosticsNeedsRefresh = false
+        lastMeshCleanupSummary = nil
         let overlayChanged = previousOverlay.map { $0 != report.overlay } ?? true
         if overlayChanged { meshDiagnosticsOverlayRevision &+= 1 }
         status = "Mesh diagnostics: \(report.severity.displayName)"
@@ -211,6 +218,7 @@ final class WorkspaceModel: ObservableObject {
         meshDiagnosticsReport = nil
         meshDiagnosticsNeedsRefresh = false
         meshDiagnosticsError = nil
+        lastMeshCleanupSummary = nil
         meshDiagnosticsCache.invalidate()
         meshDiagnosticsOverlayRevision &+= 1
     }
@@ -218,6 +226,77 @@ final class WorkspaceModel: ObservableObject {
     private func markMeshDiagnosticsStale() {
         if meshDiagnosticsReport != nil { meshDiagnosticsNeedsRefresh = true }
     }
+
+    func prepareForMeshCleanup() throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isMeshCleanupRunning else { throw MeshCleanupError.cleanupInProgress }
+        cancelStroke()
+        cancelAllGizmoDrags()
+        commitTransformPanelTransaction()
+        hoverLocation = nil
+    }
+
+    func previewMeshCleanup(options: MeshCleanupOptions) throws -> MeshCleanupPreview {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isMeshCleanupRunning else { throw MeshCleanupError.cleanupInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing else {
+            throw MeshCleanupError.activeEdit
+        }
+        isMeshCleanupRunning = true
+        defer { isMeshCleanupRunning = false }
+        return MeshCleanupPreview(
+            options: options,
+            estimate: try MeshCleanup.estimate(mesh: mesh, options: options),
+            source: MeshCleanupSourceKey(mesh: mesh)
+        )
+    }
+
+    @discardableResult
+    func applyMeshCleanup(preview: MeshCleanupPreview) throws -> MeshCleanupResult {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isMeshCleanupRunning else { throw MeshCleanupError.cleanupInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing else {
+            throw MeshCleanupError.activeEdit
+        }
+        guard preview.source == MeshCleanupSourceKey(mesh: mesh) else { throw MeshCleanupError.stalePreview }
+        isMeshCleanupRunning = true
+        defer { isMeshCleanupRunning = false }
+
+        let currentEstimate = try MeshCleanup.estimate(mesh: mesh, options: preview.options)
+        guard currentEstimate == preview.estimate else { throw MeshCleanupError.stalePreview }
+        let result = try MeshCleanup.clean(mesh: mesh, options: preview.options)
+        let rebuiltPickingIndex = try MeshBVH(mesh: result.mesh)
+
+        let before = workspaceSnapshot
+        isInstallingMeshCleanup = true
+        mesh = result.mesh
+        isInstallingMeshCleanup = false
+        hoverLocation = nil
+        #if DEBUG
+        benchmarkPreset = nil
+        #endif
+        profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
+        pickingCache.install(rebuiltPickingIndex, for: mesh)
+        sculptSpatialIndex.prepare(for: mesh)
+        record(.replaceMesh(ReplaceMeshCommand(before: before, after: workspaceSnapshot)))
+
+        meshDiagnosticsCache.invalidate()
+        meshDiagnosticsNeedsRefresh = meshDiagnosticsReport != nil
+        meshDiagnosticsError = nil
+        meshDiagnosticsOverlayRevision &+= 1
+        lastMeshCleanupSummary = result.summary
+        status = "Cleanup complete: removed \(result.removedDegenerateTriangleCount + result.removedDuplicateTriangleCount) triangles and \(result.removedIsolatedVertexCount + result.removedUnreferencedVertexCount) vertices"
+        return result
+    }
+
+    var pickingCacheBuildCount: Int { pickingCache.buildCount }
+    var sculptSpatialIndexBuildCount: Int { sculptSpatialIndex.buildCount }
 
     func prepareForSTLExport() throws {
         #if DEBUG
