@@ -15,6 +15,9 @@ struct MetalCanvas: UIViewRepresentable {
         renderer.scaleGizmoState = model.scaleGizmoState
         renderer.gizmoMode = model.gizmoMode
         renderer.showsTranslationGizmo = model.showsTranslationGizmo
+        renderer.updateDiagnostics(data: model.currentMeshDiagnosticsOverlay,
+                                   revision: model.meshDiagnosticsOverlayRevision,
+                                   options: model.meshDiagnosticsOverlayOptions)
         view.delegate = renderer; view.preferredFramesPerSecond = 60; view.isPaused = false
         view.onPencilBegan = { [weak coordinator = context.coordinator] sample in coordinator?.pencilBegan(sample, in: view) }
         view.onPencilMoved = { [weak coordinator = context.coordinator] sample in coordinator?.pencilMoved(sample, in: view) }
@@ -39,6 +42,9 @@ struct MetalCanvas: UIViewRepresentable {
         #else
         context.coordinator.renderer?.showsTranslationGizmo = model.showsTranslationGizmo
         #endif
+        context.coordinator.renderer?.updateDiagnostics(data: model.currentMeshDiagnosticsOverlay,
+                                                        revision: model.meshDiagnosticsOverlayRevision,
+                                                        options: model.meshDiagnosticsOverlayOptions)
         context.coordinator.renderer?.update(mesh: model.mesh)
     }
 

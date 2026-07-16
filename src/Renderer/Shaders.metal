@@ -40,3 +40,27 @@ vertex GizmoVertexOut gizmoVertex(uint id [[vertex_id]], constant GizmoVertex *v
 }
 
 fragment float4 gizmoFragment(GizmoVertexOut in [[stage_in]]) { return in.color; }
+
+struct DiagnosticsOverlayVertex { float3 position; float4 color; };
+struct DiagnosticsOverlayUniforms { float4x4 viewProjection; float4x4 model; float pointSize; };
+struct DiagnosticsOverlayVertexOut {
+    float4 position [[position]];
+    float4 color;
+    float pointSize [[point_size]];
+};
+
+vertex DiagnosticsOverlayVertexOut diagnosticsOverlayVertex(
+    uint id [[vertex_id]],
+    constant DiagnosticsOverlayVertex *vertices [[buffer(0)]],
+    constant DiagnosticsOverlayUniforms &uniforms [[buffer(1)]]) {
+    DiagnosticsOverlayVertexOut out;
+    DiagnosticsOverlayVertex value = vertices[id];
+    out.position = uniforms.viewProjection * uniforms.model * float4(value.position, 1.0);
+    out.color = value.color;
+    out.pointSize = uniforms.pointSize;
+    return out;
+}
+
+fragment float4 diagnosticsOverlayFragment(DiagnosticsOverlayVertexOut in [[stage_in]]) {
+    return in.color;
+}

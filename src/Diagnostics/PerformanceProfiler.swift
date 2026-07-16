@@ -8,6 +8,10 @@ enum PerformanceMetric: CaseIterable, Hashable {
     case vertexUpload
     case indexUpload
     case subdivision
+    case diagnosticsTopology
+    case diagnosticsGeometry
+    case diagnosticsWorld
+    case diagnosticsOverlay
     case frameCPU
     case frameInterval
 }

@@ -33,6 +33,10 @@ enum BenchmarkCase: String, CaseIterable, Codable {
     case vertexUpload = "Vertex buffer upload"
     case indexUpload = "Index buffer upload"
     case subdivide = "Subdivide once"
+    case diagnosticsTopology = "Diagnostics topology"
+    case diagnosticsGeometry = "Diagnostics geometry metrics"
+    case diagnosticsWorld = "Diagnostics world metrics"
+    case diagnosticsOverlay = "Diagnostics overlay generation"
 
     var metric: PerformanceMetric {
         switch self {
@@ -42,6 +46,10 @@ enum BenchmarkCase: String, CaseIterable, Codable {
         case .vertexUpload: .vertexUpload
         case .indexUpload: .indexUpload
         case .subdivide: .subdivision
+        case .diagnosticsTopology: .diagnosticsTopology
+        case .diagnosticsGeometry: .diagnosticsGeometry
+        case .diagnosticsWorld: .diagnosticsWorld
+        case .diagnosticsOverlay: .diagnosticsOverlay
         }
     }
 }
@@ -59,7 +67,17 @@ struct BenchmarkPresetResult: Codable, Equatable {
     let presetName: String
     let vertexCount: Int
     let triangleCount: Int
+    let uniqueEdgeCount: Int?
     let cases: [BenchmarkCaseResult]
+
+    init(presetName: String, vertexCount: Int, triangleCount: Int,
+         uniqueEdgeCount: Int? = nil, cases: [BenchmarkCaseResult]) {
+        self.presetName = presetName
+        self.vertexCount = vertexCount
+        self.triangleCount = triangleCount
+        self.uniqueEdgeCount = uniqueEdgeCount
+        self.cases = cases
+    }
 }
 
 struct BenchmarkReport: Codable, Equatable {
@@ -77,7 +95,8 @@ struct BenchmarkReport: Codable, Equatable {
             "Warm-up: \(configuration.warmUpIterations)", "Samples: \(configuration.measuredIterations)"
         ]
         for preset in presets {
-            lines.append("\n\(preset.presetName): \(preset.vertexCount) vertices, \(preset.triangleCount) triangles")
+            let edges = preset.uniqueEdgeCount.map { ", \($0) unique edges" } ?? ""
+            lines.append("\n\(preset.presetName): \(preset.vertexCount) vertices, \(preset.triangleCount) triangles\(edges)")
             for item in preset.cases {
                 lines.append(String(format: "%@: n=%d latest=%.4f ms avg=%.4f ms min=%.4f ms max=%.4f ms", item.caseName, item.sampleCount, item.latestMilliseconds, item.averageMilliseconds, item.minimumMilliseconds, item.maximumMilliseconds))
             }
@@ -136,8 +155,9 @@ final class BenchmarkRunner {
                     minimumMilliseconds: sample.minimumMilliseconds, maximumMilliseconds: sample.maximumMilliseconds))
                 completed += 1; progress(completed, total); await Task.yield()
             }
+            let uniqueEdges = MeshTopologyDiagnostics.analyze(base).uniqueEdgeCount
             presetResults.append(BenchmarkPresetResult(presetName: preset.rawValue, vertexCount: base.vertices.count,
-                triangleCount: base.indices.count / 3, cases: results))
+                triangleCount: base.indices.count / 3, uniqueEdgeCount: uniqueEdges, cases: results))
         }
         return BenchmarkReport(executedAt: Date(), environment: Self.environment,
             buildConfiguration: "Debug", configuration: configuration, presets: presetResults)
@@ -177,6 +197,25 @@ final class BenchmarkRunner {
             installMesh(mesh)
             guard await waitForSample(.vertexUpload, after: vertexBefore, profiler: profiler) else { return false }
             return await waitForSample(.indexUpload, after: indexBefore, profiler: profiler)
+        case .diagnosticsTopology:
+            _ = PerformanceProfiler.measure(profiler, metric: .diagnosticsTopology) {
+                MeshTopologyDiagnostics.analyze(mesh)
+            }
+        case .diagnosticsGeometry:
+            _ = PerformanceProfiler.measure(profiler, metric: .diagnosticsGeometry) {
+                MeshMetricDiagnostics.localMetrics(mesh: mesh)
+            }
+        case .diagnosticsWorld:
+            let local = MeshMetricDiagnostics.localMetrics(mesh: mesh)
+            _ = PerformanceProfiler.measure(profiler, metric: .diagnosticsWorld) {
+                MeshMetricDiagnostics.worldMetrics(mesh: mesh, transform: .identity,
+                                                   trustedLocalSignedVolume: local.signedVolumeMM3)
+            }
+        case .diagnosticsOverlay:
+            let topology = MeshTopologyDiagnostics.analyze(mesh)
+            _ = PerformanceProfiler.measure(profiler, metric: .diagnosticsOverlay) {
+                MeshDiagnosticsOverlayBuilder.make(from: topology)
+            }
         }
         return true
     }
