@@ -28,7 +28,7 @@ final class AutosaveRecoveryTests: XCTestCase {
         model.brush = .crease
         model.brushSettings.radius = 7
         model.symmetry = SculptSymmetry(x: true)
-        model.meshDiagnosticsOverlayOptions.showsBoundaryEdges.toggle()
+        model.meshDiagnosticsOverlayOptions.boundaryEdges.toggle()
         _ = try model.analyzeCurrentMesh()
         model.updateTransform(.identity)
         XCTAssertFalse(model.isDirty)
