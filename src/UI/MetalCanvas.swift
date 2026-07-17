@@ -175,11 +175,19 @@ struct MetalCanvas: UIViewRepresentable {
             let p = gesture.translation(in: gesture.view)
             model.camera.yaw = orbitStart.yaw + Float(p.x) * 0.008
             model.camera.pitch = min(max(orbitStart.pitch + Float(p.y) * 0.008, -1.5), 1.5)
+            if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+                model.commitCameraChange(from: orbitStart)
+            }
         }
         @objc private func zoom(_ gesture: UIPinchGestureRecognizer) {
             guard !model.isGizmoDragging else { return }
             if gesture.state == .began { zoomStart = model.camera.distance }
+            let before = CameraState(yaw: model.camera.yaw, pitch: model.camera.pitch,
+                                     distance: zoomStart, target: model.camera.target)
             model.camera.distance = min(max(zoomStart / Float(gesture.scale), 1.2), 20)
+            if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+                model.commitCameraChange(from: before)
+            }
         }
         @objc private func pan(_ gesture: UIPanGestureRecognizer) {
             guard !model.isGizmoDragging else { return }
@@ -188,6 +196,9 @@ struct MetalCanvas: UIViewRepresentable {
             let scale = model.camera.distance * 0.0015
             let right = SIMD3<Float>(cos(model.camera.yaw), 0, -sin(model.camera.yaw))
             model.camera.target = panStart.target - right * Float(p.x) * scale + SIMD3<Float>(0, 1, 0) * Float(p.y) * scale
+            if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+                model.commitCameraChange(from: panStart)
+            }
         }
     }
 }

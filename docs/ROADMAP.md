@@ -85,10 +85,11 @@ Diagnosticsに続く限定Mesh Cleanupとして、preview選択式のisolated ve
 ## Milestone 4 — Project and Export
 
 - 1 unit = 1 mm、world dimensions、ObjectTransform bake済みBinary STL、As Displayed/Center at Origin、Binary/ASCII STL importはFoundationで実装済み。STL importはunit推測やrepairを行わない。STL unit metadata、3MF、OBJ Transform bake、multiple-object exportは未実装。
+- formatVersion 1を維持した2秒debounce autosave、atomic single-slot Recovery、Recover／Discard／Later、保存状態UI、scene lifecycle flushはFoundationで実装済み。Recoveryは通常Saveを置き換えず、history／runtime cacheを保存しない。snapshot履歴、iCloud、background完了保証は未実装。
 
 - `.forge3d`形式
-- 自動保存
-- 復旧
+- 自動保存（Foundation single-slot実装済み。履歴化とcloud同期は未実装）
+- 復旧（Foundation Recover／Discard／Later実装済み。複数snapshotは未実装）
 - STL出力
 - OBJ入出力
 - サムネイル

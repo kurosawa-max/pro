@@ -489,3 +489,13 @@ runtime cache keyは`topologyID/topologyRevision/revision/ObjectTransform`で、
 新しい`EditableMesh`をWorkspace外で完成させ、全normal、adjacency、bounds、finite/index/selected-issue validationを通過した場合だけinstallする。previewはtopology identity/revision、mesh revision、およびWorkspaceの単調増加mesh mutation generationでstaleを検出する。このgenerationはprojectへ保存せず、Undo/Redoによる完全なruntime snapshot復元でも巻き戻さないため、過去のpreviewが再有効化されない。installはObjectTransform、camera、tool設定を維持し、既存`ReplaceMeshCommand` 1件として統合historyへ記録する。新topologyに対してPicking BVH、Vertex Spatial Index、Metal vertex/index bufferの正規再構築経路を使い、Diagnostics report/overlayはstaleにする。
 
 Cleanupはautomatic full repairではない。epsilon weld、vertex移動、hole fill、boundary stitching、non-manifold repair、winding correction、component削除を行わない。Cleanup optionsとsummaryはprojectへ保存せず、formatVersion 1には通常のcleaned vertices/indicesだけを保存する。詳細は`MESH_CLEANUP.md`を参照する。
+
+### 17.14 Autosave and crash recovery
+
+`WorkspaceModel`は保存対象の確定変更だけを非巻戻し`MutationGeneration`で追跡し、最後に明示保存したgenerationとの差をdirtyとする。Sculpt／Gizmo／Transform panelはtransaction確定時だけ進め、Undo／Redo、Primitive、Subdivision、STL Import、Mesh Cleanup、camera確定も進める。tool設定、hover、Diagnostics、Benchmark、cancel、no-opは進めない。数値が`UInt64.max`へ達した後は値をsaturateしてin-memory identityを更新し、古いgenerationとの一致へwrapしない。
+
+MainActorはmesh／ObjectTransform／camera／project metadataの不変`ProjectAutosaveSnapshot`を一度だけ作り、actorの`ProjectAutosaveCoordinator`が2秒のtrailing debounceとI/O orderingを所有する。active Sculpt／Gizmo／panel transaction／Benchmarkはsnapshotを拒否する。scene inactive/backgroundでは安全なsnapshotだけを即時flushするが、OSによるbackground完了は保証しない。
+
+Recoveryは`Application Support/Forge3D/Recovery/current.recovery`のsingle slotで、wrapper version 1、bounded metadata、formatVersion 1 project JSON、metadata＋payloadのSHA-256を持つ。128 MiB project／160 MiB wrapper上限、overflow検査、利用可能容量確認、sibling temporary file、file synchronization、read-back validation、backup付きatomic replace、final inspectionの順で処理する。final inspection失敗時は旧backupを復元・再検証し、失敗時は既存正常RecoveryとWorkspaceを維持する。別sessionのslotは無言で上書きしない。
+
+Recoverは完全decode後にactive Debug Benchmarkを安全に停止し、fresh runtime mesh、Transform、cameraをinstallする。history／Diagnostics／Cleanup／Benchmark状態をclearし、adjacency／Picking BVH／Vertex Spatial Indexを再構築する。Recovery source generationを現在lineageとして採用し、別identityのexplicit-Save baselineでdirtyを表すため、Recover直後の同一内容を再writeしない。Rendererは新runtime identityを通常経路で一度uploadし、次のunchanged updateをskipする。Recoveryは明示Saveまで保持する。Discardは確認後にfileだけを削除し、LaterはfileとWorkspaceを保持する。history、runtime cache、profiler、UI state、Recovery metadataは通常projectへ保存せず、formatVersion 1を維持する。詳細は`AUTOSAVE_RECOVERY.md`を参照する。
