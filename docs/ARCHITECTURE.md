@@ -499,3 +499,11 @@ MainActorはmesh／ObjectTransform／camera／project metadataの不変`ProjectA
 Recoveryは`Application Support/Forge3D/Recovery/current.recovery`のsingle slotで、wrapper version 1、bounded metadata、formatVersion 1 project JSON、metadata＋payloadのSHA-256を持つ。128 MiB project／160 MiB wrapper上限、overflow検査、利用可能容量確認、sibling temporary file、file synchronization、read-back validation、backup付きatomic replace、final inspectionの順で処理する。final inspection失敗時は旧backupを復元・再検証し、失敗時は既存正常RecoveryとWorkspaceを維持する。別sessionのslotは無言で上書きしない。
 
 Recoverは完全decode後にactive Debug Benchmarkを安全に停止し、fresh runtime mesh、Transform、cameraをinstallする。history／Diagnostics／Cleanup／Benchmark状態をclearし、adjacency／Picking BVH／Vertex Spatial Indexを再構築する。Recovery source generationを現在lineageとして採用し、別identityのexplicit-Save baselineでdirtyを表すため、Recover直後の同一内容を再writeしない。Rendererは新runtime identityを通常経路で一度uploadし、次のunchanged updateをskipする。Recoveryは明示Saveまで保持する。Discardは確認後にfileだけを削除し、LaterはfileとWorkspaceを保持する。history、runtime cache、profiler、UI state、Recovery metadataは通常projectへ保存せず、formatVersion 1を維持する。詳細は`AUTOSAVE_RECOVERY.md`を参照する。
+
+### 17.15 Runtime-only triangle face selection
+
+単一objectのFace Selectionは現在index順のtriangle番号をface IDとし、topology ID、topology revision、triangle countへ結び付けたdense UInt64 bitsetで保持する。contains／単一setはO(1)、全選択／解除／反転はO(T/64)で、selected countは増分管理する。selection専用revisionは実際の内容変更だけを記録し、project mutation generationと分離する。
+
+world RayはObjectTransformでlocalへ変換し、current topology／vertex revisionへ一致する既存CPU BVHから最前面triangle IDを取得する。Face Selectのためのlinear scan fallbackやtapごとのBVH rebuildは行わない。Replace／Add／Remove／Toggleと、共有edge Union-Findによるconnected unionを提供し、vertex-only接触は同componentにしない。入力順はactive modal、active/current Gizmo、Face Select Pencil tap、Sculpt、finger Cameraである。
+
+Metal selection overlayはmesh vertex bufferとmodel/view/projectionを再利用し、選択triangleのindexだけを独立bufferへ保存する。描画順はmesh、selection fill、Diagnostics、Gizmoである。selection/topology変更時だけbufferを更新し、camera、Transform、Sculpt vertex revisionでは更新しない。selectionはformatVersion 1、Recovery、Autosave、Workspace historyへ保存せずdirtyを変更しない。topology置換時にclearし、vertex-only変更時は維持する。詳細は`FACE_SELECTION.md`を参照する。

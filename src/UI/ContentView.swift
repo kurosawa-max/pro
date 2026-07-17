@@ -25,12 +25,19 @@ struct ContentView: View {
         NavigationStack {
             ZStack(alignment: .topTrailing) {
                 MetalCanvas(model: model).ignoresSafeArea(edges: .bottom)
-                if let p = model.hoverLocation {
+                if model.interactionMode == .sculpt, let p = model.hoverLocation {
                     Circle().stroke(.white.opacity(0.9), lineWidth: 2)
                         .frame(width: brushCursorDiameter, height: brushCursorDiameter)
                         .position(p).allowsHitTesting(false)
                 }
-                VStack { Spacer(); controls.padding() }
+                VStack {
+                    Spacer()
+                    if model.interactionMode == .faceSelect {
+                        FaceSelectionPanel(model: model).padding()
+                    } else {
+                        controls.padding()
+                    }
+                }
                 TransformPanel(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .padding(.leading, 8)
@@ -64,6 +71,17 @@ struct ContentView: View {
                         .accessibilityHint("Inspect mesh topology, dimensions, and printability warnings")
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Picker("Editing Mode", selection: Binding(get: { model.interactionMode },
+                                                               set: { model.setInteractionMode($0) })) {
+                        ForEach(WorkspaceInteractionMode.allCases, id: \.self) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .accessibilityHint("Switch between sculpting and triangle face selection")
+                    #if DEBUG
+                    .disabled(model.isBenchmarkRunning)
+                    #endif
                     Picker("Gizmo Mode", selection: Binding(get: { model.gizmoMode },
                                                             set: { model.setGizmoMode($0) })) {
                         ForEach(GizmoMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
