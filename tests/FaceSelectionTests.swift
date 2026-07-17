@@ -252,8 +252,13 @@ final class FaceSelectionTests: XCTestCase {
 
     func testConnectedLargeLinearCaseHasDeterministicLinearResult() throws {
         let triangleCount = 10_000
-        let vertices = (0..<(triangleCount + 2)).map { index in
-            vertex(Float(index), Float(index & 1), Float((index % 3) == 0 ? 1 : 0))
+        var vertices: [MeshVertex] = []
+        vertices.reserveCapacity(triangleCount + 2)
+        for index in 0..<(triangleCount + 2) {
+            let x = Float(index)
+            let y = Float(index & 1)
+            let z: Float = index.isMultiple(of: 3) ? 1 : 0
+            vertices.append(vertex(x, y, z))
         }
         var indices: [UInt32] = []
         indices.reserveCapacity(triangleCount * 3)
