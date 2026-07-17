@@ -1,8 +1,10 @@
+import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var model: WorkspaceModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showImporter = false
     @State private var showSTLImporter = false
     @State private var showSTLImportConfirmation = false
@@ -16,6 +18,8 @@ struct ContentView: View {
     @State private var stlExport = STLFile(data: Data())
     @State private var stlImportResult: STLImportResult?
     @State private var stlImportFileName = "STL"
+    @State private var projectSaveSnapshot: ProjectAutosaveSnapshot?
+    @State private var confirmsOpeningWithUnsavedChanges = false
 
     var body: some View {
         NavigationStack {
@@ -45,7 +49,7 @@ struct ContentView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarLeading) {
-                    Button("Open", systemImage: "folder") { showImporter = true }
+                    Button("Open", systemImage: "folder") { requestOpenProject() }
                     Button("Import STL", systemImage: "square.and.arrow.down") { showSTLImporter = true }
                         .disabled(importControlsDisabled)
                         .accessibilityHint("Choose a Binary or ASCII STL file to preview")
@@ -89,11 +93,25 @@ struct ContentView: View {
                 }
             }
         }
+        .task { await model.inspectRecoveryOnLaunch() }
+        .onChange(of: scenePhase) { _, phase in
+            Task {
+                switch phase {
+                case .active: await model.handleLifecycleActive()
+                case .inactive, .background: await model.handleLifecycleInactiveOrBackground()
+                @unknown default: break
+                }
+            }
+        }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.forge3D]) { result in
             guard case .success(let url) = result else { return }
             let hasSecurityScope = url.startAccessingSecurityScopedResource()
             defer { if hasSecurityScope { url.stopAccessingSecurityScopedResource() } }
-            do { model.load(data: try Data(contentsOf: url, options: .mappedIfSafe)) }
+            do {
+                try model.loadProject(data: Data(contentsOf: url, options: .mappedIfSafe),
+                                      projectName: url.deletingPathExtension().lastPathComponent)
+                Task { await model.inspectRecoveryOnLaunch(force: true) }
+            }
             catch { model.status = "Open failed: \(error.localizedDescription)" }
         }
         .fileImporter(isPresented: $showSTLImporter, allowedContentTypes: [.stl]) { result in
@@ -113,11 +131,33 @@ struct ContentView: View {
                 showSTLExporter = true
             }
         }
-        .fileExporter(isPresented: $showProjectExporter, document: projectExport, contentType: .forge3D, defaultFilename: "Untitled.forge3d") { result in
-            if case .failure(let error) = result { model.status = "Save failed: \(error.localizedDescription)" }
+        .sheet(isPresented: Binding(get: { model.isRecoveryPromptPresented }, set: { visible in
+            if !visible { model.postponeRecovery() }
+        })) {
+            RecoveryView(model: model)
+        }
+        .fileExporter(isPresented: $showProjectExporter, document: projectExport, contentType: .forge3D,
+                      defaultFilename: "\(model.currentProjectName).forge3d") { result in
+            let snapshot = projectSaveSnapshot
+            projectSaveSnapshot = nil
+            switch result {
+            case .success(let url):
+                if let snapshot { Task { await model.explicitSaveSucceeded(snapshot, url: url) } }
+            case .failure(let error):
+                if (error as? CocoaError)?.code == .userCancelled { model.explicitSaveCancelled() }
+                else { model.explicitSaveFailed(error) }
+            }
         }
         .fileExporter(isPresented: $showSTLExporter, document: stlExport, contentType: .stl, defaultFilename: "Forge3D.stl") { result in
             if case .failure(let error) = result { model.status = "Export failed: \(error.localizedDescription)" }
+        }
+        .alert("Protect Unsaved Changes?", isPresented: $confirmsOpeningWithUnsavedChanges) {
+            Button("Continue") {
+                Task { if await model.prepareForProjectLoad() { showImporter = true } }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Forge3D will write a Recovery snapshot before opening another project. The existing project will not be overwritten.")
         }
     }
 
@@ -137,6 +177,7 @@ struct ContentView: View {
                 Text("Radius: \(LengthFormatter.string(model.brushSettings.radius, fractionDigits: 1))").font(.caption)
                 Slider(value: $model.brushSettings.radius, in: 0.1...25)
             }.frame(width: 150)
+            AutosaveStatusView(model: model)
             Text(model.status).font(.caption).lineLimit(1)
         }
         .padding().background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -173,8 +214,23 @@ struct ContentView: View {
     }
 
     private func saveProject() {
-        do { projectExport = ForgeFile(data: try model.projectData()); showProjectExporter = true }
+        do {
+            let snapshot = try model.prepareExplicitSave()
+            projectSaveSnapshot = snapshot
+            projectExport = ForgeFile(data: try ProjectCodec.encode(snapshot.project))
+            showProjectExporter = true
+        }
         catch { model.status = "Save failed: \(error.localizedDescription)" }
+    }
+
+    private func requestOpenProject() {
+        if model.hasRecoveryConflict {
+            model.presentRecovery()
+        } else if model.isDirty {
+            confirmsOpeningWithUnsavedChanges = true
+        } else {
+            showImporter = true
+        }
     }
     private func beginSTLExport() {
         do { try model.prepareForSTLExport(); showSTLOptions = true }

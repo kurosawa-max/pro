@@ -13,7 +13,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var mesh = EditableMesh.icosphere() {
         didSet {
             if oldValue != mesh || oldValue.runtime != mesh.runtime {
-                meshMutationGeneration &+= 1
+                meshMutationGeneration.advance()
                 markMeshDiagnosticsStale()
                 if !isInstallingMeshCleanup { lastMeshCleanupSummary = nil }
             }
@@ -45,6 +45,11 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var meshDiagnosticsOverlayRevision: UInt64 = 0
     @Published private(set) var isMeshCleanupRunning = false
     @Published private(set) var lastMeshCleanupSummary: MeshCleanupSummary? = nil
+    @Published private(set) var saveState = ProjectSaveState.saved
+    @Published private(set) var recoveryDescriptor: RecoveryDescriptor?
+    @Published private(set) var recoveryInspectionError: String?
+    @Published private(set) var isRecoveryPromptPresented = false
+    @Published private(set) var isRecoveryOperationInProgress = false
     #if DEBUG
     @Published private(set) var benchmarkPreset: BenchmarkPreset?
     @Published private(set) var isBenchmarkRunning = false
@@ -60,14 +65,25 @@ final class WorkspaceModel: ObservableObject {
     private let meshDiagnosticsCache = MeshDiagnosticsCache()
     private var meshDiagnosticsNeedsRefresh = false
     private var isInstallingMeshCleanup = false
-    private var meshMutationGeneration: UInt64 = 0
+    private var meshMutationGeneration = MutationGeneration()
+    private(set) var projectMutationGeneration = MutationGeneration()
+    private(set) var lastSavedGeneration: MutationGeneration
+    private var workspaceSessionID = UUID()
+    private(set) var currentProjectName = "Unsaved Project"
+    private var projectMetadata = ["generator": "Forge3D Foundation Prototype"]
+    private let autosaveCoordinator: ProjectAutosaveCoordinator
+    private var autosaveSubmissionTask: Task<Void, Never>?
+    private var hasInspectedRecovery = false
+    private var isAutosaveEnabled = false
     private var strokeBefore: [Int: SIMD3<Float>]?
     private var lastHit: SIMD3<Float>?
     private var strokeSymmetry = SculptSymmetry.none
     private var flattenPlane: FlattenPlane?
     private var panelTransformBefore: ObjectTransform?
 
-    init() {
+    init(autosaveCoordinator: ProjectAutosaveCoordinator = ProjectAutosaveCoordinator()) {
+        self.autosaveCoordinator = autosaveCoordinator
+        self.lastSavedGeneration = projectMutationGeneration
         profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
     }
 
@@ -108,8 +124,8 @@ final class WorkspaceModel: ObservableObject {
             guard mesh.vertices.indices.contains(index), before[index] != mesh.vertices[index].position else { return nil }
             return VertexChange(index: index, before: before[index]!, after: mesh.vertices[index].position)
         }
-        record(.sculpt(StrokeCommand(changes: changes)))
         strokeBefore = nil; lastHit = nil; flattenPlane = nil
+        record(.sculpt(StrokeCommand(changes: changes)))
     }
 
     func cancelStroke() {
@@ -132,6 +148,7 @@ final class WorkspaceModel: ObservableObject {
         guard let command = history.undoCommand() else { return }
         apply(command, useAfter: false)
         syncHistoryAvailability()
+        projectMutationDidCommit()
     }
 
     func redo() {
@@ -144,28 +161,268 @@ final class WorkspaceModel: ObservableObject {
         guard let command = history.redoCommand() else { return }
         apply(command, useAfter: true)
         syncHistoryAvailability()
+        projectMutationDidCommit()
     }
 
     func projectData() throws -> Data {
-        try ProjectCodec.encode(ForgeProject(mesh: mesh, camera: camera, transform: objectTransform,
-                                             metadata: ["generator": "Forge3D Foundation Prototype"]))
+        try ProjectCodec.encode(currentProject)
     }
 
     func load(data: Data) {
+        do {
+            try loadProject(data: data)
+        } catch { status = "Open failed: \(error.localizedDescription)" }
+    }
+
+    var isDirty: Bool { projectMutationGeneration != lastSavedGeneration }
+    var hasRecoveryConflict: Bool {
+        recoveryDescriptor.map { $0.sessionID != workspaceSessionID } ?? false
+    }
+
+    private var currentProject: ForgeProject {
+        ForgeProject(mesh: mesh, camera: camera, transform: objectTransform,
+                     metadata: projectMetadata)
+    }
+
+    func makeAutosaveSnapshot(capturedAt: Date = Date()) throws -> ProjectAutosaveSnapshot {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing else {
+            throw WorkspaceError.activeEditInProgress
+        }
+        return ProjectAutosaveSnapshot(project: currentProject,
+                                       sourceGeneration: projectMutationGeneration,
+                                       capturedAt: capturedAt,
+                                       sessionID: workspaceSessionID,
+                                       projectName: currentProjectName)
+    }
+
+    func prepareExplicitSave(capturedAt: Date = Date()) throws -> ProjectAutosaveSnapshot {
+        guard !isStrokeActive, !isGizmoDragging else { throw WorkspaceError.activeEditInProgress }
+        commitTransformPanelTransaction()
+        return try makeAutosaveSnapshot(capturedAt: capturedAt)
+    }
+
+    func explicitSaveSucceeded(_ snapshot: ProjectAutosaveSnapshot, url: URL) async {
+        guard snapshot.sessionID == workspaceSessionID else { return }
+        currentProjectName = url.deletingPathExtension().lastPathComponent
+        lastSavedGeneration = snapshot.sourceGeneration
+        saveState = isDirty ? .unsavedChanges : .saved
+        do {
+            autosaveSubmissionTask?.cancel()
+            autosaveSubmissionTask = nil
+            await autosaveCoordinator.cancelPending()
+            try await autosaveCoordinator.discardSavedRecovery(
+                sessionID: snapshot.sessionID, generation: snapshot.sourceGeneration)
+            do {
+                let retainedRecovery = try await autosaveCoordinator.inspectRecovery()
+                recoveryDescriptor = retainedRecovery.descriptor
+                recoveryInspectionError = nil
+                isRecoveryPromptPresented = retainedRecovery.descriptor.sessionID != workspaceSessionID
+            } catch RecoveryStorageError.missing {
+                recoveryDescriptor = nil
+                recoveryInspectionError = nil
+                isRecoveryPromptPresented = false
+            }
+        } catch {
+            status = "Saved, but Recovery cleanup failed: \(error.localizedDescription)"
+        }
+        if isDirty { scheduleAutosaveIfSafe() }
+    }
+
+    func explicitSaveFailed(_ error: Error) {
+        saveState = isDirty ? .unsavedChanges : .saved
+        status = "Save failed: \(error.localizedDescription)"
+    }
+
+    func explicitSaveCancelled() {
+        saveState = isDirty ? .unsavedChanges : .saved
+        status = "Save cancelled"
+    }
+
+    func loadProject(data: Data, projectName: String = "Unsaved Project") throws {
+        let project = try ProjectCodec.decode(data)
+        var rebuiltMesh = project.mesh
+        _ = rebuiltMesh.adjacency()
+        let rebuiltPicking = try MeshBVH(mesh: rebuiltMesh)
+
         cancelStroke()
         cancelAllGizmoDrags()
+        discardTransformPanelTransaction()
+        mesh = rebuiltMesh
+        camera = project.camera
+        objectTransform = project.transform.sanitized()
+        projectMetadata = project.metadata
+        clearMeshDiagnostics()
+        symmetry = .none
+        history.removeAll()
+        syncHistoryAvailability()
+        pickingCache.install(rebuiltPicking, for: mesh)
+        sculptSpatialIndex.prepare(for: mesh)
+        workspaceSessionID = UUID()
+        currentProjectName = projectName
+        projectMutationGeneration.advance()
+        lastSavedGeneration = projectMutationGeneration
+        saveState = .saved
+        status = "Project loaded"
+        #if DEBUG
+        benchmarkPreset = nil
+        #endif
+        profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
+    }
+
+    func inspectRecoveryOnLaunch(force: Bool = false) async {
+        guard force || !hasInspectedRecovery else { return }
+        hasInspectedRecovery = true
+        isAutosaveEnabled = true
         do {
-            let project = try ProjectCodec.decode(data)
+            let recovery = try await autosaveCoordinator.inspectRecovery()
+            recoveryDescriptor = recovery.descriptor
+            recoveryInspectionError = nil
+            isRecoveryPromptPresented = true
+        } catch RecoveryStorageError.missing {
+            recoveryDescriptor = nil
+            recoveryInspectionError = nil
+        } catch {
+            recoveryDescriptor = nil
+            recoveryInspectionError = error.localizedDescription
+            isRecoveryPromptPresented = true
+        }
+    }
+
+    func recoverAutosave() async {
+        guard !isRecoveryOperationInProgress else { return }
+        isRecoveryOperationInProgress = true
+        defer { isRecoveryOperationInProgress = false }
+        do {
+            let recovery = try await autosaveCoordinator.inspectRecovery()
+            var recoveredMesh = recovery.project.mesh
+            _ = recoveredMesh.adjacency()
+            let rebuiltPicking = try MeshBVH(mesh: recoveredMesh)
+
+            cancelStroke()
+            cancelAllGizmoDrags()
             discardTransformPanelTransaction()
-            mesh = project.mesh; camera = project.camera; objectTransform = project.transform.sanitized()
+            mesh = recoveredMesh
+            camera = recovery.project.camera
+            objectTransform = recovery.project.transform.sanitized()
+            projectMetadata = recovery.project.metadata
             clearMeshDiagnostics()
-            symmetry = .none
-            history.removeAll(); syncHistoryAvailability(); status = "Project loaded"
+            history.removeAll()
+            syncHistoryAvailability()
+            pickingCache.install(rebuiltPicking, for: mesh)
+            sculptSpatialIndex.prepare(for: mesh)
+            workspaceSessionID = recovery.descriptor.sessionID
+            currentProjectName = recovery.descriptor.projectName
+            lastSavedGeneration = projectMutationGeneration
+            projectMutationGeneration.advance()
+            saveState = .autosaved(recovery.descriptor.capturedAt)
+            recoveryDescriptor = recovery.descriptor
+            recoveryInspectionError = nil
+            isRecoveryPromptPresented = false
+            hoverLocation = nil
             #if DEBUG
             benchmarkPreset = nil
             #endif
             profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
-        } catch { status = "Open failed: \(error.localizedDescription)" }
+            status = "Recovered unsaved work"
+        } catch {
+            recoveryInspectionError = error.localizedDescription
+            isRecoveryPromptPresented = true
+            status = "Recovery failed: \(error.localizedDescription)"
+        }
+    }
+
+    func discardRecovery() async {
+        guard !isRecoveryOperationInProgress else { return }
+        isRecoveryOperationInProgress = true
+        defer { isRecoveryOperationInProgress = false }
+        do {
+            try await autosaveCoordinator.discardRecovery()
+            recoveryDescriptor = nil
+            recoveryInspectionError = nil
+            isRecoveryPromptPresented = false
+            status = "Recovery discarded"
+            if isDirty { scheduleAutosaveIfSafe() }
+        } catch {
+            recoveryInspectionError = error.localizedDescription
+            status = "Recovery discard failed: \(error.localizedDescription)"
+        }
+    }
+
+    func postponeRecovery() { isRecoveryPromptPresented = false }
+    func presentRecovery() {
+        guard recoveryDescriptor != nil || recoveryInspectionError != nil else { return }
+        isRecoveryPromptPresented = true
+    }
+
+    func retryAutosave() async { _ = await requestImmediateAutosave() }
+
+    @discardableResult
+    func requestImmediateAutosave() async -> Bool {
+        guard isDirty else { return true }
+        if let recoveryDescriptor,
+           recoveryDescriptor.sessionID == workspaceSessionID,
+           recoveryDescriptor.sourceGeneration == projectMutationGeneration {
+            saveState = .autosaved(recoveryDescriptor.capturedAt)
+            return true
+        }
+        #if DEBUG
+        guard !isBenchmarkRunning else {
+            saveState = .unsavedChanges
+            status = "Autosave is waiting for the benchmark to finish."
+            return false
+        }
+        #endif
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing else {
+            saveState = .unsavedChanges
+            status = "Autosave is waiting for the active edit to finish."
+            return false
+        }
+        autosaveSubmissionTask?.cancel()
+        autosaveSubmissionTask = nil
+        do {
+            let snapshot = try makeAutosaveSnapshot()
+            saveState = .autosaving
+            let descriptor = try await autosaveCoordinator.flush(snapshot)
+            handleAutosaveResult(.success(snapshot, descriptor))
+            return true
+        } catch {
+            saveState = .failed(error.localizedDescription)
+            status = "Autosave failed: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func prepareForProjectLoad() async -> Bool {
+        #if DEBUG
+        guard !isBenchmarkRunning else {
+            status = "Wait for the benchmark to finish before opening a project."
+            return false
+        }
+        #endif
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing else {
+            status = "Finish the active edit before opening another project."
+            return false
+        }
+        if hasRecoveryConflict {
+            status = "Resolve the existing Recovery before opening another project."
+            presentRecovery()
+            return false
+        }
+        return !isDirty || await requestImmediateAutosave()
+    }
+
+    func handleLifecycleActive() async { await inspectRecoveryOnLaunch(force: recoveryDescriptor == nil) }
+    func handleLifecycleInactiveOrBackground() async {
+        guard isDirty else { return }
+        _ = await requestImmediateAutosave()
+    }
+
+    func commitCameraChange(from before: CameraState) {
+        guard before != camera else { return }
+        projectMutationDidCommit()
     }
 
     var objectDimensions: ObjectDimensions? { ObjectDimensions.make(mesh: mesh, transform: objectTransform) }
@@ -683,8 +940,10 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func record(_ command: WorkspaceCommand) {
+        let previousCount = history.undoStack.count
         history.record(command)
         syncHistoryAvailability()
+        if history.undoStack.count != previousCount { projectMutationDidCommit() }
     }
 
     private func recordTransform(before: ObjectTransform, after: ObjectTransform) {
@@ -714,6 +973,52 @@ final class WorkspaceModel: ObservableObject {
 
     private var workspaceSnapshot: WorkspaceMeshSnapshot {
         WorkspaceMeshSnapshot(mesh: mesh, transform: objectTransform, camera: camera)
+    }
+
+    private func projectMutationDidCommit() {
+        projectMutationGeneration.advance()
+        saveState = .unsavedChanges
+        scheduleAutosaveIfSafe()
+    }
+
+    private func scheduleAutosaveIfSafe() {
+        guard isAutosaveEnabled else { return }
+        if let recoveryDescriptor,
+           recoveryDescriptor.sessionID == workspaceSessionID,
+           recoveryDescriptor.sourceGeneration == projectMutationGeneration { return }
+        guard let snapshot = try? makeAutosaveSnapshot() else { return }
+        autosaveSubmissionTask?.cancel()
+        autosaveSubmissionTask = Task { [weak self] in
+            guard let self else { return }
+            guard !Task.isCancelled else { return }
+            await self.autosaveCoordinator.schedule(snapshot) { [weak self] result in
+                Task { @MainActor in self?.handleAutosaveResult(result) }
+            }
+        }
+    }
+
+    private func handleAutosaveResult(_ result: AutosaveScheduleResult) {
+        switch result {
+        case .started(let snapshot):
+            if snapshot.sessionID == workspaceSessionID,
+               snapshot.sourceGeneration == projectMutationGeneration {
+                saveState = .autosaving
+            }
+        case .success(let snapshot, let descriptor):
+            if descriptor.sessionID == workspaceSessionID { recoveryDescriptor = descriptor }
+            recoveryInspectionError = nil
+            if snapshot.sessionID == workspaceSessionID,
+               snapshot.sourceGeneration == projectMutationGeneration {
+                saveState = .autosaved(descriptor.capturedAt)
+                status = "Recovery snapshot updated"
+            }
+        case .failure(let snapshot, let message):
+            if snapshot.sessionID == workspaceSessionID,
+               snapshot.sourceGeneration == projectMutationGeneration {
+                saveState = .failed(message)
+                status = "Autosave failed: \(message)"
+            }
+        }
     }
 
     private func syncHistoryAvailability() {
