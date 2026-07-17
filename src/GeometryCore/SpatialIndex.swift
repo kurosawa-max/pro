@@ -159,6 +159,13 @@ final class MeshBVHCache {
             return nil
         }
     }
+
+    func install(_ rebuilt: MeshBVH, for mesh: EditableMesh) {
+        bvh = rebuilt
+        topologyID = mesh.runtime.topologyID
+        revision = mesh.runtime.revision
+        buildCount += 1
+    }
 }
 
 private struct SpatialCell: Hashable {
@@ -206,7 +213,7 @@ final class VertexSpatialIndex {
         if !mutations.isEmpty { updateCount += 1 }
     }
 
-    private func prepare(for mesh: EditableMesh) {
+    func prepare(for mesh: EditableMesh) {
         if topologyID != mesh.runtime.topologyID || vertexCells.count != mesh.vertices.count { rebuild(mesh) }
         else if revision != mesh.runtime.revision { rebuild(mesh) }
     }

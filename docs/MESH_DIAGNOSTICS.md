@@ -52,6 +52,12 @@ overlayはmesh vertex/index bufferと別pipeline/buffer/revisionを使い、over
 
 Small/Medium/Large Icosphereの各presetで、既存warm-up 10回・計測60回を使い、topology analysis、local geometry metrics、world metrics、overlay generationを別caseとしてCPU計測する。reportにはvertices、triangles、後方互換なoptional unique-edge contextを含む。GPU完了時間、固定performance threshold、Workspace install、Renderer state変更は含まない。
 
+## Explicit Cleanup integration
+
+Diagnostics panelはdegenerate、duplicate、isolated countが存在し、invalid index/structure/non-finite fatal issueがない場合だけ`Cleanup…`を提示する。Cleanupは全optionが既定OFFの別previewで、Diagnosticsと同じdegenerate predicateとunordered triangle keyを再利用する。成功後はreport/overlayをstaleにし、removed countを表示してから`Analyze Again`で残るboundary、component、non-manifold、winding issueを再計算する。
+
+Cleanupはread-only Diagnosticsの責務へ変更処理を混ぜず、GeometryCoreの独立`MeshCleanup`とWorkspaceの原子的installを経由する。first duplicate保持、triangle削除後のvertex compaction、ReplaceMeshCommand、上限、非対象repairは`MESH_CLEANUP.md`に定義する。
+
 ## Known limitations
 
-self-intersection完全検出、wall thickness、overhang、support、repair、hole filling、epsilon weld、duplicate削除、winding自動修正、remesh/decimation、multiple objectは未実装である。closed manifold判定だけでは実際の3D print成功を保証しない。大規模meshの同期解析と、capability確認時に既存validationが行う追加走査は一時的にUIを停止させる可能性がある。
+self-intersection完全検出、wall thickness、overhang、support、automatic full repair、hole filling、epsilon weld、non-manifold repair、winding自動修正、remesh/decimation、multiple objectは未実装である。duplicate/degenerate/isolatedの限定Cleanupは明示選択時だけ利用できるが、closed manifold判定やCleanupだけでは実際の3D print成功を保証しない。大規模meshの同期解析と、capability確認時に既存validationが行う追加走査は一時的にUIを停止させる可能性がある。

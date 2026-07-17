@@ -117,6 +117,12 @@ boundary meshとclosed manifoldは許可し、non-manifold edge、duplicate/dege
 
 report cacheはtopology identity/revisionとObjectTransformをkeyにし、編集後のstale metrics/overlayを表示しない。Metal overlayは最大1,000代表/categoryの独立line/point bufferを診断更新時だけ作り、mesh uploadやinputへ干渉しない。reportと表示設定はformatVersion 1へ保存しない。repair、self-intersection完全検出、wall thicknessは未実装である。詳細は`MESH_DIAGNOSTICS.md`を参照。
 
+## Explicit mesh cleanup
+
+Diagnostics panelの`Cleanup…`は、default OFFのoptionをユーザーが選んだ場合だけdegenerate triangle、duplicate triangle、isolated vertexをpreview後に除去する。duplicateはunordered index keyに対する最初の面とそのwindingを保持する。triangle削除で新たにunreferencedとなったvertexは常に圧縮し、元からisolatedのvertexはoption選択時だけ除去する。position、残存triangle順、windingは変更しない。
+
+結果は新しいEditableMeshとして全normal/adjacency/runtime cacheを再構築し、ObjectTransform、camera、brush、symmetry、Gizmo設定を維持した`ReplaceMeshCommand` 1件でUndo/Redoする。Diagnosticsはstaleになり、結果件数表示から明示的に再解析する。Cleanup設定/report/history/runtime cacheはformatVersion 1へ保存しない。epsilon weld、hole fill、non-manifold repair、winding correction、component削除は未実装である。詳細は`MESH_CLEANUP.md`を参照。
+
 ## 実機検証項目
 
 1. iPadOS 17+ の iPad で起動し、球体が表示される。
