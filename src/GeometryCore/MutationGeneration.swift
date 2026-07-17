@@ -18,7 +18,9 @@ struct MutationGeneration: Equatable, Sendable {
     }
 
     func isNotNewer(than other: MutationGeneration) -> Bool {
-        guard overflowIdentity == other.overflowIdentity else { return self == other }
+        // Different overflow identities are unrelated lineages. Treating either as
+        // older could delete a Recovery snapshot whose ordering is unknown.
+        guard overflowIdentity == other.overflowIdentity else { return false }
         return value <= other.value
     }
 }

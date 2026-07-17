@@ -1,3 +1,5 @@
+import Dispatch
+import Foundation
 import XCTest
 import MetalKit
 import simd
@@ -16,6 +18,78 @@ final class AutosaveRecoveryTests: XCTestCase {
         XCTAssertNotEqual(generation.overflowIdentity, firstOverflowIdentity)
         XCTAssertFalse(generation.isNotNewer(than: MutationGeneration(value: .max,
                                                                        overflowIdentity: identity)))
+
+        let lineage = UUID()
+        let older = MutationGeneration(value: 4, overflowIdentity: lineage)
+        let newer = MutationGeneration(value: 5, overflowIdentity: lineage)
+        XCTAssertTrue(older.isNotNewer(than: newer))
+        XCTAssertTrue(newer.isNotNewer(than: newer))
+        XCTAssertFalse(newer.isNotNewer(than: older))
+        XCTAssertFalse(older.isNotNewer(than: MutationGeneration(value: 5,
+                                                                  overflowIdentity: UUID())))
+    }
+
+    @MainActor
+    func testEachCommittedOperationAdvancesProjectGenerationExactlyOnce() throws {
+        let panel = WorkspaceModel()
+        let panelBefore = panel.projectMutationGeneration
+        panel.beginTransformPanelTransaction()
+        panel.updateTranslation(SIMD3<Float>(1, 2, 3))
+        panel.updateScale(SIMD3<Float>(2, 3, 4))
+        XCTAssertEqual(panel.projectMutationGeneration, panelBefore)
+        panel.commitTransformPanelTransaction()
+        assertSingleAdvance(from: panelBefore, to: panel.projectMutationGeneration)
+        let undoBefore = panel.projectMutationGeneration
+        panel.undo()
+        assertSingleAdvance(from: undoBefore, to: panel.projectMutationGeneration)
+        let redoBefore = panel.projectMutationGeneration
+        panel.redo()
+        assertSingleAdvance(from: redoBefore, to: panel.projectMutationGeneration)
+        let resetBefore = panel.projectMutationGeneration
+        panel.resetTransform()
+        assertSingleAdvance(from: resetBefore, to: panel.projectMutationGeneration)
+
+        let primitive = WorkspaceModel()
+        let primitiveBefore = primitive.projectMutationGeneration
+        try primitive.createPrimitive(parameters: PrimitiveParameters(kind: .cube))
+        assertSingleAdvance(from: primitiveBefore, to: primitive.projectMutationGeneration)
+
+        let subdivision = WorkspaceModel()
+        let subdivisionBefore = subdivision.projectMutationGeneration
+        try subdivision.subdivideMeshOnce()
+        assertSingleAdvance(from: subdivisionBefore, to: subdivision.projectMutationGeneration)
+
+        let imported = WorkspaceModel()
+        let importedMesh = try PrimitiveMeshBuilder.cube(size: 4)
+        let importResult = STLImportResult(
+            mesh: importedMesh, format: .binary,
+            sourceByteCount: 84 + importedMesh.indices.count / 3 * 50,
+            sourceTriangleCount: importedMesh.indices.count / 3,
+            weldedVertexCount: importedMesh.vertices.count, bounds: importedMesh.bounds,
+            estimate: STLImportEstimate(
+                sourceByteCount: 84 + importedMesh.indices.count / 3 * 50,
+                sourceTriangleCount: importedMesh.indices.count / 3,
+                maximumPossibleVertexCount: importedMesh.indices.count,
+                estimatedWorkingByteCount: 1_024))
+        let importBefore = imported.projectMutationGeneration
+        try imported.installSTLImport(importResult, fileName: "cube.stl")
+        assertSingleAdvance(from: importBefore, to: imported.projectMutationGeneration)
+
+        let cleanup = WorkspaceModel()
+        cleanup.mesh = cleanupSourceMesh()
+        let cleanupBefore = cleanup.projectMutationGeneration
+        let preview = try cleanup.previewMeshCleanup(
+            options: MeshCleanupOptions(removeIsolatedVertices: true))
+        XCTAssertEqual(cleanup.projectMutationGeneration, cleanupBefore)
+        _ = try cleanup.applyMeshCleanup(preview: preview)
+        assertSingleAdvance(from: cleanupBefore, to: cleanup.projectMutationGeneration)
+
+        let camera = WorkspaceModel()
+        let cameraBefore = camera.projectMutationGeneration
+        let initialCamera = camera.camera
+        camera.camera.yaw += 0.25
+        camera.commitCameraChange(from: initialCamera)
+        assertSingleAdvance(from: cameraBefore, to: camera.projectMutationGeneration)
     }
 
     @MainActor
@@ -146,6 +220,33 @@ final class AutosaveRecoveryTests: XCTestCase {
         XCTAssertFalse(model.isTransformPanelEditing)
     }
 
+    @MainActor
+    func testSnapshotDoesNotChangeHistoryDirtyRuntimeOrRendererUploads() throws {
+        let model = WorkspaceModel()
+        model.updateTranslation(SIMD3<Float>(1, 2, 3))
+        let historyBefore = (model.undoCount, model.redoCount)
+        let dirtyBefore = model.isDirty
+        let generationBefore = model.projectMutationGeneration
+        let runtimeBefore = model.mesh.runtime
+
+        let profiler = PerformanceProfiler()
+        let renderer = try XCTUnwrap(MetalRenderer(view: MTKView(), profiler: profiler))
+        renderer.update(mesh: model.mesh)
+        profiler.reset(vertexCount: model.mesh.vertices.count,
+                       triangleCount: model.mesh.indices.count / 3)
+
+        _ = try model.makeAutosaveSnapshot()
+        renderer.update(mesh: model.mesh)
+
+        XCTAssertEqual(model.undoCount, historyBefore.0)
+        XCTAssertEqual(model.redoCount, historyBefore.1)
+        XCTAssertEqual(model.isDirty, dirtyBefore)
+        XCTAssertEqual(model.projectMutationGeneration, generationBefore)
+        XCTAssertEqual(model.mesh.runtime, runtimeBefore)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 0)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 0)
+    }
+
     func testRecoveryCodecRoundTripMetadataChecksumAndLimits() throws {
         let snapshot = try makeSnapshot(name: "Ring", capturedAt: Date(timeIntervalSince1970: 123))
         let data = try ProjectRecoveryCodec.encode(snapshot)
@@ -175,6 +276,15 @@ final class AutosaveRecoveryTests: XCTestCase {
             ProjectRecoveryCodec.maximumRecoveryBytes + 1)) {
             XCTAssertEqual($0 as? RecoveryStorageError, .oversized)
         }
+    }
+
+    func testRecoveryProjectNameTruncationPreservesUnicodeCharacters() throws {
+        let name = String(repeating: "👩🏽‍💻e\u{301}", count: 100)
+        let recovery = try ProjectRecoveryCodec.decode(
+            ProjectRecoveryCodec.encode(try makeSnapshot(name: name)))
+        XCTAssertEqual(recovery.descriptor.projectName, String(name.prefix(128)))
+        XCTAssertNotNil(recovery.descriptor.projectName.data(using: .utf8))
+        XCTAssertEqual(recovery.descriptor.projectName.count, 128)
     }
 
     func testRecoveryCodecRejectsCorruptMetadataUnsupportedWrapperAndFormatVersion() throws {
@@ -254,6 +364,44 @@ final class AutosaveRecoveryTests: XCTestCase {
             .contains { $0.hasSuffix(".tmp") })
     }
 
+    func testFinalInspectionFailureRollsBackPreviousRecovery() throws {
+        let environment = try makeStorageEnvironment()
+        defer { environment.cleanup() }
+        let first = try makeSnapshot(name: "First", sessionID: environment.sessionID,
+                                     capturedAt: Date(timeIntervalSince1970: 1))
+        _ = try environment.storage.write(first)
+        let originalData = try Data(contentsOf: environment.storage.recoveryURL)
+        let recoveryURL = environment.storage.recoveryURL
+        let failingStorage = ProjectRecoveryStorage(
+            directoryURL: environment.directory,
+            beforeFinalInspection: {
+                try Data([0x00]).write(to: recoveryURL)
+            })
+        let second = try makeSnapshot(name: "Second", sessionID: environment.sessionID,
+                                      capturedAt: Date(timeIntervalSince1970: 2),
+                                      translation: SIMD3<Float>(2, 0, 0))
+
+        XCTAssertThrowsError(try failingStorage.write(second))
+        XCTAssertEqual(try Data(contentsOf: environment.storage.recoveryURL), originalData)
+        XCTAssertEqual(try environment.storage.inspect().project, first.project)
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: environment.directory.path)
+        XCTAssertFalse(leftovers.contains { $0.hasSuffix(".tmp") || $0.hasSuffix(".backup") })
+    }
+
+    func testInitialFinalInspectionFailureLeavesNoRecoveryFile() throws {
+        let environment = try makeStorageEnvironment()
+        defer { environment.cleanup() }
+        let recoveryURL = environment.storage.recoveryURL
+        let failingStorage = ProjectRecoveryStorage(
+            directoryURL: environment.directory,
+            beforeFinalInspection: {
+                try Data([0x00]).write(to: recoveryURL)
+            })
+        XCTAssertThrowsError(try failingStorage.write(
+            try makeSnapshot(name: "First", sessionID: environment.sessionID)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: environment.storage.recoveryURL.path))
+    }
+
     func testEncodeFailureDoesNotReplacePreviousRecovery() throws {
         let environment = try makeStorageEnvironment()
         defer { environment.cleanup() }
@@ -294,6 +442,87 @@ final class AutosaveRecoveryTests: XCTestCase {
         XCTAssertEqual(failureCount, 0)
     }
 
+    func testImmediateFlushCancelsPendingDebounceWithoutStaleCallback() async throws {
+        let environment = try makeStorageEnvironment()
+        defer { environment.cleanup() }
+        let scheduler = ManualAutosaveDelayScheduler()
+        let coordinator = ProjectAutosaveCoordinator(storage: environment.storage, scheduler: scheduler)
+        let recorder = AutosaveResultRecorder()
+        let pending = try makeSnapshot(name: "Pending", sessionID: environment.sessionID,
+                                       capturedAt: Date(timeIntervalSince1970: 1))
+        let immediate = try makeSnapshot(name: "Immediate", sessionID: environment.sessionID,
+                                         capturedAt: Date(timeIntervalSince1970: 2),
+                                         translation: SIMD3<Float>(4, 0, 0))
+        await coordinator.schedule(pending) { result in Task { await recorder.receive(result) } }
+        await waitUntil { await scheduler.waiterCount == 1 }
+
+        let descriptor = try await coordinator.flush(immediate)
+        await scheduler.releaseAll()
+        await Task.yield()
+
+        let inspectedProject = try await coordinator.inspectRecovery().project
+        let writeCount = await coordinator.successfulWriteCount
+        let callbackSuccessCount = await recorder.successCount
+        let callbackFailureCount = await recorder.failureCount
+        XCTAssertEqual(descriptor.sourceGeneration, immediate.sourceGeneration)
+        XCTAssertEqual(inspectedProject, immediate.project)
+        XCTAssertEqual(writeCount, 1)
+        XCTAssertEqual(callbackSuccessCount, 0)
+        XCTAssertEqual(callbackFailureCount, 0)
+    }
+
+    func testNewRequestQueuedDuringWriteRunsAfterOlderPhysicalWrite() async throws {
+        let environment = try makeStorageEnvironment()
+        defer { environment.cleanup() }
+        let gate = BlockingReplacementGate()
+        let storage = ProjectRecoveryStorage(
+            directoryURL: environment.directory,
+            beforeReplacement: { gate.blockFirstReplacement() })
+        let coordinator = ProjectAutosaveCoordinator(
+            storage: storage, scheduler: ImmediateAutosaveDelayScheduler(), debounceNanoseconds: 0)
+        let recorder = AutosaveResultRecorder()
+        let first = try makeSnapshot(name: "First", sessionID: environment.sessionID,
+                                     capturedAt: Date(timeIntervalSince1970: 1))
+        let second = try makeSnapshot(name: "Second", sessionID: environment.sessionID,
+                                      capturedAt: Date(timeIntervalSince1970: 2),
+                                      translation: SIMD3<Float>(6, 0, 0))
+
+        await coordinator.schedule(first) { result in Task { await recorder.receive(result) } }
+        await waitUntil { gate.hasEnteredReplacement }
+        let queuedRequest = Task {
+            await coordinator.schedule(second) { result in Task { await recorder.receive(result) } }
+        }
+        await Task.yield()
+        gate.releaseFirstReplacement()
+        await queuedRequest.value
+        await waitUntil { await recorder.successCount == 2 }
+
+        let inspected = try await coordinator.inspectRecovery()
+        let writeCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(inspected.project, second.project)
+        XCTAssertEqual(inspected.descriptor.sourceGeneration, second.sourceGeneration)
+        XCTAssertEqual(writeCount, 2)
+    }
+
+    @MainActor
+    func testStaleAutosaveSuccessCannotReplaceCurrentDescriptor() throws {
+        let model = WorkspaceModel()
+        model.updateTranslation(SIMD3<Float>(1, 0, 0))
+        let staleSnapshot = try model.makeAutosaveSnapshot(capturedAt: Date(timeIntervalSince1970: 1))
+        let staleDescriptor = try ProjectRecoveryCodec.decode(
+            ProjectRecoveryCodec.encode(staleSnapshot)).descriptor
+        model.updateScale(SIMD3<Float>(repeating: 2))
+        let currentSnapshot = try model.makeAutosaveSnapshot(capturedAt: Date(timeIntervalSince1970: 2))
+        let currentDescriptor = try ProjectRecoveryCodec.decode(
+            ProjectRecoveryCodec.encode(currentSnapshot)).descriptor
+
+        model.handleAutosaveResult(.success(currentSnapshot, currentDescriptor))
+        model.handleAutosaveResult(.success(staleSnapshot, staleDescriptor))
+
+        XCTAssertEqual(model.recoveryDescriptor, currentDescriptor)
+        XCTAssertEqual(model.saveState, .autosaved(currentDescriptor.capturedAt))
+    }
+
     @MainActor
     func testExplicitSaveBaselineAndConcurrentEditOrdering() async throws {
         let environment = try makeStorageEnvironment()
@@ -316,6 +545,20 @@ final class AutosaveRecoveryTests: XCTestCase {
         await model.explicitSaveSucceeded(olderSnapshot, url: environment.directory.appendingPathComponent("Ring.forge3d"))
         XCTAssertTrue(model.isDirty)
         XCTAssertEqual(model.lastSavedGeneration, olderSnapshot.sourceGeneration)
+
+        let snapshotBeforeUndo = try model.prepareExplicitSave(capturedAt: Date(timeIntervalSince1970: 30))
+        model.undo()
+        await model.explicitSaveSucceeded(
+            snapshotBeforeUndo, url: environment.directory.appendingPathComponent("Ring Undo.forge3d"))
+        XCTAssertTrue(model.isDirty)
+        XCTAssertEqual(model.lastSavedGeneration, snapshotBeforeUndo.sourceGeneration)
+
+        let snapshotBeforeRedo = try model.prepareExplicitSave(capturedAt: Date(timeIntervalSince1970: 40))
+        model.redo()
+        await model.explicitSaveSucceeded(
+            snapshotBeforeRedo, url: environment.directory.appendingPathComponent("Ring Redo.forge3d"))
+        XCTAssertTrue(model.isDirty)
+        XCTAssertEqual(model.lastSavedGeneration, snapshotBeforeRedo.sourceGeneration)
     }
 
     @MainActor
@@ -341,11 +584,13 @@ final class AutosaveRecoveryTests: XCTestCase {
     func testLoadCreatesCleanBaselineAndFailureLeavesWorkspaceUnchanged() throws {
         let model = WorkspaceModel()
         model.updateTranslation(SIMD3<Float>(1, 2, 3))
+        let generationBeforeLoad = model.projectMutationGeneration
         let project = ForgeProject(mesh: try PrimitiveMeshBuilder.cube(size: 8),
                                    camera: CameraState(yaw: 0.8, pitch: 0.1, distance: 30, target: .zero),
                                    transform: ObjectTransform(translation: SIMD3<Float>(4, 5, 6)),
                                    metadata: ["name": "Loaded metadata"])
         try model.loadProject(data: ProjectCodec.encode(project), projectName: "Loaded")
+        assertSingleAdvance(from: generationBeforeLoad, to: model.projectMutationGeneration)
         XCTAssertFalse(model.isDirty)
         XCTAssertEqual(model.currentProjectName, "Loaded")
         XCTAssertEqual(try ProjectCodec.decode(model.projectData()).metadata, project.metadata)
@@ -375,9 +620,15 @@ final class AutosaveRecoveryTests: XCTestCase {
                                                sessionID: environment.sessionID,
                                                projectName: "Recovered Ring")
         _ = try environment.storage.write(snapshot)
-        let model = WorkspaceModel(autosaveCoordinator: ProjectAutosaveCoordinator(storage: environment.storage))
+        let coordinator = ProjectAutosaveCoordinator(storage: environment.storage)
+        let model = WorkspaceModel(autosaveCoordinator: coordinator)
         model.updateTranslation(SIMD3<Float>(9, 9, 9))
         _ = try model.analyzeCurrentMesh()
+        #if DEBUG
+        model.loadBenchmarkPreset(.small)
+        model.runAllBenchmarks()
+        XCTAssertTrue(model.isBenchmarkRunning)
+        #endif
         await model.inspectRecoveryOnLaunch()
         await model.recoverAutosave()
         XCTAssertEqual(model.mesh, recoveredProject.mesh)
@@ -387,6 +638,7 @@ final class AutosaveRecoveryTests: XCTestCase {
         XCTAssertEqual(try ProjectCodec.decode(model.projectData()).metadata, recoveredProject.metadata)
         XCTAssertEqual(model.currentProjectName, "Recovered Ring")
         XCTAssertTrue(model.isDirty)
+        XCTAssertEqual(model.projectMutationGeneration, snapshot.sourceGeneration)
         XCTAssertFalse(model.canUndo)
         XCTAssertFalse(model.canRedo)
         XCTAssertNil(model.meshDiagnosticsReport)
@@ -396,6 +648,24 @@ final class AutosaveRecoveryTests: XCTestCase {
         XCTAssertEqual(model.sculptSpatialIndexBuildCount, 1)
         XCTAssertEqual(try ProjectCodec.decode(model.projectData()).formatVersion, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: environment.storage.recoveryURL.path))
+        #if DEBUG
+        XCTAssertFalse(model.isBenchmarkRunning)
+        XCTAssertEqual(model.benchmarkProgress, 0)
+        XCTAssertNil(model.lastBenchmarkReport)
+        XCTAssertNil(model.benchmarkPreset)
+        #endif
+
+        let recoveryData = try Data(contentsOf: environment.storage.recoveryURL)
+        await model.handleLifecycleInactiveOrBackground()
+        let writeCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(writeCount, 0)
+        XCTAssertEqual(try Data(contentsOf: environment.storage.recoveryURL), recoveryData)
+
+        let saveSnapshot = try model.prepareExplicitSave()
+        await model.explicitSaveSucceeded(
+            saveSnapshot, url: environment.directory.appendingPathComponent("Recovered Ring.forge3d"))
+        XCTAssertFalse(model.isDirty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: environment.storage.recoveryURL.path))
     }
 
     @MainActor
@@ -465,6 +735,29 @@ final class AutosaveRecoveryTests: XCTestCase {
     }
 
     @MainActor
+    func testCorruptRecoveryIsReinspectedOnActiveWithoutChangingWorkspace() async throws {
+        let environment = try makeStorageEnvironment()
+        defer { environment.cleanup() }
+        try Data([0x00, 0x01]).write(to: environment.storage.recoveryURL)
+        let model = WorkspaceModel(
+            autosaveCoordinator: ProjectAutosaveCoordinator(storage: environment.storage))
+        let projectBefore = try model.projectData()
+        let generationBefore = model.projectMutationGeneration
+
+        await model.inspectRecoveryOnLaunch()
+        let firstError = try XCTUnwrap(model.recoveryInspectionError)
+        XCTAssertTrue(model.isRecoveryPromptPresented)
+        XCTAssertFalse(model.hasRecoveryConflict)
+        model.postponeRecovery()
+        await model.handleLifecycleActive()
+
+        XCTAssertEqual(model.recoveryInspectionError, firstError)
+        XCTAssertTrue(model.isRecoveryPromptPresented)
+        XCTAssertEqual(try model.projectData(), projectBefore)
+        XCTAssertEqual(model.projectMutationGeneration, generationBefore)
+    }
+
+    @MainActor
     func testSingleSlotConflictBlocksProjectLoadAndPreservesBothWorkspaces() async throws {
         let environment = try makeStorageEnvironment()
         defer { environment.cleanup() }
@@ -496,6 +789,8 @@ final class AutosaveRecoveryTests: XCTestCase {
         model.updateTranslation(SIMD3<Float>(1, 2, 3))
         let beforeProject = try model.projectData()
         let beforeUndo = model.undoCount
+        let beforeGeneration = model.projectMutationGeneration
+        let beforeBaseline = model.lastSavedGeneration
         let beforeRuntime = model.mesh.runtime
         let beforeDiagnostics = try model.analyzeCurrentMesh()
         let beforeProfiler = model.profiler?.snapshot()
@@ -503,6 +798,8 @@ final class AutosaveRecoveryTests: XCTestCase {
         XCTAssertFalse(didAutosave)
         XCTAssertEqual(try model.projectData(), beforeProject)
         XCTAssertEqual(model.undoCount, beforeUndo)
+        XCTAssertEqual(model.projectMutationGeneration, beforeGeneration)
+        XCTAssertEqual(model.lastSavedGeneration, beforeBaseline)
         XCTAssertEqual(model.mesh.runtime, beforeRuntime)
         XCTAssertEqual(model.currentMeshDiagnosticsReport, beforeDiagnostics)
         XCTAssertEqual(model.profiler?.snapshot(), beforeProfiler)
@@ -570,6 +867,16 @@ final class AutosaveRecoveryTests: XCTestCase {
         }
         XCTFail("Asynchronous condition did not complete")
     }
+
+    private func assertSingleAdvance(
+        from before: MutationGeneration,
+        to after: MutationGeneration,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(after.overflowIdentity, before.overflowIdentity, file: file, line: line)
+        XCTAssertEqual(after.value, before.value + 1, file: file, line: line)
+    }
 }
 
 private struct StorageEnvironment {
@@ -607,4 +914,34 @@ private actor AutosaveResultRecorder {
         case .failure: failureCount += 1
         }
     }
+}
+
+private struct ImmediateAutosaveDelayScheduler: AutosaveDelayScheduler {
+    func wait(nanoseconds: UInt64) async throws { try Task.checkCancellation() }
+}
+
+private final class BlockingReplacementGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let releaseSemaphore = DispatchSemaphore(value: 0)
+    private var shouldBlock = true
+    private var enteredReplacement = false
+
+    var hasEnteredReplacement: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return enteredReplacement
+    }
+
+    func blockFirstReplacement() {
+        lock.lock()
+        let block = shouldBlock
+        if block {
+            shouldBlock = false
+            enteredReplacement = true
+        }
+        lock.unlock()
+        if block { releaseSemaphore.wait() }
+    }
+
+    func releaseFirstReplacement() { releaseSemaphore.signal() }
 }

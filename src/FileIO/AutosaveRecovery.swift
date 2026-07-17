@@ -225,12 +225,15 @@ struct ProjectRecoveryStorage: @unchecked Sendable {
     let directoryURL: URL
     let fileManager: FileManager
     let beforeReplacement: (@Sendable () throws -> Void)?
+    let beforeFinalInspection: (@Sendable () throws -> Void)?
 
     init(directoryURL: URL, fileManager: FileManager = .default,
-         beforeReplacement: (@Sendable () throws -> Void)? = nil) {
+         beforeReplacement: (@Sendable () throws -> Void)? = nil,
+         beforeFinalInspection: (@Sendable () throws -> Void)? = nil) {
         self.directoryURL = directoryURL
         self.fileManager = fileManager
         self.beforeReplacement = beforeReplacement
+        self.beforeFinalInspection = beforeFinalInspection
     }
 
     static func applicationSupport(fileManager: FileManager = .default) -> ProjectRecoveryStorage {
@@ -251,7 +254,8 @@ struct ProjectRecoveryStorage: @unchecked Sendable {
            available < Int64(data.count + 1_024 * 1_024) {
             throw RecoveryStorageError.insufficientDiskSpace
         }
-        if fileManager.fileExists(atPath: recoveryURL.path) {
+        let isReplacingExistingRecovery = fileManager.fileExists(atPath: recoveryURL.path)
+        if isReplacingExistingRecovery {
             let existing = try inspect()
             guard existing.descriptor.sessionID == snapshot.sessionID else {
                 throw RecoveryStorageError.conflictingRecovery
@@ -260,20 +264,26 @@ struct ProjectRecoveryStorage: @unchecked Sendable {
 
         let temporaryURL = directoryURL.appendingPathComponent("current.\(UUID().uuidString).tmp")
         defer { try? fileManager.removeItem(at: temporaryURL) }
-        try data.write(to: temporaryURL)
+        try data.write(to: temporaryURL, options: .withoutOverwriting)
         let handle = try FileHandle(forWritingTo: temporaryURL)
         try handle.synchronize()
         try handle.close()
         let verifiedData = try Data(contentsOf: temporaryURL, options: .mappedIfSafe)
         _ = try ProjectRecoveryCodec.decode(verifiedData)
         try beforeReplacement?()
-        if fileManager.fileExists(atPath: recoveryURL.path) {
-            _ = try fileManager.replaceItemAt(recoveryURL, withItemAt: temporaryURL,
-                                              backupItemName: nil, options: [])
-        } else {
-            try fileManager.moveItem(at: temporaryURL, to: recoveryURL)
+        if isReplacingExistingRecovery {
+            return try replaceAndInspect(temporaryURL)
         }
-        return try inspect().descriptor
+        var didMoveTemporaryFile = false
+        do {
+            try fileManager.moveItem(at: temporaryURL, to: recoveryURL)
+            didMoveTemporaryFile = true
+            try beforeFinalInspection?()
+            return try inspect().descriptor
+        } catch {
+            if didMoveTemporaryFile { try? fileManager.removeItem(at: recoveryURL) }
+            throw error
+        }
     }
 
     func inspect() throws -> InspectedRecovery {
@@ -297,6 +307,47 @@ struct ProjectRecoveryStorage: @unchecked Sendable {
         guard recovery.descriptor.sessionID == sessionID,
               recovery.descriptor.sourceGeneration.isNotNewer(than: generation) else { return }
         try fileManager.removeItem(at: recoveryURL)
+    }
+
+    private func replaceAndInspect(_ temporaryURL: URL) throws -> RecoveryDescriptor {
+        let backupName = "current.\(UUID().uuidString).backup"
+        let backupURL = directoryURL.appendingPathComponent(backupName, isDirectory: false)
+        var removeBackupOnExit = true
+        defer {
+            if removeBackupOnExit { try? fileManager.removeItem(at: backupURL) }
+        }
+
+        do {
+            _ = try fileManager.replaceItemAt(
+                recoveryURL,
+                withItemAt: temporaryURL,
+                backupItemName: backupName,
+                options: [.withoutDeletingBackupItem]
+            )
+            try beforeFinalInspection?()
+            let descriptor = try inspect().descriptor
+            try? fileManager.removeItem(at: backupURL)
+            return descriptor
+        } catch {
+            let replacementError = error
+            if fileManager.fileExists(atPath: backupURL.path) {
+                do {
+                    if fileManager.fileExists(atPath: recoveryURL.path) {
+                        _ = try fileManager.replaceItemAt(
+                            recoveryURL, withItemAt: backupURL,
+                            backupItemName: nil, options: []
+                        )
+                    } else {
+                        try fileManager.moveItem(at: backupURL, to: recoveryURL)
+                    }
+                    _ = try inspect()
+                } catch {
+                    removeBackupOnExit = false
+                    throw error
+                }
+            }
+            throw replacementError
+        }
     }
 }
 

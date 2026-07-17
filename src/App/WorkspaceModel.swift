@@ -301,6 +301,13 @@ final class WorkspaceModel: ObservableObject {
             _ = recoveredMesh.adjacency()
             let rebuiltPicking = try MeshBVH(mesh: recoveredMesh)
 
+            #if DEBUG
+            if let activeBenchmark = benchmarkTask {
+                cancelBenchmarks()
+                await activeBenchmark.value
+            }
+            #endif
+
             cancelStroke()
             cancelAllGizmoDrags()
             discardTransformPanelTransaction()
@@ -315,8 +322,9 @@ final class WorkspaceModel: ObservableObject {
             sculptSpatialIndex.prepare(for: mesh)
             workspaceSessionID = recovery.descriptor.sessionID
             currentProjectName = recovery.descriptor.projectName
-            lastSavedGeneration = projectMutationGeneration
-            projectMutationGeneration.advance()
+            projectMutationGeneration = recovery.descriptor.sourceGeneration
+            lastSavedGeneration = MutationGeneration(value: projectMutationGeneration.value)
+            if lastSavedGeneration == projectMutationGeneration { lastSavedGeneration.advance() }
             saveState = .autosaved(recovery.descriptor.capturedAt)
             recoveryDescriptor = recovery.descriptor
             recoveryInspectionError = nil
@@ -324,6 +332,8 @@ final class WorkspaceModel: ObservableObject {
             hoverLocation = nil
             #if DEBUG
             benchmarkPreset = nil
+            benchmarkProgress = 0
+            lastBenchmarkReport = nil
             #endif
             profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
             status = "Recovered unsaved work"
@@ -998,7 +1008,7 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    private func handleAutosaveResult(_ result: AutosaveScheduleResult) {
+    func handleAutosaveResult(_ result: AutosaveScheduleResult) {
         switch result {
         case .started(let snapshot):
             if snapshot.sessionID == workspaceSessionID,
@@ -1006,10 +1016,10 @@ final class WorkspaceModel: ObservableObject {
                 saveState = .autosaving
             }
         case .success(let snapshot, let descriptor):
-            if descriptor.sessionID == workspaceSessionID { recoveryDescriptor = descriptor }
-            recoveryInspectionError = nil
             if snapshot.sessionID == workspaceSessionID,
                snapshot.sourceGeneration == projectMutationGeneration {
+                recoveryDescriptor = descriptor
+                recoveryInspectionError = nil
                 saveState = .autosaved(descriptor.capturedAt)
                 status = "Recovery snapshot updated"
             }

@@ -10,7 +10,7 @@ The normal project remains `formatVersion` 1. Recovery stores only the same proj
 
 `WorkspaceModel` owns a non-wrapping `MutationGeneration` for committed, persisted content. Sculpt, Transform, Primitive, Subdivision, STL Import, Mesh Cleanup, camera commits, Undo, and Redo advance it. Tool settings, hover, diagnostics, overlays, benchmark activity, cancelled edits, and no-ops do not.
 
-The last explicitly saved generation is the clean baseline. Undo and Redo still advance the generation even when values happen to match an earlier state. At `UInt64.max`, the numeric component remains saturated and a new in-memory identity is assigned, so equality cannot wrap back to an older generation. Neither component is written into the project.
+The last explicitly saved generation is the clean baseline. Undo and Redo still advance the generation even when values happen to match an earlier state. At `UInt64.max`, the numeric component remains saturated and a new in-memory identity is assigned, so equality cannot wrap back to an older generation. Ordering is defined only inside one identity; different identities are conservatively treated as unrelated. Neither component is written into the normal project. Recovery metadata records both components together with the session identity so Save cleanup never compares bare numeric values across sessions.
 
 An explicit Save records the generation of the immutable snapshot that was exported. If the workspace changes while the Files sheet is open, Save completion records that older baseline but leaves the newer workspace dirty. Pending autosave work is cancelled, a matching Recovery no newer than the saved snapshot is removed, and any later edits are scheduled again. Save failure or cancellation never deletes Recovery.
 
@@ -18,7 +18,7 @@ An explicit Save records the generation of the immutable snapshot that was expor
 
 A snapshot is copied once on the main actor from mesh, Transform, camera, project metadata, generation, timestamp, session identity, and display name. Encoding and file I/O use only that immutable value. Snapshot creation refuses active Sculpt, Gizmo, Transform-panel, and Debug benchmark state; provisional values are never protected as committed work.
 
-Committed changes use a two-second trailing debounce. Continued edits replace the pending request, so Sculpt samples and Gizmo frames do not cause writes. There is no maximum-wait timer in this initial design: a continuous edit is protected after it commits and editing pauses, or when a safe lifecycle flush succeeds. The scheduler and storage boundary are injectable so tests do not wait in real time.
+Committed changes use a two-second trailing debounce. Continued edits replace the pending request, so Sculpt samples and Gizmo frames do not cause writes. A synchronous physical write that has already entered storage cannot be cancelled midway; the actor serializes a newer request behind it, rejects the old callback as current UI state, and then writes the newer snapshot. An immediate flush cancels a pending timer and shares the same serialized storage boundary. There is no maximum-wait timer in this initial design: a continuous edit is protected after it commits and editing pauses, or when a safe lifecycle flush succeeds. The scheduler and storage boundary are injectable so tests do not wait in real time.
 
 ## Recovery wrapper and atomic write
 
@@ -39,8 +39,9 @@ Writing follows this order:
 3. Reject a different-session single-slot conflict.
 4. Write a uniquely named sibling temporary file.
 5. Synchronize it, read it back, and fully validate checksum and project data.
-6. Atomically replace the current file, or move the first valid file into place.
-7. Update UI state only after successful inspection.
+6. Atomically replace the current file while retaining a same-volume backup, or move the first valid file into place.
+7. Reinspect the final path. If replacement succeeded but inspection fails, restore and revalidate the previous backup; a failed first write removes its unaccepted destination.
+8. Update UI state only after successful inspection.
 
 Temporary files are removed on every exit path. An encode, space, permission, synchronization, validation, or replacement failure leaves the Workspace, history, dirty generation, and previous valid Recovery unchanged. Corrupted previous Recovery is not silently overwritten.
 
@@ -48,7 +49,7 @@ Temporary files are removed on every exit path. An encode, space, permission, sy
 
 The first Workspace display inspects Recovery. A valid snapshot shows date, display name, counts, dimensions in millimeters, and file size. Corruption produces an error instead of loading partial data. The sheet uses text and symbols, exposes VoiceOver hints, disables duplicate operations, and fits a scrollable iPad form.
 
-- **Recover** fully validates again, installs the recovered mesh/Transform/camera, clears history and diagnostic/cleanup state, rebuilds adjacency, Picking BVH, and Sculpt spatial index, and starts dirty. The Recovery remains until an explicit Save or Discard.
+- **Recover** fully validates again, safely stops an active Debug benchmark, installs the recovered mesh/Transform/camera, clears history and diagnostic/cleanup/benchmark state, rebuilds adjacency, Picking BVH, and Sculpt spatial index, and starts dirty. It adopts the Recovery source generation while using an unrelated in-memory explicit-Save baseline, so the already protected content is not immediately rewritten and a subsequent explicit Save can remove that Recovery. The Recovery remains until an explicit Save or Discard.
 - **Discard** asks for confirmation, deletes the Recovery, and does not change the Workspace.
 - **Later** keeps both Recovery and Workspace unchanged. The save-state control reopens the sheet.
 
