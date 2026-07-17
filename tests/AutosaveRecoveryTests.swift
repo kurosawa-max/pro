@@ -861,9 +861,11 @@ final class AutosaveRecoveryTests: XCTestCase {
     }
 
     private func waitUntil(_ condition: @escaping () async -> Bool) async {
-        for _ in 0..<1_000 {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while clock.now < deadline {
             if await condition() { return }
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
         }
         XCTFail("Asynchronous condition did not complete")
     }
