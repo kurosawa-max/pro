@@ -32,11 +32,11 @@ struct AutosaveStatusView: View {
         if model.recoveryInspectionError != nil { return "exclamationmark.triangle" }
         if model.hasRecoveryConflict { return "clock.arrow.circlepath" }
         switch model.saveState {
-        case .saved: "checkmark.circle"
-        case .unsavedChanges: "circle.dashed"
-        case .autosaving: "arrow.triangle.2.circlepath"
-        case .autosaved: "externaldrive.badge.checkmark"
-        case .failed: "exclamationmark.triangle"
+        case .saved: return "checkmark.circle"
+        case .unsavedChanges: return "circle.dashed"
+        case .autosaving: return "arrow.triangle.2.circlepath"
+        case .autosaved: return "externaldrive.badge.checkmark"
+        case .failed: return "exclamationmark.triangle"
         }
     }
 
@@ -54,11 +54,11 @@ struct AutosaveStatusView: View {
             return "Unsaved work from another project session is available. Open Recovery to review it."
         }
         switch model.saveState {
-        case .saved: "The current project matches the last explicit save."
-        case .unsavedChanges: "A recovery snapshot will be written after editing pauses."
-        case .autosaving: "A recovery snapshot is being written."
-        case .autosaved: "Unsaved changes are protected by a local recovery snapshot."
-        case .failed(let message): "Autosave failed. \(message)"
+        case .saved: return "The current project matches the last explicit save."
+        case .unsavedChanges: return "A recovery snapshot will be written after editing pauses."
+        case .autosaving: return "A recovery snapshot is being written."
+        case .autosaved: return "Unsaved changes are protected by a local recovery snapshot."
+        case .failed(let message): return "Autosave failed. \(message)"
         }
     }
 }

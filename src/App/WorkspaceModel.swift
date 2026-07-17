@@ -411,7 +411,8 @@ final class WorkspaceModel: ObservableObject {
             presentRecovery()
             return false
         }
-        return !isDirty || await requestImmediateAutosave()
+        if !isDirty { return true }
+        return await requestImmediateAutosave()
     }
 
     func handleLifecycleActive() async { await inspectRecoveryOnLaunch(force: recoveryDescriptor == nil) }
