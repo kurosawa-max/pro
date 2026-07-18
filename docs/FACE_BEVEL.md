@@ -10,21 +10,23 @@ The initial operation accepts shared-edge connected components only when each is
 
 `PlanarFaceRegion` contains the pure geometry shared with Face Inset: component analysis, deterministic world-space basis construction, convex constant-width offset, local `Float` round-trip checks, inner triangulation safety, result construction, and final mesh validation. It has no Workspace or UI dependency. Face Inset remains a zero-height planar result; Face Bevel supplies a shifted inner position for every selected vertex and owns all height and chamfer validation.
 
+The current shared analyzer deliberately returns the established `FaceInset.Plan` container and shared geometry failures retain `FaceInsetError` names. This preserves Face Inset result ordering, fingerprint, and error classification while removing duplicated algorithms. These names are an interim dependency rather than a Workspace dependency; they should be generalized before a third planar topology operation is added.
+
 For each component, the source boundary is projected into a deterministic right-handed 2D basis. Every counter-clockwise edge is shifted inward by the requested width and adjacent shifted lines are intersected. Parallel lines, excessive miter, collapse, reversal, self-intersection, or an offset outside the source polygon are rejected. Interior selected vertices keep their in-plane coordinates.
 
 ## World-space width and height
 
 All source positions are transformed from object-local `Float` into world `Double`. Boundary positions receive the constant-width offset and every selected duplicate receives `componentNormal * height`. Positions then pass through the inverse model matrix into local `Float`, are stored in the result mesh, and are transformed back to world space for validation.
 
-The actual round-tripped result must retain the requested perpendicular boundary-edge distance and signed normal displacement within a scale-relative tolerance derived from model dimensions, world-coordinate magnitude, and `Float` precision. This covers translation, rotation, uniform scale, and non-uniform scale without baking `ObjectTransform` into the source mesh. A positive height follows the selected winding normal; a negative height moves in the opposite direction.
+The actual round-tripped result must retain the requested perpendicular boundary-edge distance and signed normal displacement within a scale-relative tolerance derived from model dimensions, world-coordinate magnitude, and `Float` precision. Width and height tolerances are also capped at two percent of the requested dimension, so a large translation cannot silently erase a minimum-size bevel. If local `Float` storage cannot retain either dimension, planning is rejected before mutation. This covers translation, rotation, uniform scale, and non-uniform scale without baking `ObjectTransform` into the source mesh. A positive height follows the selected winding normal; a negative height moves in the opposite direction.
 
-The displayed bevel angle is `atan2(abs(height), width)` in degrees. The displayed chamfer slope length is `hypot(width, height)` in millimeters. These are derived values, not separately editable parameters.
+The displayed bevel angle is `atan2(abs(height), width)` in degrees. The displayed chamfer slope length is `hypot(width, height)` in millimeters. Validation measures that slope from the actual stored inner and outer world edges along their perpendicular cross-section. It does not use corner-to-corner miter distance, which varies with polygon angle. These are derived values, not separately editable parameters.
 
 ## Intersection and triangulation safety
 
 The shifted inner cap reuses the selected triangle connectivity. Its stored, round-tripped positions must preserve positive orientation, non-degenerate triangles, strict containment of interior vertices, and exact polygon coverage within tolerance. Unique inner edges and triangle pairs use the same explicit intersection, overlap, containment, shared-edge fold-over, and area-sum checks as Face Inset. The pairwise safety ceiling is 8,000,000 edge pairs and 8,000,000 triangle pairs per component.
 
-The chamfer is a ruled strip between two simple, strictly convex, consistently ordered boundary loops in parallel planes. Each source boundary edge maps to the corresponding inward parallel edge, and the ring is triangulated in loop order with two consistently wound triangles. The implementation validates the actual offset edge width, signed height, slope, every ring triangle area, and final mesh topology. Under these accepted conditions, non-adjacent strip sections cannot cross without a projected boundary crossing, which the convex offset and pairwise inner-boundary checks reject. Arbitrary collision detection against unselected geometry is not performed.
+The chamfer is a ruled strip between two simple, strictly convex, consistently ordered boundary loops in parallel planes. Each source boundary edge maps to the corresponding inward parallel edge, and the ring is triangulated in loop order with two consistently wound triangles. The implementation validates the actual offset edge width, signed height, perpendicular cross-section slope, every ring triangle area, triangle orientation against the component normal, signed-height-facing direction, and final mesh topology. Under these accepted conditions, non-adjacent strip sections cannot cross without a projected boundary crossing, which the convex offset and pairwise inner-boundary checks reject. Arbitrary collision detection against unselected geometry is not performed.
 
 ## Deterministic construction
 
@@ -36,7 +38,7 @@ The result is built outside the Workspace:
 4. Append two chamfer triangles per boundary edge in oriented loop order.
 5. Append shifted inner-cap triangles in original selected face order and winding.
 
-Vertex-only touching components get independent duplicates, even when they share an original source vertex. The completed mesh receives a fresh topology identity, recalculated normals, adjacency, full diagnostics validation, exact local/world bounds, a prepared Picking BVH, and a rebuilt Sculpt spatial index.
+Vertex-only touching components get independent duplicates, even when they share an original source vertex. Preview and final world bounds are exactly equal because both are accumulated from the same stored local `Float` vertices through the same model-matrix path; no independent pre-round-trip bounds are compared. The completed mesh receives a fresh topology identity, recalculated normals, adjacency, full diagnostics validation, exact local/world bounds, a prepared Picking BVH, and a rebuilt Sculpt spatial index.
 
 ## Preview, commit, and stale safety
 
@@ -52,4 +54,6 @@ Width, height, preview, selection, history, and runtime caches are not serialize
 
 The operation shares ceilings of 2,000,000 result vertices, 4,000,000 result triangles, 1,000,000 selected faces, and 768 MiB estimated working memory. Analysis and construction are synchronous on MainActor after a yield, so a near-limit mesh can temporarily occupy the UI. There is no fixed performance threshold.
 
-General edge bevel, concave regions, holes, multiple boundary loops, non-planar regions, width profiles, variable height, segment counts greater than one, curvature, collision detection against other geometry, automatic repair, multiple objects, materials, and UV handling are not implemented.
+Normals are rebuilt with the existing area-weighted shared-vertex policy. Because this first version does not split chamfer boundary vertices for hard normals, the one-segment bevel can look visually smooth across edges in the viewport; Binary STL output remains geometrically faceted and recomputes each triangle normal from transformed vertices.
+
+General edge bevel, concave regions, holes, multiple boundary loops, non-planar regions, width profiles, variable height, segment counts greater than one, curvature, hard-normal splitting, collision detection against other geometry, automatic repair, multiple objects, materials, and UV handling are not implemented.

@@ -159,7 +159,7 @@ preview source identity、prepared／nonthrowing commit、全mesh validation、f
 
 Face BevelはFace Insetと共有するplanar region geometryを使い、positive world-mm widthのinner boundaryをcomponent normalへsigned world-mm heightだけ移動し、outer boundaryとの間へ2 triangles/edgeのchamfer ringとshifted inner capを作る。初版はplanar、simple、strictly convex、single-loop diskだけを許可する。local Float格納後の実world座標でwidth、height、slope、inner intersection／coverage、ring degeneracy、result boundsを検証し、一般collisionやautomatic repairは行わない。
 
-preview source identity、prepared／nonthrowing commit、fresh topology、normal／adjacency／BVH／Spatial Index再構築、ReplaceMeshCommand 1件、selection clear、record-only Autosave snapshot scope、dirty／failure atomicityはInsetと同じである。width／height／previewは保存せずproject formatVersion 1を維持する。general edge bevel、concave／hole／multiple-loop／non-planar region、複数segment、multiple objectは未実装である。詳細は`FACE_BEVEL.md`を参照する。
+preview source identity、prepared／nonthrowing commit、fresh topology、normal／adjacency／BVH／Spatial Index再構築、ReplaceMeshCommand 1件、selection clear、record-only Autosave snapshot scope、dirty／failure atomicityはInsetと同じである。stored Float頂点からworld width／height／edge垂直断面slopeとring windingを検証し、minimum dimensionをFloat精度で保持できない場合は拒否する。width／height／previewは保存せずproject formatVersion 1を維持する。normalはarea-weighted shared-vertex方式のためsharp chamferがviewportで滑らかに見える場合がある。general edge bevel、concave／hole／multiple-loop／non-planar region、複数segment、hard-normal split、multiple objectは未実装である。詳細は`FACE_BEVEL.md`を参照する。
 
 ## 実機検証項目
 

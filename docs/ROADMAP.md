@@ -40,7 +40,7 @@ Diagnosticsに続く限定Mesh Cleanupとして、preview選択式のisolated ve
 
 Face Selectionを入力とする安全なFace Extrude foundationとして、共有edge component、area-weighted world normal、signed millimeter distance、top face／boundary side wall、deterministic compaction、必須preview、stale identity、prepared／commit分離した原子的mesh install、snapshot Undo／Redoを追加する。mesh全体のinvalid／degenerate／duplicate／non-finite入力、selected open boundary、non-manifold edge、winding conflict、whole shellを拒否する。Undo／RedoのBVH failureはcache invalidateと後続retryで安全に扱う。self-intersection検出やrepairは行わず、general edge bevel、individual extrusion、interactive gizmo、multiple objectは後続範囲とする。
 
-Face Insetのplanar region安全境界を共有するFace Bevel foundationとして、positive world-mm width、signed world-mm height、2 triangles/edgeのchamfer ring、shifted inner cap、必須preview、Float round-trip width／height／slope検証、prepared commit、ReplaceMeshCommand 1件を追加する。planar strictly-convex single-loop diskだけを受け入れ、general edge bevel、concave／hole／multiple-loop／non-planar region、multiple segments、collision repair、multiple objectは後続範囲とする。
+Face Insetのplanar region安全境界を共有するFace Bevel foundationとして、positive world-mm width、signed world-mm height、2 triangles/edgeのchamfer ring、shifted inner cap、必須preview、stored Floatからのworld width／height／edge垂直断面slope／ring winding検証、prepared commit、ReplaceMeshCommand 1件を追加する。planar strictly-convex single-loop diskだけを受け入れる。共有analysis containerの中立名化、hard-normal split、general edge bevel、concave／hole／multiple-loop／non-planar region、multiple segments、collision repair、multiple objectは後続範囲とする。
 
 ## Milestone 0 — Repository Foundation
 

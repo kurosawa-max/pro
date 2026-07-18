@@ -93,6 +93,8 @@ struct FaceBevelView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Text("The complete result is validated before installation. Full-scene 3D collision detection is not performed.")
                         .fixedSize(horizontal: false, vertical: true)
+                    Text("This one-segment chamfer shares area-weighted vertex normals, so sharp edges can appear smooth in the viewport. Exported STL geometry remains faceted.")
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if previewIsStale {

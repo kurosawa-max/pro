@@ -71,7 +71,9 @@ final class FaceInsetTests: XCTestCase {
         let square = points([(0, 0), (4, 0), (4, 4), (0, 4)])
         let inset = try FaceInset.insetPolygon(square, distance: 1)
         XCTAssertEqual(inset, points([(1, 1), (3, 1), (3, 3), (1, 3)]))
-        XCTAssertThrowsError(try FaceInset.insetPolygon(square, distance: 2))
+        XCTAssertThrowsError(try FaceInset.insetPolygon(square, distance: 2)) {
+            XCTAssertEqual($0 as? FaceInsetError, .collapsedInset)
+        }
         XCTAssertThrowsError(try FaceInset.validateStrictlyConvexSimplePolygon(
             points([(0, 0), (3, 0), (1, 1), (3, 3), (0, 3)]))) {
             XCTAssertEqual($0 as? FaceInsetError, .nonConvexBoundary)
@@ -389,6 +391,22 @@ final class FaceInsetTests: XCTestCase {
         XCTAssertEqual(first, second)
         XCTAssertEqual(first.analysisFingerprint, second.analysisFingerprint)
         XCTAssertEqual(Array(first.mesh.indices.prefix(30)), Array(cube.indices.prefix(30)))
+        XCTAssertEqual(
+            first.mesh.vertices.map(\.position),
+            cube.vertices.map(\.position) + [
+                SIMD3<Float>(0.5, 1, -0.5),
+                SIMD3<Float>(-0.5, 1, -0.5),
+                SIMD3<Float>(0.5, 1, 0.5),
+                SIMD3<Float>(-0.5, 1, 0.5),
+            ])
+        XCTAssertEqual(first.mesh.indices, Array(cube.indices.prefix(30)) + [
+            2, 3, 9, 2, 9, 8,
+            3, 7, 11, 3, 11, 9,
+            7, 6, 10, 7, 10, 11,
+            6, 2, 8, 6, 8, 10,
+            9, 11, 10, 9, 10, 8,
+        ])
+        XCTAssertEqual(first.analysisFingerprint, 4_707_830_034_203_706_523)
     }
 
     @MainActor

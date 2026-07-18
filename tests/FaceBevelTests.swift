@@ -1,3 +1,4 @@
+import MetalKit
 import SwiftUI
 import XCTest
 import simd
@@ -122,7 +123,7 @@ final class FaceBevelTests: XCTestCase {
         XCTAssertEqual(estimate.innerAreaSquareMillimeters, 4_000_000, accuracy: 0.1)
     }
 
-    func testWorldRoundTripPreservesWidthHeightAndBoundsAcrossTransforms() throws {
+    func testStoredWorldGeometryPreservesWidthHeightSlopeAndBoundsAcrossTransforms() throws {
         let source = try PrimitiveMeshBuilder.cube(size: 20)
         let transforms = [
             ObjectTransform.identity,
@@ -147,7 +148,85 @@ final class FaceBevelTests: XCTestCase {
             try assertWorldBoundaryWidth(
                 source: source, result: result.mesh, transform: transform,
                 expected: 0.5)
+            try assertWorldChamferCrossSections(
+                source: source, result: result.mesh, transform: transform,
+                width: 0.5, height: -0.75)
             XCTAssertEqual(worldBounds(result.mesh, transform), result.estimate.resultBounds)
+        }
+    }
+
+    func testMinimumHeightAtUnrepresentableWorldTranslationIsRejected() throws {
+        let source = try PrimitiveMeshBuilder.cube(size: 20)
+        let transform = ObjectTransform(
+            translation: SIMD3<Float>(0, 1_000_000, 0),
+            scale: SIMD3<Float>(0.1, 0.1, 0.1))
+        XCTAssertThrowsError(try FaceBevel.bevel(
+            mesh: source,
+            selection: try selection(source, faces: [10, 11]),
+            transform: transform,
+            options: options(width: 0.25, height: 0.001))) {
+            XCTAssertEqual($0 as? FaceBevelError, .heightRoundTripFailure)
+        }
+    }
+
+    func testRingIndicesAndWindingCoverAllWorldAxesAndSignedHeights() throws {
+        let source = try PrimitiveMeshBuilder.cube(size: 4)
+        let transform = ObjectTransform(
+            translation: SIMD3<Float>(17, -23, 31),
+            rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(19, -37, 61)),
+            scale: SIMD3<Float>(0.5, 3, 7))
+        let facePairs = [[0, 1], [2, 3], [4, 5], [6, 7], [8, 9], [10, 11]]
+        for faces in facePairs {
+            for height in [0.5, -0.5] {
+                let selected = try selection(source, faces: faces)
+                let analysis = try PlanarFaceRegionAnalyzer.analyze(
+                    mesh: source, selection: selected, transform: transform,
+                    widthMillimeters: 0.25)
+                let component = try XCTUnwrap(analysis.components.first)
+                let result = try FaceBevel.bevel(
+                    mesh: source, selection: selected, transform: transform,
+                    options: options(width: 0.25, height: height))
+                let firstRingIndex = (source.indices.count / 3 - faces.count) * 3
+                let innerBase = result.mesh.vertices.count - component.originalVertexIDs.count
+                let innerBySource = Dictionary(uniqueKeysWithValues:
+                    component.originalVertexIDs.enumerated().map {
+                        ($0.element, UInt32(innerBase + $0.offset))
+                    })
+                var expectedIndices: [UInt32] = []
+                for index in component.boundaryVertexIDs.indices {
+                    let outerA = component.boundaryVertexIDs[index]
+                    let outerB = component.boundaryVertexIDs[
+                        (index + 1) % component.boundaryVertexIDs.count]
+                    expectedIndices.append(contentsOf: [
+                        outerA, outerB, try XCTUnwrap(innerBySource[outerB]),
+                        outerA, try XCTUnwrap(innerBySource[outerB]),
+                        try XCTUnwrap(innerBySource[outerA]),
+                    ])
+                }
+                XCTAssertEqual(
+                    Array(result.mesh.indices[
+                        firstRingIndex..<(firstRingIndex + expectedIndices.count)]),
+                    expectedIndices)
+                for ringOffset in stride(from: 0, to: expectedIndices.count, by: 6) {
+                    let ids = Array(expectedIndices[ringOffset..<(ringOffset + 6)])
+                    let a = world(result.mesh, transform, ids[0])
+                    let b = world(result.mesh, transform, ids[1])
+                    let innerB = world(result.mesh, transform, ids[2])
+                    let innerA = world(result.mesh, transform, ids[5])
+                    let firstNormal = simd_cross(b - a, innerB - a)
+                    let secondNormal = simd_cross(innerB - a, innerA - a)
+                    let edgeDirection = simd_normalize(b - a)
+                    let inward = simd_cross(component.basis.normal, edgeDirection)
+                    XCTAssertGreaterThan(simd_dot(firstNormal, component.basis.normal), 0)
+                    XCTAssertGreaterThan(simd_dot(secondNormal, component.basis.normal), 0)
+                    let signedFacing = height > 0 ? -1.0 : 1.0
+                    XCTAssertGreaterThan(simd_dot(firstNormal, inward) * signedFacing, 0)
+                    XCTAssertGreaterThan(simd_dot(secondNormal, inward) * signedFacing, 0)
+                }
+                XCTAssertEqual(
+                    MeshTopologyDiagnostics.analyze(result.mesh).inconsistentWindingEdgeCount,
+                    0)
+            }
         }
     }
 
@@ -469,6 +548,31 @@ final class FaceBevelTests: XCTestCase {
             FaceInset.maximumInnerIntersectionPairChecks)
     }
 
+    @MainActor
+    func testSuccessfulInstallUploadsFreshTopologyOnceThenSkipsUnchangedFrame() throws {
+        #if targetEnvironment(simulator)
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        let view = MTKView(frame: .zero, device: device)
+        let profiler = PerformanceProfiler()
+        let renderer = try XCTUnwrap(MetalRenderer(view: view, profiler: profiler))
+        let model = try configuredModel(faces: [10, 11])
+        renderer.update(mesh: model.mesh)
+        profiler.reset(
+            vertexCount: model.mesh.vertices.count,
+            triangleCount: model.mesh.indices.count / 3)
+
+        try model.prepareForFaceBevel()
+        let preview = try model.previewFaceBevel(options: options())
+        _ = try model.applyFaceBevel(preview: preview)
+        renderer.update(mesh: model.mesh)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 1)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 1)
+        renderer.update(mesh: model.mesh)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 1)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 1)
+        #endif
+    }
+
     private func options(
         width: Double = 0.25,
         height: Double = 0.5
@@ -610,6 +714,78 @@ final class FaceBevelTests: XCTestCase {
                 file: file,
                 line: line)
         }
+    }
+
+    private func assertWorldChamferCrossSections(
+        source: EditableMesh,
+        result: EditableMesh,
+        transform: ObjectTransform,
+        width expectedWidth: Double,
+        height expectedHeight: Double,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let analysis = try PlanarFaceRegionAnalyzer.analyze(
+            mesh: source,
+            selection: try selection(source, faces: [10, 11]),
+            transform: transform,
+            widthMillimeters: expectedWidth)
+        let component = try XCTUnwrap(analysis.components.first, file: file, line: line)
+        let innerBase = result.vertices.count - component.originalVertexIDs.count
+        let innerBySource = Dictionary(uniqueKeysWithValues:
+            component.originalVertexIDs.enumerated().map { offset, sourceID in
+                (sourceID, world(result, transform, UInt32(innerBase + offset)))
+            })
+        let coordinateMagnitude = result.vertices.reduce(0.0) { partial, vertex in
+            let point = transform.worldPosition(fromLocal: vertex.position)
+            return max(partial, max(abs(Double(point.x)), max(
+                abs(Double(point.y)), abs(Double(point.z)))))
+        }
+        let precisionTolerance = max(
+            coordinateMagnitude * Double(Float.ulpOfOne) * 32,
+            max(component.worldDiagonalLength * Double(Float.ulpOfOne) * 32, 1.0e-6))
+        let widthTolerance = min(precisionTolerance, max(expectedWidth * 0.02, 1.0e-6))
+        let heightTolerance = min(precisionTolerance, max(abs(expectedHeight) * 0.02, 1.0e-6))
+        let expectedSlope = hypot(expectedWidth, expectedHeight)
+        let slopeTolerance = min(precisionTolerance * 2, max(expectedSlope * 0.02, 2.0e-6))
+        for index in component.boundaryVertexIDs.indices {
+            let aID = component.boundaryVertexIDs[index]
+            let bID = component.boundaryVertexIDs[
+                (index + 1) % component.boundaryVertexIDs.count]
+            let outerA = world(source, transform, aID)
+            let outerB = world(source, transform, bID)
+            let innerA = try XCTUnwrap(innerBySource[aID], file: file, line: line)
+            let innerB = try XCTUnwrap(innerBySource[bID], file: file, line: line)
+            let sourceDirection = simd_normalize(outerB - outerA)
+            let innerDirection = simd_normalize(innerB - innerA)
+            XCTAssertEqual(
+                simd_length(simd_cross(sourceDirection, innerDirection)), 0,
+                accuracy: max(widthTolerance / simd_length(outerB - outerA), 1.0e-7),
+                file: file, line: line)
+            let innerCrossSectionPoint = innerA
+                + sourceDirection * simd_dot(outerA - innerA, sourceDirection)
+            let section = innerCrossSectionPoint - outerA
+            let actualHeight = simd_dot(section, component.basis.normal)
+            let inPlane = section - component.basis.normal * actualHeight
+            let inward = simd_cross(component.basis.normal, sourceDirection)
+            XCTAssertEqual(
+                simd_dot(inPlane, inward), expectedWidth,
+                accuracy: widthTolerance, file: file, line: line)
+            XCTAssertEqual(
+                actualHeight, expectedHeight,
+                accuracy: heightTolerance, file: file, line: line)
+            XCTAssertEqual(
+                simd_length(section), expectedSlope,
+                accuracy: slopeTolerance, file: file, line: line)
+        }
+    }
+
+    private func world(
+        _ mesh: EditableMesh,
+        _ transform: ObjectTransform,
+        _ vertexID: UInt32
+    ) -> SIMD3<Double> {
+        double(transform.worldPosition(fromLocal: mesh.vertices[Int(vertexID)].position))
     }
 
     private func worldBounds(

@@ -442,6 +442,12 @@ enum FaceBevel {
         tolerance: Double
     ) throws {
         guard tolerance.isFinite, tolerance >= 0 else { throw FaceBevelError.validationFailed }
+        let widthTolerance = min(
+            tolerance,
+            max(abs(options.widthMillimeters) * 0.02, 1.0e-6))
+        let heightTolerance = min(
+            tolerance,
+            max(abs(options.heightMillimeters) * 0.02, 1.0e-6))
         var minimumHeight = Double.infinity
         var maximumHeight = -Double.infinity
         for vertexID in component.originalVertexIDs {
@@ -450,13 +456,13 @@ enum FaceBevel {
             }
             let height = simd_dot(world - component.planeOrigin, component.basis.normal)
             guard height.isFinite,
-                  abs(height - options.heightMillimeters) <= tolerance else {
+                  abs(height - options.heightMillimeters) <= heightTolerance else {
                 throw FaceBevelError.heightRoundTripFailure
             }
             minimumHeight = min(minimumHeight, height)
             maximumHeight = max(maximumHeight, height)
         }
-        guard maximumHeight - minimumHeight <= tolerance * 2 else {
+        guard maximumHeight - minimumHeight <= heightTolerance * 2 else {
             throw FaceBevelError.heightRoundTripFailure
         }
         let actualBoundary = try component.boundaryVertexIDs.map { vertexID -> FaceInsetPoint2D in
@@ -471,7 +477,7 @@ enum FaceBevel {
                 source: component.sourcePolygon,
                 inset: actualBoundary,
                 distance: options.widthMillimeters,
-                tolerance: tolerance)
+                tolerance: widthTolerance)
         } catch let error as FaceInsetError {
             if error == .collapsedInset { throw FaceBevelError.widthRoundTripFailure }
             throw map(error)
@@ -525,7 +531,9 @@ enum FaceBevel {
             transform: transform,
             actualWorldByVertex: actualWorldByVertex,
             options: options,
-            tolerance: tolerance)
+            widthTolerance: widthTolerance,
+            heightTolerance: heightTolerance,
+            geometryTolerance: tolerance)
     }
 
     private static func validateRing(
@@ -534,10 +542,15 @@ enum FaceBevel {
         transform: ObjectTransform,
         actualWorldByVertex: [UInt32: SIMD3<Double>],
         options: FaceBevelOptions,
-        tolerance: Double
+        widthTolerance: Double,
+        heightTolerance: Double,
+        geometryTolerance: Double
     ) throws {
         let loop = component.boundaryVertexIDs
         let expectedSlope = options.slopeLengthMillimeters
+        let slopeTolerance = min(
+            geometryTolerance * 2,
+            max(expectedSlope * 0.02, 2.0e-6))
         let areaEpsilon = max(
             component.worldDiagonalLength * component.worldDiagonalLength * 1.0e-12,
             1.0e-18)
@@ -559,30 +572,61 @@ enum FaceBevel {
             } catch let error as FaceInsetError {
                 throw map(error)
             }
-            let firstArea = simd_length(simd_cross(outerB - outerA, innerB - outerA))
-            let secondArea = simd_length(simd_cross(innerB - outerA, innerA - outerA))
+            let sourceEdge = outerB - outerA
+            let actualInnerEdge = innerB - innerA
+            let sourceLength = simd_length(sourceEdge)
+            let innerLength = simd_length(actualInnerEdge)
+            guard sourceLength.isFinite, innerLength.isFinite,
+                  sourceLength > 0, innerLength > 0 else {
+                throw FaceBevelError.ringValidationFailed
+            }
+            let sourceDirection = sourceEdge / sourceLength
+            let innerDirection = actualInnerEdge / innerLength
+            let directionError = simd_length(simd_cross(sourceDirection, innerDirection))
+            let directionTolerance = min(
+                0.01,
+                max(widthTolerance / max(sourceLength, innerLength), 1.0e-7))
+            guard directionError.isFinite, directionError <= directionTolerance,
+                  simd_dot(sourceDirection, innerDirection) > 0 else {
+                throw FaceBevelError.ringValidationFailed
+            }
+
+            let firstNormal = simd_cross(sourceEdge, innerB - outerA)
+            let secondNormal = simd_cross(innerB - outerA, innerA - outerA)
+            let firstArea = simd_length(firstNormal)
+            let secondArea = simd_length(secondNormal)
             guard firstArea.isFinite, secondArea.isFinite,
                   firstArea > areaEpsilon, secondArea > areaEpsilon else {
                 throw FaceBevelError.ringValidationFailed
             }
-            let sourceEdge = component.sourcePolygon[(index + 1) % loop.count]
-                - component.sourcePolygon[index]
-            let innerEdgePoint = component.actualInsetPointByVertex[bID]!
-                - component.actualInsetPointByVertex[aID]!
-            let sourceLength = hypot(sourceEdge.x, sourceEdge.y)
-            let innerLength = hypot(innerEdgePoint.x, innerEdgePoint.y)
-            guard sourceLength > 0, innerLength > 0 else {
+            let normal = component.basis.normal
+            let inward = simd_cross(normal, sourceDirection)
+            guard simd_dot(firstNormal, normal) > areaEpsilon,
+                  simd_dot(secondNormal, normal) > areaEpsilon else {
                 throw FaceBevelError.ringValidationFailed
             }
-            let direction = sourceEdge * (1 / sourceLength)
-            guard let actualPoint = component.actualInsetPointByVertex[aID] else {
+
+            let expectedInwardSign = options.heightMillimeters > 0 ? -1.0 : 1.0
+            let firstFacing = simd_dot(firstNormal, inward) * expectedInwardSign
+            let secondFacing = simd_dot(secondNormal, inward) * expectedInwardSign
+            guard firstFacing > areaEpsilon, secondFacing > areaEpsilon else {
                 throw FaceBevelError.ringValidationFailed
             }
-            let measuredWidth = PlanarFaceRegionGeometry.cross(
-                direction, actualPoint - component.sourcePolygon[index])
-            let measuredSlope = hypot(measuredWidth, options.heightMillimeters)
-            guard measuredSlope.isFinite,
-                  abs(measuredSlope - expectedSlope) <= tolerance * 2 else {
+
+            // The constant-width slope is the cross-section perpendicular to
+            // corresponding outer and inner edges. Corner-to-corner distance
+            // includes the polygon miter and is intentionally not constant.
+            let innerCrossSectionPoint = innerA
+                + sourceDirection * simd_dot(outerA - innerA, sourceDirection)
+            let actualCrossSection = innerCrossSectionPoint - outerA
+            let actualHeight = simd_dot(actualCrossSection, normal)
+            let inPlane = actualCrossSection - normal * actualHeight
+            let actualWidth = simd_dot(inPlane, inward)
+            let actualSlope = simd_length(actualCrossSection)
+            guard actualWidth.isFinite, actualHeight.isFinite, actualSlope.isFinite,
+                  abs(actualWidth - options.widthMillimeters) <= widthTolerance,
+                  abs(actualHeight - options.heightMillimeters) <= heightTolerance,
+                  abs(actualSlope - expectedSlope) <= slopeTolerance else {
                 throw FaceBevelError.ringValidationFailed
             }
         }
