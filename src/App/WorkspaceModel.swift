@@ -1025,6 +1025,9 @@ final class WorkspaceModel: ObservableObject {
     private func commitFaceInset(
         _ prepared: PreparedFaceInsetCommit, options: FaceInsetOptions
     ) -> FaceInsetResult {
+        // Geometry, validation, bounds, and BVH preparation must remain in the
+        // throwing prepared phase. Everything after mesh installation is required
+        // to stay nonthrowing so a partial topology commit cannot escape.
         let result = prepared.result
         mesh = result.mesh
         hoverLocation = nil
@@ -1036,15 +1039,19 @@ final class WorkspaceModel: ObservableObject {
         pickingCache.install(prepared.pickingIndex, for: mesh)
         sculptSpatialIndex.prepare(for: mesh)
         let command = ReplaceMeshCommand(before: prepared.before, after: workspaceSnapshot)
-        precondition(isFaceInsetRunning)
-        isTopologyEditSnapshotSafe = true
-        defer { isTopologyEditSnapshotSafe = false }
-        record(.replaceMesh(command))
+        recordFaceInsetReplacement(command)
         clearMeshDiagnostics()
         faceInsetPreview = nil
         faceInsetError = nil
         status = "Inset \(result.estimate.selectedFaceCount) faces by \(options.distanceMillimeters) mm"
         return result
+    }
+
+    private func recordFaceInsetReplacement(_ command: ReplaceMeshCommand) {
+        precondition(isFaceInsetRunning)
+        isTopologyEditSnapshotSafe = true
+        defer { isTopologyEditSnapshotSafe = false }
+        record(.replaceMesh(command))
     }
 
     func discardFaceInsetPreview() {
@@ -1621,6 +1628,7 @@ final class WorkspaceModel: ObservableObject {
 
     #if DEBUG
     var isFaceExtrudeSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
+    var isFaceInsetSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var pickingCacheHasIndexForTesting: Bool { pickingCache.bvh != nil }
     var pickingCacheTopologyIDForTesting: UUID? { pickingCache.topologyID }
     #endif

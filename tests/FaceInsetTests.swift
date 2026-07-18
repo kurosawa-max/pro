@@ -80,6 +80,22 @@ final class FaceInsetTests: XCTestCase {
             points([(0, 0), (3, 3), (0, 3), (3, 0)])))
     }
 
+    func testPolygonOffsetPreservesConstantWidthForConvexAnglesAndScales() throws {
+        let cases: [([FaceInsetPoint2D], Double)] = [
+            (points([(0, 0), (8, 0), (3, 6)]), 0.25),
+            (points([(0, 0), (12, 0), (12, 3), (0, 3)]), 0.001),
+            (points([(0, 0), (6, 0), (5, 4), (1, 5)]), 0.5),
+            (points([(0, 0), (1_000_000, 0), (750_000, 800_000), (10_000, 500_000)]), 1_000),
+        ]
+        for (source, distance) in cases {
+            let inset = try FaceInset.insetPolygon(source, distance: distance)
+            try FaceInset.validateInsetEdgeDistances(
+                source: source, inset: inset, distance: distance,
+                tolerance: max(FaceInset.signedArea(source) * 1.0e-12, 1.0e-9))
+            XCTAssertLessThan(FaceInset.signedArea(inset), FaceInset.signedArea(source))
+        }
+    }
+
     func testWorldMillimeterInsetHandlesRotationTranslationAndNonUniformScale() throws {
         let cube = try PrimitiveMeshBuilder.cube(size: 2)
         let transform = ObjectTransform(
@@ -98,6 +114,108 @@ final class FaceInsetTests: XCTestCase {
         }
         XCTAssertEqual(result.estimate.originalAreaSquareMillimeters, 32, accuracy: 0.001)
         XCTAssertEqual(result.estimate.insetAreaSquareMillimeters, 12, accuracy: 0.001)
+    }
+
+    func testWorldMillimeterEdgesRemainParallelAndExactlyOffsetAfterFloatRoundTrip() throws {
+        let source = try PrimitiveMeshBuilder.cube(size: 20)
+        let transforms = [
+            ObjectTransform.identity,
+            ObjectTransform(rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(25, -35, 17)),
+                            scale: SIMD3<Float>(2, 3, 5)),
+            ObjectTransform(translation: SIMD3<Float>(200, -350, 125),
+                            rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(-40, 15, 70)),
+                            scale: SIMD3<Float>(0.2, 10, 50)),
+            ObjectTransform(translation: SIMD3<Float>(100_000, -80_000, 60_000),
+                            rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(9, 31, -22)),
+                            scale: SIMD3<Float>(0.5, 4, 12)),
+        ]
+        for transform in transforms {
+            let result = try FaceInset.inset(
+                mesh: source, selection: try selection(source, faces: [10, 11]),
+                transform: transform, options: options(0.5))
+            assertWorldInsetEdges(
+                source: source, result: result.mesh, transform: transform,
+                distance: 0.5)
+        }
+    }
+
+    func testPreviewBoundsMatchActualResultAfterWorldLocalFloatRoundTrip() throws {
+        let scenarios: [(Float, ObjectTransform, Double)] = [
+            (20, .identity, 0.001),
+            (20, ObjectTransform(rotation: ObjectTransform.rotation(
+                degrees: SIMD3<Float>(37, -18, 63))), 0.001),
+            (20, ObjectTransform(translation: SIMD3<Float>(75_000, -40_000, 25_000),
+                                 rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(11, 29, -47)),
+                                 scale: SIMD3<Float>(0.25, 6, 30)), 0.001),
+            (1_000, ObjectTransform(rotation: ObjectTransform.rotation(
+                degrees: SIMD3<Float>(5, 12, 19)), scale: SIMD3<Float>(1.5, 0.75, 2)), 0.001),
+            (0.1, ObjectTransform(rotation: ObjectTransform.rotation(
+                degrees: SIMD3<Float>(13, 7, -9)), scale: SIMD3<Float>(2, 3, 4)), 0.001),
+        ]
+        for (size, transform, distance) in scenarios {
+            let source = try PrimitiveMeshBuilder.cube(size: size)
+            let result = try FaceInset.inset(
+                mesh: source, selection: try selection(source, faces: [10, 11]),
+                transform: transform, options: options(distance))
+            let actual = worldBounds(of: result.mesh, transform: transform)
+            let maximum = result.estimate.resultBounds.maximum
+            let minimum = result.estimate.resultBounds.minimum
+            let magnitude = max(
+                max(abs(maximum.x), max(abs(maximum.y), abs(maximum.z))),
+                max(abs(minimum.x), max(abs(minimum.y), abs(minimum.z))))
+            let tolerance = max(magnitude * Float.ulpOfOne * 8, 0.000_01)
+            assertVector(actual.minimum, result.estimate.resultBounds.minimum, accuracy: tolerance)
+            assertVector(actual.maximum, result.estimate.resultBounds.maximum, accuracy: tolerance)
+        }
+    }
+
+    func testInnerTriangulationAcceptsMultipleInteriorVerticesAndOrderingChanges() throws {
+        let points: [UInt32: FaceInsetPoint2D] = [
+            0: .init(x: 0, y: 0), 1: .init(x: 4, y: 0),
+            2: .init(x: 4, y: 4), 3: .init(x: 0, y: 4),
+            4: .init(x: 1.5, y: 1.5), 5: .init(x: 2.5, y: 2.5),
+        ]
+        let triangles: [[UInt32]] = [
+            [0, 1, 4], [1, 2, 5], [1, 5, 4],
+            [2, 3, 5], [3, 0, 4], [3, 4, 5],
+        ]
+        XCTAssertNoThrow(try FaceInset.validateInnerTriangulation(
+            triangles: triangles, pointsByVertex: points, areaEpsilon: 1.0e-12))
+        XCTAssertNoThrow(try FaceInset.validateInnerTriangulation(
+            triangles: Array(triangles.reversed()), pointsByVertex: points, areaEpsilon: 1.0e-12))
+    }
+
+    func testInnerTriangulationRejectsCrossingOverlapAndSameSideFoldOver() throws {
+        let crossingPoints: [UInt32: FaceInsetPoint2D] = [
+            0: .init(x: 0, y: 0), 1: .init(x: 3, y: 0), 2: .init(x: 0, y: 3),
+            3: .init(x: 1, y: 0.5), 4: .init(x: 3, y: 0.5), 5: .init(x: 1, y: 2.5),
+        ]
+        XCTAssertThrowsError(try FaceInset.validateInnerTriangulation(
+            triangles: [[0, 1, 2], [3, 4, 5]],
+            pointsByVertex: crossingPoints, areaEpsilon: 1.0e-12)) {
+            XCTAssertEqual($0 as? FaceInsetError, .innerTriangulationIntersection)
+        }
+
+        let foldPoints: [UInt32: FaceInsetPoint2D] = [
+            0: .init(x: 0, y: 0), 1: .init(x: 4, y: 0),
+            2: .init(x: 1, y: 2), 3: .init(x: 3, y: 1),
+        ]
+        XCTAssertThrowsError(try FaceInset.validateInnerTriangulation(
+            triangles: [[0, 1, 2], [0, 1, 3]],
+            pointsByVertex: foldPoints, areaEpsilon: 1.0e-12)) {
+            XCTAssertEqual($0 as? FaceInsetError, .innerTriangulationIntersection)
+        }
+    }
+
+    func testInnerTriangulationPairLimitFailsBeforeUnsafeQuadraticWork() throws {
+        let points: [UInt32: FaceInsetPoint2D] = [
+            0: .init(x: 0, y: 0), 1: .init(x: 1, y: 0), 2: .init(x: 0, y: 1),
+        ]
+        let triangles = Array(repeating: [UInt32(0), 1, 2], count: 5_000)
+        XCTAssertThrowsError(try FaceInset.validateInnerTriangulation(
+            triangles: triangles, pointsByVertex: points, areaEpsilon: 1.0e-12)) {
+            XCTAssertEqual($0 as? FaceInsetError, .innerTriangulationLimitExceeded)
+        }
     }
 
     func testInteriorVertexIsDuplicatedWithoutMovementWhenInsideInset() throws {
@@ -133,6 +251,38 @@ final class FaceInsetTests: XCTestCase {
             transform: .identity, options: options(0.1))
         XCTAssertEqual(vertexOnly.componentCount, 2)
         XCTAssertEqual(vertexOnly.addedInsetVertexCount, 6)
+    }
+
+    func testMultipleComponentResultsRemainIndependentAndDeterministic() throws {
+        let cube = try PrimitiveMeshBuilder.cube(size: 4)
+        let oppositeSelection = try selection(cube, faces: [8, 9, 10, 11])
+        let first = try FaceInset.inset(
+            mesh: cube, selection: oppositeSelection,
+            transform: .identity, options: options(0.25))
+        let second = try FaceInset.inset(
+            mesh: cube, selection: oppositeSelection,
+            transform: .identity, options: options(0.25))
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first.estimate.componentCount, 2)
+        XCTAssertEqual(first.estimate.boundaryLoopCount, 2)
+        XCTAssertEqual(first.estimate.addedRingTriangleCount, 16)
+        let diagnostics = MeshTopologyDiagnostics.analyze(first.mesh)
+        XCTAssertEqual(diagnostics.degenerateTriangleCount, 0)
+        XCTAssertEqual(diagnostics.duplicateTriangleCount, 0)
+        XCTAssertEqual(diagnostics.boundaryEdgeCount, 0)
+        XCTAssertEqual(diagnostics.nonManifoldEdgeCount, 0)
+        XCTAssertEqual(diagnostics.inconsistentWindingEdgeCount, 0)
+
+        let touchingSelection = try selection(cube, faces: [0, 8])
+        let touching = try FaceInset.inset(
+            mesh: cube, selection: touchingSelection,
+            transform: .identity, options: options(0.1))
+        XCTAssertEqual(touching.estimate.componentCount, 2)
+        XCTAssertEqual(touching.estimate.addedInsetVertexCount, 6)
+        XCTAssertEqual(touching.mesh.vertices.filter {
+            $0.position == cube.vertices[0].position
+        }.count, 2)
+        XCTAssertEqual(MeshTopologyDiagnostics.analyze(touching.mesh).duplicateTriangleCount, 0)
     }
 
     func testSelectedOpenBoundaryIsRejected() throws {
@@ -280,6 +430,7 @@ final class FaceInsetTests: XCTestCase {
         XCTAssertEqual(model.undoCount, undoBefore + 1)
         XCTAssertTrue(model.isDirty)
         XCTAssertNil(model.faceInsetPreview)
+        XCTAssertFalse(model.isFaceInsetSnapshotSafeForTesting)
         model.undo()
         XCTAssertEqual(model.mesh, beforeMesh)
         XCTAssertEqual(model.objectTransform, transform)
@@ -288,6 +439,73 @@ final class FaceInsetTests: XCTestCase {
         model.redo()
         XCTAssertEqual(model.mesh, afterMesh)
         XCTAssertEqual(model.selectedFaceCount, 0)
+        XCTAssertFalse(model.isFaceInsetSnapshotSafeForTesting)
+    }
+
+    @MainActor
+    func testApplyUndoRedoAutosaveOrderingUsesOnlyCompletedSnapshots() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaceInsetAutosave-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let coordinator = ProjectAutosaveCoordinator(
+            storage: ProjectRecoveryStorage(directoryURL: directory),
+            scheduler: FaceInsetImmediateScheduler(), debounceNanoseconds: 0)
+        let model = WorkspaceModel(autosaveCoordinator: coordinator)
+        await model.inspectRecoveryOnLaunch(force: true)
+        model.mesh = try PrimitiveMeshBuilder.cube(size: 2)
+        model.setInteractionMode(.faceSelect)
+        model.setFaceSelectionOperation(.add)
+        XCTAssertTrue(model.applyFaceSelectionHit(10))
+        XCTAssertTrue(model.applyFaceSelectionHit(11))
+        let beforeMesh = model.mesh
+        let initialGeneration = model.projectMutationGeneration
+        let initialBytes = try model.projectData()
+
+        try model.prepareForFaceInset()
+        _ = try model.previewFaceInset(options: options(0.25))
+        model.discardFaceInsetPreview()
+        var writeCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(writeCount, 0)
+        XCTAssertEqual(model.projectMutationGeneration, initialGeneration)
+        XCTAssertEqual(try model.projectData(), initialBytes)
+        XCTAssertThrowsError(try model.previewFaceInset(options: options(2)))
+        writeCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(writeCount, 0)
+        XCTAssertEqual(model.projectMutationGeneration, initialGeneration)
+        XCTAssertEqual(try model.projectData(), initialBytes)
+        XCTAssertNil(model.faceInsetPreview)
+
+        try model.prepareForFaceInset()
+        let preview = try model.previewFaceInset(options: options(0.25))
+        let result = try model.applyFaceInset(preview: preview)
+        var expectedGeneration = initialGeneration
+        expectedGeneration.advance()
+        XCTAssertEqual(model.projectMutationGeneration, expectedGeneration)
+        XCTAssertFalse(model.isFaceInsetSnapshotSafeForTesting)
+        await waitForWriteCount(1, coordinator: coordinator)
+        var recovery = try await coordinator.inspectRecovery()
+        XCTAssertEqual(recovery.project.mesh, result.mesh)
+        XCTAssertEqual(recovery.descriptor.sourceGeneration, expectedGeneration)
+        XCTAssertFalse(String(decoding: try ProjectCodec.encode(recovery.project), as: UTF8.self)
+            .contains("faceInset"))
+
+        model.undo()
+        expectedGeneration.advance()
+        XCTAssertEqual(model.projectMutationGeneration, expectedGeneration)
+        await waitForWriteCount(2, coordinator: coordinator)
+        recovery = try await coordinator.inspectRecovery()
+        XCTAssertEqual(recovery.project.mesh, beforeMesh)
+        XCTAssertEqual(recovery.descriptor.sourceGeneration, expectedGeneration)
+
+        model.redo()
+        expectedGeneration.advance()
+        XCTAssertEqual(model.projectMutationGeneration, expectedGeneration)
+        await waitForWriteCount(3, coordinator: coordinator)
+        recovery = try await coordinator.inspectRecovery()
+        XCTAssertEqual(recovery.project.mesh, result.mesh)
+        XCTAssertEqual(recovery.descriptor.sourceGeneration, expectedGeneration)
+        writeCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(writeCount, 3)
     }
 
     @MainActor
@@ -307,6 +525,7 @@ final class FaceInsetTests: XCTestCase {
         XCTAssertEqual(model.projectMutationGeneration, generation)
         XCTAssertEqual(try model.projectData(), bytes)
         XCTAssertNotNil(model.faceInsetError)
+        XCTAssertFalse(model.isFaceInsetSnapshotSafeForTesting)
     }
 
     @MainActor
@@ -321,6 +540,31 @@ final class FaceInsetTests: XCTestCase {
         XCTAssertEqual(model.mesh.runtime.topologyRevision, topologyRevision)
         XCTAssertEqual(model.selectedFaceCount, 2)
         XCTAssertTrue(model.isFaceInsetPreviewStale)
+    }
+
+    @MainActor
+    func testPreviewCannotBeReusedAfterSelectionOrTransformExactRestoration() throws {
+        let selectionModel = try configuredModel(faces: [10, 11])
+        try selectionModel.prepareForFaceInset()
+        let selectionPreview = try selectionModel.previewFaceInset(options: options(0.25))
+        XCTAssertTrue(selectionModel.applyFaceSelectionHit(8))
+        selectionModel.setFaceSelectionOperation(.remove)
+        XCTAssertTrue(selectionModel.applyFaceSelectionHit(8))
+        XCTAssertTrue(selectionModel.isFaceInsetPreviewStale)
+        XCTAssertThrowsError(try selectionModel.applyFaceInset(preview: selectionPreview)) {
+            XCTAssertEqual($0 as? FaceInsetError, .stalePreview)
+        }
+
+        let transformModel = try configuredModel(faces: [10, 11])
+        let originalTransform = transformModel.objectTransform
+        try transformModel.prepareForFaceInset()
+        let transformPreview = try transformModel.previewFaceInset(options: options(0.25))
+        transformModel.updateTransform(ObjectTransform(translation: SIMD3<Float>(1, 2, 3)))
+        transformModel.updateTransform(originalTransform)
+        XCTAssertTrue(transformModel.isFaceInsetPreviewStale)
+        XCTAssertThrowsError(try transformModel.applyFaceInset(preview: transformPreview)) {
+            XCTAssertEqual($0 as? FaceInsetError, .stalePreview)
+        }
     }
 
     @MainActor
@@ -348,6 +592,56 @@ final class FaceInsetTests: XCTestCase {
     }
     private func points(_ values: [(Double, Double)]) -> [FaceInsetPoint2D] {
         values.map { FaceInsetPoint2D(x: $0.0, y: $0.1) }
+    }
+    private func assertWorldInsetEdges(
+        source: EditableMesh, result: EditableMesh, transform: ObjectTransform,
+        distance: Double, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let sortedSourceIDs = [2, 3, 6, 7]
+        let loop = [2, 3, 7, 6]
+        let innerVertices = Array(result.vertices.suffix(sortedSourceIDs.count))
+        let innerBySource = Dictionary(uniqueKeysWithValues: zip(sortedSourceIDs, innerVertices).map {
+            ($0.0, double(transform.worldPosition(fromLocal: $0.1.position)))
+        })
+        let sourceByID = Dictionary(uniqueKeysWithValues: loop.map {
+            ($0, double(transform.worldPosition(fromLocal: source.vertices[$0].position)))
+        })
+        let magnitude = sourceByID.values.reduce(0.0) { partial, point in
+            max(partial, max(abs(point.x), max(abs(point.y), abs(point.z))))
+        }
+        let tolerance = max(
+            max(magnitude * Double(Float.ulpOfOne) * 12, distance * 1.0e-4), 1.0e-5)
+        for index in loop.indices {
+            let current = loop[index], next = loop[(index + 1) % loop.count]
+            let sourceA = sourceByID[current]!, sourceB = sourceByID[next]!
+            let innerA = innerBySource[current]!, innerB = innerBySource[next]!
+            let sourceDirection = simd_normalize(sourceB - sourceA)
+            let innerDirection = simd_normalize(innerB - innerA)
+            XCTAssertEqual(simd_dot(sourceDirection, innerDirection), 1,
+                           accuracy: tolerance / max(simd_length(sourceB - sourceA), 1),
+                           file: file, line: line)
+            let measured = simd_length(simd_cross(innerA - sourceA, sourceDirection))
+            XCTAssertEqual(measured, distance, accuracy: tolerance, file: file, line: line)
+        }
+    }
+    private func worldBounds(of mesh: EditableMesh, transform: ObjectTransform) -> AxisAlignedBoundingBox {
+        var bounds = AxisAlignedBoundingBox()
+        for vertex in mesh.vertices { bounds.include(transform.worldPosition(fromLocal: vertex.position)) }
+        return bounds
+    }
+    private func double(_ value: SIMD3<Float>) -> SIMD3<Double> {
+        SIMD3<Double>(Double(value.x), Double(value.y), Double(value.z))
+    }
+    private func waitForWriteCount(
+        _ expected: Int, coordinator: ProjectAutosaveCoordinator,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        for _ in 0..<10_000 {
+            if await coordinator.successfulWriteCount == expected { return }
+            await Task.yield()
+        }
+        let actual = await coordinator.successfulWriteCount
+        XCTAssertEqual(actual, expected, file: file, line: line)
     }
     private func selection(_ mesh: EditableMesh, faces: [Int]) throws -> FaceSelection {
         var value = try FaceSelection(sourceTopologyID: mesh.runtime.topologyID,
@@ -393,4 +687,8 @@ final class FaceInsetTests: XCTestCase {
         XCTAssertEqual(actual.y, expected.y, accuracy: accuracy, file: file, line: line)
         XCTAssertEqual(actual.z, expected.z, accuracy: accuracy, file: file, line: line)
     }
+}
+
+private struct FaceInsetImmediateScheduler: AutosaveDelayScheduler {
+    func wait(nanoseconds: UInt64) async throws { try Task.checkCancellation() }
 }

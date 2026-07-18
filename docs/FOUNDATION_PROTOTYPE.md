@@ -151,9 +151,9 @@ Face Select panelの`Extrude…`は、共有edgeで接続された選択componen
 
 ## Face Inset foundation
 
-Face InsetはFace Selectionのshared-edge componentをworld-spaceへ投影し、positive millimeter widthのconstant-width inner boundaryとring triangleを生成する。初版はplanar、simple、strictly convex、single-loop、disk topologyのcomponentだけを許可し、concave、hole、multiple loop、non-planar、collapse、unsafe miterを明示的に拒否する。boundary頂点をoffsetし、選択内点は同じ位置でcomponentごとに複製する。
+Face InsetはFace Selectionのshared-edge componentをworld-spaceへ投影し、positive millimeter widthのconstant-width inner boundaryとring triangleを生成する。初版はplanar、simple、strictly convex、single-loop、disk topologyのcomponentだけを許可し、concave、hole、multiple loop、non-planar、collapse、unsafe miterを明示的に拒否する。boundary頂点をoffsetし、選択内点は同じ位置でcomponentごとに複製する。local Floatへの格納後にworldへ戻した実座標でedge距離、strict interior、inner edge交差、triangle overlap／fold-over、area充填、preview boundsを再検証する。pairwise交差検査はcomponentごとに8,000,000 pairを安全上限とする。
 
-preview source identity、prepared／nonthrowing commit、全mesh validation、fresh topology、normal／adjacency／BVH／Spatial Index再構築、ReplaceMeshCommand 1件、selection clear、dirty／Autosave挙動はFace Extrudeと同じ安全境界を使う。preview、Cancel、failureはWorkspace不変で、formatVersion 1には通常のresult meshだけを保存する。詳細は`FACE_INSET.md`を参照する。
+preview source identity、prepared／nonthrowing commit、全mesh validation、fresh topology、normal／adjacency／BVH／Spatial Index再構築、ReplaceMeshCommand 1件、selection clear、dirty／Autosave挙動はFace Extrudeと同じ安全境界を使う。snapshot許可flagは履歴recordの同期scopeだけで有効になる。preview、Cancel、failureはWorkspace不変で、formatVersion 1には通常のresult meshだけを保存する。詳細は`FACE_INSET.md`を参照する。
 
 ## 実機検証項目
 
