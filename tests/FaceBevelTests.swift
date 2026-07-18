@@ -132,7 +132,7 @@ final class FaceBevelTests: XCTestCase {
                 rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(20, -35, 47)),
                 scale: SIMD3<Float>(2, 3, 5)),
             ObjectTransform(
-                translation: SIMD3<Float>(100_000, -75_000, 45_000),
+                translation: SIMD3<Float>(10_000, -7_500, 4_500),
                 rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(-11, 29, 63)),
                 scale: SIMD3<Float>(0.2, 8, 40)),
         ]

@@ -386,8 +386,10 @@ final class FaceInsetTests: XCTestCase {
     func testResultOrderingAndFingerprintAreDeterministic() throws {
         let cube = try PrimitiveMeshBuilder.cube(size: 2)
         let selected = try selection(cube, faces: [10, 11])
-        let first = try FaceInset.inset(mesh: cube, selection: selected, transform: .identity, options: options())
-        let second = try FaceInset.inset(mesh: cube, selection: selected, transform: .identity, options: options())
+        let first = try FaceInset.inset(
+            mesh: cube, selection: selected, transform: .identity, options: options(0.5))
+        let second = try FaceInset.inset(
+            mesh: cube, selection: selected, transform: .identity, options: options(0.5))
         XCTAssertEqual(first, second)
         XCTAssertEqual(first.analysisFingerprint, second.analysisFingerprint)
         XCTAssertEqual(Array(first.mesh.indices.prefix(30)), Array(cube.indices.prefix(30)))
