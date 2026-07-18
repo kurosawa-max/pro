@@ -47,10 +47,12 @@ struct FaceSelectionPanel: View {
     }
 
     private var summaryColumns: [GridItem] {
-        [GridItem(.adaptive(
-            minimum: FaceSelectionPanelLayout.summaryMinimumWidth(
+        [GridItem(
+            .adaptive(minimum: FaceSelectionPanelLayout.summaryMinimumWidth(
                 accessibilityText: dynamicTypeSize.isAccessibilitySize)),
-            spacing: 8), alignment: .leading)]
+            spacing: 8,
+            alignment: .leading
+        )]
     }
 
     private var operationPicker: some View {
