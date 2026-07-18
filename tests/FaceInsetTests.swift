@@ -76,14 +76,6 @@ final class FaceInsetTests: XCTestCase {
             points([(0, 0), (3, 0), (1, 1), (3, 3), (0, 3)]))) {
             XCTAssertEqual($0 as? FaceInsetError, .nonConvexBoundary)
         }
-        XCTAssertThrowsError(try FaceInset.estimate(
-            mesh: cube, selection: try selection(cube, faces: Array(0..<8)),
-            transform: .identity, options: options())) {
-            XCTAssertEqual($0 as? FaceInsetError, .multipleBoundaryLoops)
-        }
-        XCTAssertThrowsError(try FaceInset.estimate(
-            mesh: cube, selection: try selection(cube, faces: Array(0..<12)),
-            transform: .identity, options: options()))
         XCTAssertThrowsError(try FaceInset.validateStrictlyConvexSimplePolygon(
             points([(0, 0), (3, 3), (0, 3), (3, 0)])))
     }
@@ -166,6 +158,14 @@ final class FaceInsetTests: XCTestCase {
             points([(0, 0), (3, 0), (1, 1), (3, 3), (0, 3)]))) {
             XCTAssertEqual($0 as? FaceInsetError, .nonConvexBoundary)
         }
+        XCTAssertThrowsError(try FaceInset.estimate(
+            mesh: cube, selection: try selection(cube, faces: Array(0..<8)),
+            transform: .identity, options: options())) {
+            XCTAssertEqual($0 as? FaceInsetError, .multipleBoundaryLoops)
+        }
+        XCTAssertThrowsError(try FaceInset.estimate(
+            mesh: cube, selection: try selection(cube, faces: Array(0..<12)),
+            transform: .identity, options: options()))
         let nonManifold = mesh([
             SIMD3(0, 0, 0), SIMD3(2, 0, 0), SIMD3(0, 2, 0), SIMD3(0, -2, 0), SIMD3(0, 0, 2)
         ], [0, 1, 2, 1, 0, 3, 0, 1, 4])
