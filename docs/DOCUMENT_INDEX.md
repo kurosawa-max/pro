@@ -11,4 +11,5 @@
 - `MESH_CLEANUP.md` — preview必須の限定Cleanup、index remap、Undo、runtime再構築
 - `AUTOSAVE_RECOVERY.md` — dirty generation、debounce、atomic Recovery、起動時復旧、Save／Load整合
 - `FACE_SELECTION.md` — triangle face identity、dense bitset、BVH picking、connected selection、Metal overlay
+- `FACE_EXTRUDE.md` — manifold face patchのworld-mm extrusion、preview、atomic topology install、Undo
 - `adr/` — 重要な設計判断

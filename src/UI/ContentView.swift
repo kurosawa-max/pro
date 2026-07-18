@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var showPrimitiveCreator = false
     @State private var showSubdivision = false
     @State private var showMeshDiagnostics = false
+    @State private var showFaceExtrude = false
     @State private var projectExport = ForgeFile(data: Data())
     @State private var stlExport = STLFile(data: Data())
     @State private var stlImportResult: STLImportResult?
@@ -53,7 +54,7 @@ struct ContentView: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if model.interactionMode == .faceSelect {
-                    FaceSelectionPanel(model: model)
+                    FaceSelectionPanel(model: model, onExtrude: beginFaceExtrude)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding(.horizontal, 8)
                         .padding(.bottom, 4)
@@ -145,6 +146,9 @@ struct ContentView: View {
         .sheet(isPresented: $showPrimitiveCreator) { PrimitiveCreationView(model: model) }
         .sheet(isPresented: $showSubdivision) { MeshSubdivisionView(model: model) }
         .sheet(isPresented: $showMeshDiagnostics) { MeshDiagnosticsView(model: model) }
+        .sheet(isPresented: $showFaceExtrude, onDismiss: { model.discardFaceExtrudePreview() }) {
+            FaceExtrudeView(model: model)
+        }
         .sheet(isPresented: $showSTLImportConfirmation, onDismiss: { stlImportResult = nil }) {
             if let stlImportResult {
                 STLImportView(model: model, result: stlImportResult, fileName: stlImportFileName)
@@ -190,6 +194,7 @@ struct ContentView: View {
         showImporter || showSTLImporter || showSTLImportConfirmation
             || showProjectExporter || showSTLExporter || showSTLOptions
             || showPrimitiveCreator || showSubdivision || showMeshDiagnostics
+            || showFaceExtrude
             || confirmsOpeningWithUnsavedChanges || model.isRecoveryPromptPresented
     }
 
@@ -267,6 +272,15 @@ struct ContentView: View {
     private func beginSTLExport() {
         do { try model.prepareForSTLExport(); showSTLOptions = true }
         catch { model.status = "Export failed: \(error.localizedDescription)" }
+    }
+
+    private func beginFaceExtrude() {
+        do {
+            try model.prepareForFaceExtrude()
+            showFaceExtrude = true
+        } catch {
+            model.status = "Extrude unavailable: \(error.localizedDescription)"
+        }
     }
 
     private func previewSTLImport(_ selection: Result<URL, Error>) {
