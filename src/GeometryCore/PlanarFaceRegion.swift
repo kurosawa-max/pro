@@ -79,8 +79,15 @@ enum PlanarFaceRegionGeometry {
             guard miter <= maximumMiterRatio else { throw FaceInsetError.excessiveMiter }
             result.append(point)
         }
-        try validateStrictlyConvexSimplePolygon(
-            result, areaEpsilon: areaEpsilon, lengthEpsilon: lengthEpsilon)
+        do {
+            try validateStrictlyConvexSimplePolygon(
+                result, areaEpsilon: areaEpsilon, lengthEpsilon: lengthEpsilon)
+        } catch {
+            // The source polygon was already proven strictly convex. A failed
+            // result polygon therefore represents offset collapse, not a new
+            // source-boundary classification.
+            throw FaceInsetError.collapsedInset
+        }
         let sourceArea = signedArea(polygon)
         let resultArea = signedArea(result)
         guard resultArea > areaEpsilon, resultArea < sourceArea - areaEpsilon else {

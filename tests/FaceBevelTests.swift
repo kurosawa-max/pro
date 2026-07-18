@@ -112,11 +112,12 @@ final class FaceBevelTests: XCTestCase {
     }
 
     func testLargeValidWidthOnLargeRegionIsAccepted() throws {
-        let source = try PrimitiveMeshBuilder.cube(size: 4_000)
+        let source = try PrimitiveMeshBuilder.cube(size: 1_000)
+        let transform = ObjectTransform(scale: SIMD3<Float>(repeating: 4))
         let estimate = try FaceBevel.estimate(
             mesh: source,
             selection: try selection(source, faces: [10, 11]),
-            transform: .identity,
+            transform: transform,
             options: options(width: 1_000, height: 1))
         XCTAssertEqual(estimate.innerAreaSquareMillimeters, 4_000_000, accuracy: 0.1)
     }
@@ -154,7 +155,7 @@ final class FaceBevelTests: XCTestCase {
         let source = try PrimitiveMeshBuilder.cube(size: 4)
         let result = try FaceBevel.bevel(
             mesh: source,
-            selection: try selection(source, faces: [0, 1, 10, 11]),
+            selection: try selection(source, faces: [0, 1, 2, 3]),
             transform: .identity,
             options: options(width: 0.5, height: 0.25))
         XCTAssertEqual(result.estimate.componentCount, 2)
