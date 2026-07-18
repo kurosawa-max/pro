@@ -281,7 +281,10 @@ final class FaceInsetTests: XCTestCase {
         XCTAssertEqual(touching.estimate.addedInsetVertexCount, 6)
         XCTAssertEqual(touching.mesh.vertices.filter {
             $0.position == cube.vertices[0].position
-        }.count, 2)
+        }.count, 1)
+        let firstSharedVertexDuplicate = touching.mesh.vertices[8].position
+        let secondSharedVertexDuplicate = touching.mesh.vertices[11].position
+        XCTAssertNotEqual(firstSharedVertexDuplicate, secondSharedVertexDuplicate)
         XCTAssertEqual(MeshTopologyDiagnostics.analyze(touching.mesh).duplicateTriangleCount, 0)
     }
 
