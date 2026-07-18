@@ -3,6 +3,7 @@ import SwiftUI
 struct FaceSelectionPanel: View {
     @ObservedObject var model: WorkspaceModel
     var onExtrude: () -> Void = {}
+    var onInset: () -> Void = {}
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -107,6 +108,10 @@ struct FaceSelectionPanel: View {
             Button("Extrude…", systemImage: "square.3.layers.3d") { onExtrude() }
                 .disabled(!model.canBeginFaceExtrude)
                 .accessibilityHint("Preview a world-space millimeter extrusion of the selected face region")
+                .frame(maxWidth: .infinity)
+            Button("Inset…", systemImage: "square.dashed.inset.filled") { onInset() }
+                .disabled(!model.canBeginFaceInset)
+                .accessibilityHint("Preview a constant-width inset of the selected planar face region")
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)

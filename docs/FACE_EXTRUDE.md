@@ -60,4 +60,4 @@ Analysis and mesh construction are synchronous on MainActor after a yield that g
 
 ## Known limitations
 
-Self-intersection and collision detection are not implemented. The conservative whole-mesh validation can reject a selection because of a distant degenerate, duplicate, invalid, or non-finite element. Open-boundary extrusion, whole-shell extrusion, individual-face direction mode, inset, bevel, taper, twist, snapping, interactive extrusion gizmos, multiple objects, material/UV handling, and automatic repair are outside this version.
+Self-intersection and collision detection are not implemented. The conservative whole-mesh validation can reject a selection because of a distant degenerate, duplicate, invalid, or non-finite element. Open-boundary extrusion, whole-shell extrusion, individual-face direction mode, bevel, taper, twist, snapping, interactive extrusion gizmos, multiple objects, material/UV handling, and automatic repair are outside this version. The separate planar convex Face Inset operation is described in `FACE_INSET.md`.

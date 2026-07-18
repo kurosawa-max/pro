@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var showSubdivision = false
     @State private var showMeshDiagnostics = false
     @State private var showFaceExtrude = false
+    @State private var showFaceInset = false
     @State private var projectExport = ForgeFile(data: Data())
     @State private var stlExport = STLFile(data: Data())
     @State private var stlImportResult: STLImportResult?
@@ -54,7 +55,7 @@ struct ContentView: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if model.interactionMode == .faceSelect {
-                    FaceSelectionPanel(model: model, onExtrude: beginFaceExtrude)
+                    FaceSelectionPanel(model: model, onExtrude: beginFaceExtrude, onInset: beginFaceInset)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding(.horizontal, 8)
                         .padding(.bottom, 4)
@@ -149,6 +150,9 @@ struct ContentView: View {
         .sheet(isPresented: $showFaceExtrude, onDismiss: { model.discardFaceExtrudePreview() }) {
             FaceExtrudeView(model: model)
         }
+        .sheet(isPresented: $showFaceInset, onDismiss: { model.discardFaceInsetPreview() }) {
+            FaceInsetView(model: model)
+        }
         .sheet(isPresented: $showSTLImportConfirmation, onDismiss: { stlImportResult = nil }) {
             if let stlImportResult {
                 STLImportView(model: model, result: stlImportResult, fileName: stlImportFileName)
@@ -194,7 +198,7 @@ struct ContentView: View {
         showImporter || showSTLImporter || showSTLImportConfirmation
             || showProjectExporter || showSTLExporter || showSTLOptions
             || showPrimitiveCreator || showSubdivision || showMeshDiagnostics
-            || showFaceExtrude
+            || showFaceExtrude || showFaceInset
             || confirmsOpeningWithUnsavedChanges || model.isRecoveryPromptPresented
     }
 
@@ -280,6 +284,15 @@ struct ContentView: View {
             showFaceExtrude = true
         } catch {
             model.status = "Extrude unavailable: \(error.localizedDescription)"
+        }
+    }
+
+    private func beginFaceInset() {
+        do {
+            try model.prepareForFaceInset()
+            showFaceInset = true
+        } catch {
+            model.status = "Inset unavailable: \(error.localizedDescription)"
         }
     }
 
