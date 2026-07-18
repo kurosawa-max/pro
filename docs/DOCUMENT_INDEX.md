@@ -13,4 +13,5 @@
 - `FACE_SELECTION.md` — triangle face identity、dense bitset、BVH picking、connected selection、Metal overlay
 - `FACE_EXTRUDE.md` — manifold face patchのworld-mm extrusion、preview、atomic topology install、Undo
 - `FACE_INSET.md` — planar convex single-loop face patchのconstant-width world-mm inset、preview、atomic install
+- `FACE_BEVEL.md` — planar convex single-loop face patchのworld-mm chamfer、preview、atomic install
 - `adr/` — 重要な設計判断

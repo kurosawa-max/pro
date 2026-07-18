@@ -62,6 +62,9 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var isFaceInsetRunning = false
     @Published private(set) var faceInsetPreview: FaceInsetPreview? = nil
     @Published private(set) var faceInsetError: String? = nil
+    @Published private(set) var isFaceBevelRunning = false
+    @Published private(set) var faceBevelPreview: FaceBevelPreview? = nil
+    @Published private(set) var faceBevelError: String? = nil
     @Published private(set) var saveState = ProjectSaveState.saved
     @Published private(set) var recoveryDescriptor: RecoveryDescriptor?
     @Published private(set) var recoveryInspectionError: String?
@@ -103,6 +106,10 @@ final class WorkspaceModel: ObservableObject {
     private var faceSelectionTask: Task<Void, Never>?
     private var faceSelectionTaskID: UUID?
 
+    private var isFaceTopologyEditRunning: Bool {
+        isFaceExtrudeRunning || isFaceInsetRunning || isFaceBevelRunning
+    }
+
     private struct PreparedFaceExtrudeCommit {
         let result: FaceExtrudeResult
         let before: WorkspaceMeshSnapshot
@@ -111,6 +118,12 @@ final class WorkspaceModel: ObservableObject {
 
     private struct PreparedFaceInsetCommit {
         let result: FaceInsetResult
+        let before: WorkspaceMeshSnapshot
+        let pickingIndex: MeshBVH
+    }
+
+    private struct PreparedFaceBevelCommit {
+        let result: FaceBevelResult
         let before: WorkspaceMeshSnapshot
         let pickingIndex: MeshBVH
     }
@@ -227,7 +240,8 @@ final class WorkspaceModel: ObservableObject {
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
-              (!isFaceExtrudeRunning && !isFaceInsetRunning) || isTopologyEditSnapshotSafe else {
+              (!isFaceExtrudeRunning && !isFaceInsetRunning && !isFaceBevelRunning)
+                || isTopologyEditSnapshotSafe else {
             throw WorkspaceError.activeEditInProgress
         }
         return ProjectAutosaveSnapshot(project: currentProject,
@@ -492,6 +506,7 @@ final class WorkspaceModel: ObservableObject {
               !isMeshCleanupRunning,
               !isFaceExtrudeRunning,
               !isFaceInsetRunning,
+              !isFaceBevelRunning,
               !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { return false }
         #if DEBUG
@@ -514,6 +529,7 @@ final class WorkspaceModel: ObservableObject {
               !isMeshCleanupRunning,
               !isFaceExtrudeRunning,
               !isFaceInsetRunning,
+              !isFaceBevelRunning,
               !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { return false }
         #if DEBUG
@@ -536,6 +552,30 @@ final class WorkspaceModel: ObservableObject {
               !isMeshCleanupRunning,
               !isFaceExtrudeRunning,
               !isFaceInsetRunning,
+              !isFaceBevelRunning,
+              !isRecoveryOperationInProgress,
+              !isRecoveryPromptPresented else { return false }
+        #if DEBUG
+        return !isBenchmarkRunning
+        #else
+        return true
+        #endif
+    }
+
+    var canBeginFaceBevel: Bool {
+        guard interactionMode == .faceSelect,
+              faceSelection.matches(mesh),
+              faceSelection.selectedCount > 0,
+              !isFaceSelectionProcessing,
+              !isStrokeActive,
+              !isGizmoDragging,
+              !isTransformPanelEditing,
+              !isSTLImporting,
+              !isMeshDiagnosticsRunning,
+              !isMeshCleanupRunning,
+              !isFaceExtrudeRunning,
+              !isFaceInsetRunning,
+              !isFaceBevelRunning,
               !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { return false }
         #if DEBUG
@@ -556,6 +596,7 @@ final class WorkspaceModel: ObservableObject {
         cancelFaceSelectionProcessing()
         discardFaceExtrudePreview()
         discardFaceInsetPreview()
+        discardFaceBevelPreview()
         hoverLocation = nil
         interactionMode = mode
         faceSelectionError = nil
@@ -753,7 +794,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceExtrudeRunning, !isFaceInsetRunning else { throw FaceExtrudeError.operationInProgress }
+        guard !isFaceTopologyEditRunning else { throw FaceExtrudeError.operationInProgress }
         guard interactionMode == .faceSelect,
               faceSelection.matches(mesh), faceSelection.selectedCount > 0,
               !isSTLImporting, !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -769,6 +810,8 @@ final class WorkspaceModel: ObservableObject {
         faceExtrudeError = nil
         faceInsetPreview = nil
         faceInsetError = nil
+        faceBevelPreview = nil
+        faceBevelError = nil
     }
 
     @discardableResult
@@ -776,7 +819,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceExtrudeRunning, !isFaceInsetRunning else { throw FaceExtrudeError.operationInProgress }
+        guard !isFaceTopologyEditRunning else { throw FaceExtrudeError.operationInProgress }
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
               !isFaceSelectionProcessing, !isSTLImporting,
               !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -826,7 +869,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceExtrudeRunning, !isFaceInsetRunning else { throw FaceExtrudeError.operationInProgress }
+        guard !isFaceTopologyEditRunning else { throw FaceExtrudeError.operationInProgress }
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
               !isFaceSelectionProcessing, !isSTLImporting,
               !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -919,7 +962,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceInsetRunning, !isFaceExtrudeRunning else { throw FaceInsetError.operationInProgress }
+        guard !isFaceTopologyEditRunning else { throw FaceInsetError.operationInProgress }
         guard interactionMode == .faceSelect,
               faceSelection.matches(mesh), faceSelection.selectedCount > 0,
               !isSTLImporting, !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -935,6 +978,8 @@ final class WorkspaceModel: ObservableObject {
         faceExtrudeError = nil
         faceInsetPreview = nil
         faceInsetError = nil
+        faceBevelPreview = nil
+        faceBevelError = nil
     }
 
     @discardableResult
@@ -942,7 +987,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceInsetRunning, !isFaceExtrudeRunning else { throw FaceInsetError.operationInProgress }
+        guard !isFaceTopologyEditRunning else { throw FaceInsetError.operationInProgress }
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
               !isFaceSelectionProcessing, !isSTLImporting,
               !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -984,7 +1029,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceInsetRunning, !isFaceExtrudeRunning else { throw FaceInsetError.operationInProgress }
+        guard !isFaceTopologyEditRunning else { throw FaceInsetError.operationInProgress }
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
               !isFaceSelectionProcessing, !isSTLImporting,
               !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -1064,6 +1109,180 @@ final class WorkspaceModel: ObservableObject {
         let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
         faceInsetError = message
         status = "Inset failed: \(message)"
+    }
+
+    func prepareForFaceBevel() throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isFaceTopologyEditRunning else { throw FaceBevelError.operationInProgress }
+        guard interactionMode == .faceSelect,
+              faceSelection.matches(mesh), faceSelection.selectedCount > 0,
+              !isSTLImporting, !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw FaceBevelError.unavailable
+        }
+        cancelStroke()
+        cancelAllGizmoDrags()
+        commitTransformPanelTransaction()
+        cancelFaceSelectionProcessing()
+        hoverLocation = nil
+        faceExtrudePreview = nil
+        faceExtrudeError = nil
+        faceInsetPreview = nil
+        faceInsetError = nil
+        faceBevelPreview = nil
+        faceBevelError = nil
+    }
+
+    @discardableResult
+    func previewFaceBevel(options: FaceBevelOptions) throws -> FaceBevelPreview {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isFaceTopologyEditRunning else { throw FaceBevelError.operationInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw FaceBevelError.activeEdit
+        }
+        faceBevelPreview = nil
+        faceBevelError = nil
+        isFaceBevelRunning = true
+        defer { isFaceBevelRunning = false }
+        do {
+            let preview = try FaceBevel.makePreview(
+                mesh: mesh,
+                selection: faceSelection,
+                transform: objectTransform,
+                options: options,
+                meshChangeVersion: topologyEditMeshChangeVersion,
+                transformChangeVersion: topologyEditTransformChangeVersion)
+            faceBevelPreview = preview
+            return preview
+        } catch {
+            reportFaceBevelError(error)
+            throw error
+        }
+    }
+
+    var isFaceBevelPreviewStale: Bool {
+        guard let preview = faceBevelPreview else { return false }
+        return !isFaceBevelPreviewCurrent(preview)
+    }
+
+    func isFaceBevelPreviewCurrent(_ preview: FaceBevelPreview) -> Bool {
+        faceBevelPreview == preview && preview.source.matches(
+            mesh: mesh,
+            selection: faceSelection,
+            transform: objectTransform,
+            meshChangeVersion: topologyEditMeshChangeVersion,
+            transformChangeVersion: topologyEditTransformChangeVersion,
+            options: preview.options)
+    }
+
+    @discardableResult
+    func applyFaceBevel(preview: FaceBevelPreview) throws -> FaceBevelResult {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isFaceTopologyEditRunning else { throw FaceBevelError.operationInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw FaceBevelError.activeEdit
+        }
+        guard faceBevelPreview == preview,
+              preview.source.matches(
+                mesh: mesh,
+                selection: faceSelection,
+                transform: objectTransform,
+                meshChangeVersion: topologyEditMeshChangeVersion,
+                transformChangeVersion: topologyEditTransformChangeVersion,
+                options: preview.options) else {
+            throw FaceBevelError.stalePreview
+        }
+
+        isFaceBevelRunning = true
+        defer { isFaceBevelRunning = false }
+        do {
+            let prepared = try prepareFaceBevelCommit(preview: preview)
+            return commitFaceBevel(prepared, options: preview.options)
+        } catch {
+            reportFaceBevelError(error)
+            throw error
+        }
+    }
+
+    private func prepareFaceBevelCommit(
+        preview: FaceBevelPreview
+    ) throws -> PreparedFaceBevelCommit {
+        let result = try FaceBevel.bevel(
+            mesh: mesh,
+            selection: faceSelection,
+            transform: objectTransform,
+            options: preview.options)
+        guard result.estimate == preview.estimate,
+              result.analysisFingerprint == preview.source.analysisFingerprint else {
+            throw FaceBevelError.stalePreview
+        }
+        return PreparedFaceBevelCommit(
+            result: result,
+            before: workspaceSnapshot,
+            pickingIndex: try pickingCache.makeIndex(for: result.mesh))
+    }
+
+    private func commitFaceBevel(
+        _ prepared: PreparedFaceBevelCommit,
+        options: FaceBevelOptions
+    ) -> FaceBevelResult {
+        // Geometry, validation, bounds, and BVH preparation must remain in the
+        // throwing prepared phase. History recording is currently nonthrowing;
+        // a fallible replacement must be preflighted or gain rollback first.
+        let result = prepared.result
+        mesh = result.mesh
+        hoverLocation = nil
+        #if DEBUG
+        benchmarkPreset = nil
+        #endif
+        profiler?.updateMeshCounts(
+            vertexCount: mesh.vertices.count,
+            triangleCount: mesh.indices.count / 3)
+        pickingCache.install(prepared.pickingIndex, for: mesh)
+        sculptSpatialIndex.prepare(for: mesh)
+        let command = ReplaceMeshCommand(before: prepared.before, after: workspaceSnapshot)
+        recordFaceBevelReplacement(command)
+        clearMeshDiagnostics()
+        faceExtrudePreview = nil
+        faceExtrudeError = nil
+        faceInsetPreview = nil
+        faceInsetError = nil
+        faceBevelPreview = nil
+        faceBevelError = nil
+        status = "Beveled \(result.estimate.selectedFaceCount) faces: "
+            + "\(options.widthMillimeters) mm width, \(options.heightMillimeters) mm height"
+        return result
+    }
+
+    private func recordFaceBevelReplacement(_ command: ReplaceMeshCommand) {
+        precondition(isFaceBevelRunning)
+        isTopologyEditSnapshotSafe = true
+        defer { isTopologyEditSnapshotSafe = false }
+        record(.replaceMesh(command))
+    }
+
+    func discardFaceBevelPreview() {
+        guard !isFaceBevelRunning else { return }
+        faceBevelPreview = nil
+        faceBevelError = nil
+    }
+
+    private func reportFaceBevelError(_ error: Error) {
+        let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        faceBevelError = message
+        status = "Bevel failed: \(message)"
     }
 
     func previewMeshCleanup(options: MeshCleanupOptions) throws -> MeshCleanupPreview {
@@ -1536,6 +1755,8 @@ final class WorkspaceModel: ObservableObject {
             faceExtrudeError = nil
             faceInsetPreview = nil
             faceInsetError = nil
+            faceBevelPreview = nil
+            faceBevelError = nil
             mesh = snapshot.mesh
             objectTransform = snapshot.transform.sanitized()
             camera = snapshot.camera
@@ -1571,6 +1792,8 @@ final class WorkspaceModel: ObservableObject {
         faceExtrudeError = nil
         faceInsetPreview = nil
         faceInsetError = nil
+        faceBevelPreview = nil
+        faceBevelError = nil
         let triangleCount = mesh.indices.count.isMultiple(of: 3) ? mesh.indices.count / 3 : -1
         do {
             faceSelection = try FaceSelection(
@@ -1629,6 +1852,7 @@ final class WorkspaceModel: ObservableObject {
     #if DEBUG
     var isFaceExtrudeSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var isFaceInsetSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
+    var isFaceBevelSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var pickingCacheHasIndexForTesting: Bool { pickingCache.bvh != nil }
     var pickingCacheTopologyIDForTesting: UUID? { pickingCache.topologyID }
     #endif

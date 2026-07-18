@@ -162,28 +162,13 @@ enum FaceInsetError: Error, Equatable, LocalizedError {
     }
 }
 
-struct FaceInsetPoint2D: Equatable {
-    var x: Double
-    var y: Double
-
-    static func +(lhs: Self, rhs: Self) -> Self { Self(x: lhs.x + rhs.x, y: lhs.y + rhs.y) }
-    static func -(lhs: Self, rhs: Self) -> Self { Self(x: lhs.x - rhs.x, y: lhs.y - rhs.y) }
-    static func *(lhs: Self, rhs: Double) -> Self { Self(x: lhs.x * rhs, y: lhs.y * rhs) }
-}
-
-struct FaceInsetBasis: Equatable {
-    let u: SIMD3<Double>
-    let v: SIMD3<Double>
-    let normal: SIMD3<Double>
-}
-
 enum FaceInset {
     static let maximumVertices = MeshCleanup.maximumVertices
     static let maximumTriangles = MeshCleanup.maximumTriangles
     static let maximumSelectedFaces = FaceSelectionConnectivity.maximumTriangleCount
     static let maximumWorkingBytes = MeshCleanup.maximumWorkingBytes
-    static let maximumMiterRatio = 100.0
-    static let maximumInnerIntersectionPairChecks = 8_000_000
+    static let maximumMiterRatio = PlanarFaceRegionGeometry.maximumMiterRatio
+    static let maximumInnerIntersectionPairChecks = PlanarFaceRegionGeometry.maximumIntersectionPairChecks
 
     static func makePreview(
         mesh: EditableMesh,
@@ -193,7 +178,9 @@ enum FaceInset {
         meshChangeVersion: TopologyEditChangeVersion,
         transformChangeVersion: TopologyEditChangeVersion
     ) throws -> FaceInsetPreview {
-        let plan = try makePlan(mesh: mesh, selection: selection, transform: transform, options: options)
+        let plan = try PlanarFaceRegionAnalyzer.analyze(
+            mesh: mesh, selection: selection, transform: transform,
+            widthMillimeters: options.distanceMillimeters)
         return FaceInsetPreview(
             options: options,
             estimate: plan.estimate,
@@ -221,7 +208,9 @@ enum FaceInset {
         transform: ObjectTransform,
         options: FaceInsetOptions
     ) throws -> FaceInsetEstimate {
-        try makePlan(mesh: mesh, selection: selection, transform: transform, options: options).estimate
+        try PlanarFaceRegionAnalyzer.analyze(
+            mesh: mesh, selection: selection, transform: transform,
+            widthMillimeters: options.distanceMillimeters).estimate
     }
 
     static func inset(
@@ -230,282 +219,50 @@ enum FaceInset {
         transform: ObjectTransform,
         options: FaceInsetOptions
     ) throws -> FaceInsetResult {
-        let plan = try makePlan(mesh: mesh, selection: selection, transform: transform, options: options)
-        var originalRemap = Array<UInt32?>(repeating: nil, count: mesh.vertices.count)
-        var resultVertices: [MeshVertex] = []
-        resultVertices.reserveCapacity(plan.estimate.resultingVertexCount)
-        for vertexID in mesh.vertices.indices where plan.referencedOriginalVertices[vertexID] {
-            guard resultVertices.count < Int(UInt32.max) else { throw FaceInsetError.indexOverflow }
-            originalRemap[vertexID] = UInt32(resultVertices.count)
-            resultVertices.append(mesh.vertices[vertexID])
-        }
-
-        var insetRemap: [InsetVertexKey: UInt32] = [:]
-        insetRemap.reserveCapacity(plan.estimate.addedInsetVertexCount)
-        for component in plan.components {
-            for (offset, vertexID) in component.originalVertexIDs.enumerated() {
-                guard resultVertices.count < Int(UInt32.max) else { throw FaceInsetError.indexOverflow }
-                insetRemap[InsetVertexKey(componentID: component.id, originalVertexID: vertexID)] = UInt32(resultVertices.count)
-                resultVertices.append(MeshVertex(position: component.insetLocalPositions[offset], normal: .zero))
-            }
-        }
-
-        var resultIndices: [UInt32] = []
-        resultIndices.reserveCapacity(try multiply(plan.estimate.resultingTriangleCount, 3))
-        for faceID in 0..<plan.originalTriangleCount where !plan.selectedFaces[faceID] {
-            for vertexID in try triangleIndices(faceID: faceID, mesh: mesh) {
-                guard let mapped = originalRemap[Int(vertexID)] else { throw FaceInsetError.validationFailed }
-                resultIndices.append(mapped)
-            }
-        }
-        for component in plan.components {
-            let loop = component.boundaryVertexIDs
-            for index in loop.indices {
-                let a = loop[index]
-                let b = loop[(index + 1) % loop.count]
-                guard let outerA = originalRemap[Int(a)], let outerB = originalRemap[Int(b)],
-                      let innerA = insetRemap[InsetVertexKey(componentID: component.id, originalVertexID: a)],
-                      let innerB = insetRemap[InsetVertexKey(componentID: component.id, originalVertexID: b)] else {
-                    throw FaceInsetError.validationFailed
-                }
-                resultIndices.append(contentsOf: [outerA, outerB, innerB, outerA, innerB, innerA])
-            }
-        }
-        for faceID in plan.selectedFaceIDs {
-            guard let componentID = plan.componentByFace[faceID] else { throw FaceInsetError.validationFailed }
-            for vertexID in try triangleIndices(faceID: faceID, mesh: mesh) {
-                guard let mapped = insetRemap[InsetVertexKey(componentID: componentID, originalVertexID: vertexID)] else {
-                    throw FaceInsetError.validationFailed
-                }
-                resultIndices.append(mapped)
-            }
-        }
-        let expectedIndexCount = try multiply(plan.estimate.resultingTriangleCount, 3)
-        guard resultVertices.count == plan.estimate.resultingVertexCount,
-              resultIndices.count == expectedIndexCount else {
-            throw FaceInsetError.validationFailed
-        }
-
-        var resultMesh = EditableMesh(vertices: resultVertices, indices: resultIndices)
-        resultMesh.recalculateNormals(recordChange: false)
-        _ = resultMesh.adjacency()
-        _ = try resultMesh.validated(maxVertices: maximumVertices, maxIndices: maximumTriangles * 3)
+        let plan = try PlanarFaceRegionAnalyzer.analyze(
+            mesh: mesh, selection: selection, transform: transform,
+            widthMillimeters: options.distanceMillimeters)
+        let resultMesh = try PlanarFaceRegionMeshBuilder.build(
+            source: mesh, analysis: plan,
+            innerLocalPositions: plan.components.map(\.insetLocalPositions))
         try validateResult(mesh: resultMesh, plan: plan)
         return FaceInsetResult(mesh: resultMesh, estimate: plan.estimate,
                                analysisFingerprint: plan.fingerprint)
     }
 
     static func deterministicBasis(normal: SIMD3<Double>) throws -> FaceInsetBasis {
-        let length = simd_length(normal)
-        guard length.isFinite, length > 1.0e-15 else { throw FaceInsetError.nonPlanarComponent }
-        let n = normal / length
-        let axes = [SIMD3<Double>(1, 0, 0), SIMD3<Double>(0, 1, 0), SIMD3<Double>(0, 0, 1)]
-        let reference = axes.enumerated().min {
-            let lhs = abs(simd_dot(n, $0.element))
-            let rhs = abs(simd_dot(n, $1.element))
-            return lhs == rhs ? $0.offset < $1.offset : lhs < rhs
-        }!.element
-        let uValue = simd_cross(reference, n)
-        let uLength = simd_length(uValue)
-        guard uLength.isFinite, uLength > 1.0e-15 else { throw FaceInsetError.nonPlanarComponent }
-        let u = uValue / uLength
-        let v = simd_cross(n, u)
-        return FaceInsetBasis(u: u, v: v, normal: n)
+        try PlanarFaceRegionGeometry.deterministicBasis(normal: normal)
     }
 
     static func insetPolygon(_ polygon: [FaceInsetPoint2D], distance: Double) throws -> [FaceInsetPoint2D] {
-        guard distance.isFinite, distance > 0, polygon.count >= 3 else { throw FaceInsetError.invalidDistance }
-        let scale = polygonScale(polygon)
-        let lengthEpsilon = max(scale * 1.0e-12, 1.0e-12)
-        let areaEpsilon = max(scale * scale * 1.0e-12, 1.0e-18)
-        try validateStrictlyConvexSimplePolygon(polygon, areaEpsilon: areaEpsilon, lengthEpsilon: lengthEpsilon)
-        var directions: [FaceInsetPoint2D] = []
-        var linePoints: [FaceInsetPoint2D] = []
-        directions.reserveCapacity(polygon.count)
-        linePoints.reserveCapacity(polygon.count)
-        for index in polygon.indices {
-            let edge = polygon[(index + 1) % polygon.count] - polygon[index]
-            let length = hypot(edge.x, edge.y)
-            guard length.isFinite, length > lengthEpsilon else { throw FaceInsetError.invalidBoundary }
-            let direction = edge * (1 / length)
-            let inward = FaceInsetPoint2D(x: -direction.y, y: direction.x)
-            directions.append(direction)
-            linePoints.append(polygon[index] + inward * distance)
-        }
-        var result: [FaceInsetPoint2D] = []
-        result.reserveCapacity(polygon.count)
-        for index in polygon.indices {
-            let previous = (index + polygon.count - 1) % polygon.count
-            let denominator = cross(directions[previous], directions[index])
-            guard denominator.isFinite, abs(denominator) > 1.0e-12 else { throw FaceInsetError.collapsedInset }
-            let t = cross(linePoints[index] - linePoints[previous], directions[index]) / denominator
-            let point = linePoints[previous] + directions[previous] * t
-            let miter = hypot(point.x - polygon[index].x, point.y - polygon[index].y) / distance
-            guard point.x.isFinite, point.y.isFinite, miter.isFinite else { throw FaceInsetError.collapsedInset }
-            guard miter <= maximumMiterRatio else { throw FaceInsetError.excessiveMiter }
-            result.append(point)
-        }
-        try validateStrictlyConvexSimplePolygon(result, areaEpsilon: areaEpsilon, lengthEpsilon: lengthEpsilon)
-        let sourceArea = signedArea(polygon)
-        let resultArea = signedArea(result)
-        guard resultArea > areaEpsilon, resultArea < sourceArea - areaEpsilon else {
-            throw FaceInsetError.collapsedInset
-        }
-        for point in result where !isInsideConvexPolygon(point, polygon: polygon, epsilon: lengthEpsilon) {
-            throw FaceInsetError.collapsedInset
-        }
-        return result
+        try PlanarFaceRegionGeometry.insetPolygon(polygon, distance: distance)
     }
 
     static func signedArea(_ polygon: [FaceInsetPoint2D]) -> Double {
-        guard polygon.count >= 3 else { return 0 }
-        return polygon.indices.reduce(0) { partial, index in
-            partial + cross(polygon[index], polygon[(index + 1) % polygon.count])
-        } * 0.5
+        PlanarFaceRegionGeometry.signedArea(polygon)
     }
 
     static func validateStrictlyConvexSimplePolygon(
         _ polygon: [FaceInsetPoint2D], areaEpsilon: Double? = nil, lengthEpsilon: Double? = nil
     ) throws {
-        guard polygon.count >= 3, polygon.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else {
-            throw FaceInsetError.invalidBoundary
-        }
-        let scale = polygonScale(polygon)
-        let lengthTolerance = lengthEpsilon ?? max(scale * 1.0e-12, 1.0e-12)
-        let areaTolerance = areaEpsilon ?? max(scale * scale * 1.0e-12, 1.0e-18)
-        guard signedArea(polygon) > areaTolerance else { throw FaceInsetError.nonConvexBoundary }
-        for index in polygon.indices {
-            let a = polygon[index]
-            let b = polygon[(index + 1) % polygon.count]
-            let c = polygon[(index + 2) % polygon.count]
-            guard hypot(b.x - a.x, b.y - a.y) > lengthTolerance,
-                  cross(b - a, c - b) > areaTolerance else { throw FaceInsetError.nonConvexBoundary }
-        }
-        for first in polygon.indices {
-            let firstNext = (first + 1) % polygon.count
-            for second in polygon.indices where second > first {
-                let secondNext = (second + 1) % polygon.count
-                if first == second || firstNext == second || secondNext == first { continue }
-                if segmentsIntersect(polygon[first], polygon[firstNext], polygon[second], polygon[secondNext],
-                                     epsilon: areaTolerance) {
-                    throw FaceInsetError.selfIntersectingBoundary
-                }
-            }
-        }
+        try PlanarFaceRegionGeometry.validateStrictlyConvexSimplePolygon(
+            polygon, areaEpsilon: areaEpsilon, lengthEpsilon: lengthEpsilon)
     }
 
     static func validateInsetEdgeDistances(
         source: [FaceInsetPoint2D], inset: [FaceInsetPoint2D],
         distance: Double, tolerance: Double
     ) throws {
-        guard source.count == inset.count, source.count >= 3,
-              distance.isFinite, distance > 0, tolerance.isFinite, tolerance >= 0 else {
-            throw FaceInsetError.validationFailed
-        }
-        for index in source.indices {
-            let sourceEdge = source[(index + 1) % source.count] - source[index]
-            let insetEdge = inset[(index + 1) % inset.count] - inset[index]
-            let sourceLength = hypot(sourceEdge.x, sourceEdge.y)
-            let insetLength = hypot(insetEdge.x, insetEdge.y)
-            guard sourceLength.isFinite, insetLength.isFinite,
-                  sourceLength > tolerance, insetLength > tolerance else {
-                throw FaceInsetError.collapsedInset
-            }
-            let sourceDirection = sourceEdge * (1 / sourceLength)
-            let insetDirection = insetEdge * (1 / insetLength)
-            let parallelError = abs(cross(sourceDirection, insetDirection))
-            let perpendicularDistance = cross(sourceDirection, inset[index] - source[index])
-            let angularTolerance = min(0.01, tolerance / max(max(sourceLength, insetLength), 1.0e-12))
-            guard parallelError <= angularTolerance,
-                  abs(perpendicularDistance - distance) <= tolerance else {
-                throw FaceInsetError.collapsedInset
-            }
-        }
+        try PlanarFaceRegionGeometry.validateInsetEdgeDistances(
+            source: source, inset: inset, distance: distance, tolerance: tolerance)
     }
 
     static func validateInnerTriangulation(
         triangles: [[UInt32]], pointsByVertex: [UInt32: FaceInsetPoint2D],
         areaEpsilon: Double
     ) throws {
-        guard areaEpsilon.isFinite, areaEpsilon >= 0 else { throw FaceInsetError.validationFailed }
-        try validatePairBudget(triangles.count)
-        var uniqueEdges: Set<DiagnosticEdgeKey> = []
-        uniqueEdges.reserveCapacity(try multiply(triangles.count, 2))
-        for triangle in triangles {
-            guard triangle.count == 3, Set(triangle).count == 3,
-                  let a = pointsByVertex[triangle[0]],
-                  let b = pointsByVertex[triangle[1]],
-                  let c = pointsByVertex[triangle[2]],
-                  cross(b - a, c - a) > areaEpsilon else {
-                throw FaceInsetError.collapsedInset
-            }
-            uniqueEdges.insert(DiagnosticEdgeKey(triangle[0], triangle[1]))
-            uniqueEdges.insert(DiagnosticEdgeKey(triangle[1], triangle[2]))
-            uniqueEdges.insert(DiagnosticEdgeKey(triangle[2], triangle[0]))
-        }
-
-        let edges = uniqueEdges.sorted {
-            $0.low == $1.low ? $0.high < $1.high : $0.low < $1.low
-        }
-        try validatePairBudget(edges.count)
-        for firstIndex in edges.indices {
-            let first = edges[firstIndex]
-            guard let a = pointsByVertex[first.low], let b = pointsByVertex[first.high] else {
-                throw FaceInsetError.validationFailed
-            }
-            for secondIndex in edges.indices where secondIndex > firstIndex {
-                let second = edges[secondIndex]
-                guard let c = pointsByVertex[second.low], let d = pointsByVertex[second.high] else {
-                    throw FaceInsetError.validationFailed
-                }
-                let shared: UInt32? = first.low == second.low || first.low == second.high
-                    ? first.low : (first.high == second.low || first.high == second.high ? first.high : nil)
-                if segmentsHaveInvalidIntersection(
-                    a: a, aID: first.low, b: b, bID: first.high,
-                    c: c, cID: second.low, d: d, dID: second.high,
-                    sharedVertexID: shared, epsilon: areaEpsilon) {
-                    throw FaceInsetError.innerTriangulationIntersection
-                }
-            }
-        }
-
-        for firstIndex in triangles.indices {
-            let first = triangles[firstIndex]
-            for secondIndex in triangles.indices where secondIndex > firstIndex {
-                let second = triangles[secondIndex]
-                let shared = Set(first).intersection(Set(second))
-                if shared.count == 3 { throw FaceInsetError.innerTriangulationIntersection }
-                if shared.count == 2 {
-                    let edge = shared.sorted()
-                    guard let a = pointsByVertex[edge[0]], let b = pointsByVertex[edge[1]],
-                          let firstThird = first.first(where: { !shared.contains($0) }).flatMap({ pointsByVertex[$0] }),
-                          let secondThird = second.first(where: { !shared.contains($0) }).flatMap({ pointsByVertex[$0] }) else {
-                        throw FaceInsetError.validationFailed
-                    }
-                    let firstSide = cross(b - a, firstThird - a)
-                    let secondSide = cross(b - a, secondThird - a)
-                    guard abs(firstSide) > areaEpsilon, abs(secondSide) > areaEpsilon,
-                          (firstSide > 0) != (secondSide > 0) else {
-                        throw FaceInsetError.innerTriangulationIntersection
-                    }
-                    continue
-                }
-                for vertexID in first where !shared.contains(vertexID) {
-                    guard let point = pointsByVertex[vertexID] else { throw FaceInsetError.validationFailed }
-                    if isStrictlyInside(point, triangle: second, pointsByVertex: pointsByVertex,
-                                        epsilon: areaEpsilon) {
-                        throw FaceInsetError.innerTriangulationIntersection
-                    }
-                }
-                for vertexID in second where !shared.contains(vertexID) {
-                    guard let point = pointsByVertex[vertexID] else { throw FaceInsetError.validationFailed }
-                    if isStrictlyInside(point, triangle: first, pointsByVertex: pointsByVertex,
-                                        epsilon: areaEpsilon) {
-                        throw FaceInsetError.innerTriangulationIntersection
-                    }
-                }
-            }
-        }
+        try PlanarFaceRegionGeometry.validateInnerTriangulation(
+            triangles: triangles, pointsByVertex: pointsByVertex, areaEpsilon: areaEpsilon)
     }
 
     static func estimatedWorkingBytes(
@@ -529,20 +286,25 @@ enum FaceInset {
         ])
     }
 
-    private struct InsetVertexKey: Hashable { let componentID: Int; let originalVertexID: UInt32 }
     private struct EdgeUse { let faceID: Int; let from: UInt32; let to: UInt32 }
     private struct EdgeRecord { var uses: [EdgeUse] = [] }
-    private struct ComponentPlan {
+    struct ComponentPlan {
         let id: Int
         let faceIDs: [Int]
         let originalVertexIDs: [UInt32]
         let boundaryVertexIDs: [UInt32]
         let insetLocalPositions: [SIMD3<Float>]
+        let basis: FaceInsetBasis
+        let planeOrigin: SIMD3<Double>
+        let sourcePolygon: [FaceInsetPoint2D]
+        let actualInsetPointByVertex: [UInt32: FaceInsetPoint2D]
+        let floatRoundTripTolerance: Double
+        let worldDiagonalLength: Double
         let originalArea: Double
         let insetArea: Double
         let maximumPlanarityDeviation: Double
     }
-    private struct Plan {
+    struct Plan {
         let originalTriangleCount: Int
         let selectedFaceIDs: [Int]
         let selectedFaces: [Bool]
@@ -557,7 +319,7 @@ enum FaceInset {
         let fingerprint: UInt64
     }
 
-    private static func makePlan(
+    static func makePlan(
         mesh: EditableMesh, selection: FaceSelection,
         transform: ObjectTransform, options: FaceInsetOptions
     ) throws -> Plan {
@@ -776,8 +538,9 @@ enum FaceInset {
                 worldBounds.diagonalLength * worldBounds.diagonalLength * 1.0e-10, 1.0e-12)
             for vertexID in componentVertices where !boundarySet.contains(vertexID) {
                 guard let point = actualInsetPointByVertex[vertexID],
-                      isInsideConvexPolygon(point, polygon: actualInsetBoundary,
-                                            epsilon: -strictInteriorAreaTolerance) else {
+                      PlanarFaceRegionGeometry.isInsideConvexPolygon(
+                        point, polygon: actualInsetBoundary,
+                        epsilon: -strictInteriorAreaTolerance) else {
                     throw FaceInsetError.interiorVertexOutsideInset
                 }
             }
@@ -791,7 +554,7 @@ enum FaceInset {
                 let a = actualInsetPointByVertex[triangle[0]]!
                 let b = actualInsetPointByVertex[triangle[1]]!
                 let c = actualInsetPointByVertex[triangle[2]]!
-                let twiceArea = cross(b - a, c - a)
+                let twiceArea = PlanarFaceRegionGeometry.cross(b - a, c - a)
                 guard twiceArea > triangleAreaEpsilon else { throw FaceInsetError.collapsedInset }
                 insetTriangleArea += twiceArea * 0.5
             }
@@ -809,6 +572,10 @@ enum FaceInset {
             components.append(ComponentPlan(
                 id: componentID, faceIDs: faces, originalVertexIDs: originalVertexIDs,
                 boundaryVertexIDs: boundary, insetLocalPositions: insetLocalPositions,
+                basis: basis, planeOrigin: origin, sourcePolygon: polygon,
+                actualInsetPointByVertex: actualInsetPointByVertex,
+                floatRoundTripTolerance: floatRoundTripTolerance,
+                worldDiagonalLength: worldBounds.diagonalLength,
                 originalArea: polygonArea, insetArea: insetArea,
                 maximumPlanarityDeviation: componentMaximumDeviation))
         }
@@ -886,23 +653,14 @@ enum FaceInset {
     }
 
     private static func validateResult(mesh: EditableMesh, plan: Plan) throws {
-        guard mesh.vertices.count == plan.estimate.resultingVertexCount,
-              mesh.indices.count / 3 == plan.estimate.resultingTriangleCount,
-              mesh.bounds == plan.resultLocalBounds else { throw FaceInsetError.validationFailed }
-        let topology = MeshTopologyDiagnostics.analyze(mesh)
-        guard !topology.hasInvalidStructure,
-              topology.invalidIndexTriangleCount == 0,
-              topology.nonFiniteVertexCount == 0,
-              topology.degenerateTriangleCount == 0,
-              topology.duplicateTriangleCount == 0,
-              topology.boundaryEdgeCount == plan.sourceBoundaryEdgeCount,
-              topology.nonManifoldEdgeCount == plan.sourceNonManifoldEdgeCount,
-              topology.inconsistentWindingEdgeCount == plan.sourceWindingConflictCount,
-              mesh.vertices.allSatisfy({ vertex in
-                  let length = simd_length(vertex.normal)
-                  return vertex.position.allFinite && vertex.normal.allFinite
-                      && length.isFinite && abs(length - 1) <= 0.000_1
-              }) else { throw FaceInsetError.validationFailed }
+        try PlanarFaceRegionMeshValidator.validate(
+            mesh: mesh,
+            expectedVertexCount: plan.estimate.resultingVertexCount,
+            expectedTriangleCount: plan.estimate.resultingTriangleCount,
+            expectedLocalBounds: plan.resultLocalBounds,
+            sourceBoundaryEdgeCount: plan.sourceBoundaryEdgeCount,
+            sourceNonManifoldEdgeCount: plan.sourceNonManifoldEdgeCount,
+            sourceWindingConflictCount: plan.sourceWindingConflictCount)
     }
 
     private static func triangleIndices(faceID: Int, mesh: EditableMesh) throws -> [UInt32] {
@@ -915,124 +673,19 @@ enum FaceInset {
     }
 
     private static func worldPosition(_ local: SIMD3<Float>, matrix: simd_float4x4) throws -> SIMD3<Double> {
-        let value = matrix * SIMD4<Float>(local, 1)
-        guard value.x.isFinite, value.y.isFinite, value.z.isFinite, value.w.isFinite,
-              abs(value.w) > 0.000_001 else { throw FaceInsetError.invalidTransform }
-        let point = SIMD3<Double>(Double(value.x / value.w), Double(value.y / value.w), Double(value.z / value.w))
-        guard point.x.isFinite, point.y.isFinite, point.z.isFinite else { throw FaceInsetError.nonFiniteValue }
-        return point
+        try PlanarFaceRegionGeometry.worldPosition(local, matrix: matrix)
     }
 
     private static func localPosition(_ world: SIMD3<Double>, matrix: simd_float4x4) throws -> SIMD3<Float> {
-        guard world.x.isFinite, world.y.isFinite, world.z.isFinite,
-              abs(world.x) <= Double(Float.greatestFiniteMagnitude),
-              abs(world.y) <= Double(Float.greatestFiniteMagnitude),
-              abs(world.z) <= Double(Float.greatestFiniteMagnitude) else { throw FaceInsetError.inverseTransformFailure }
-        let value = matrix * SIMD4<Float>(Float(world.x), Float(world.y), Float(world.z), 1)
-        guard value.x.isFinite, value.y.isFinite, value.z.isFinite, value.w.isFinite,
-              abs(value.w) > 0.000_001 else { throw FaceInsetError.inverseTransformFailure }
-        let result = SIMD3<Float>(value.x, value.y, value.z) / value.w
-        guard result.allFinite else { throw FaceInsetError.inverseTransformFailure }
-        return result
+        try PlanarFaceRegionGeometry.localPosition(world, matrix: matrix)
     }
 
     private static func finiteFloatPosition(_ value: SIMD3<Double>) throws -> SIMD3<Float> {
-        guard value.x.isFinite, value.y.isFinite, value.z.isFinite,
-              abs(value.x) <= Double(Float.greatestFiniteMagnitude),
-              abs(value.y) <= Double(Float.greatestFiniteMagnitude),
-              abs(value.z) <= Double(Float.greatestFiniteMagnitude) else { throw FaceInsetError.nonFiniteValue }
-        return SIMD3<Float>(Float(value.x), Float(value.y), Float(value.z))
+        try PlanarFaceRegionGeometry.finiteFloatPosition(value)
     }
 
     private static func matrixIsFinite(_ matrix: simd_float4x4) -> Bool {
-        [matrix.columns.0, matrix.columns.1, matrix.columns.2, matrix.columns.3].allSatisfy {
-            $0.x.isFinite && $0.y.isFinite && $0.z.isFinite && $0.w.isFinite
-        }
-    }
-
-    private static func isInsideConvexPolygon(
-        _ point: FaceInsetPoint2D, polygon: [FaceInsetPoint2D], epsilon: Double
-    ) -> Bool {
-        polygon.indices.allSatisfy { index in
-            cross(polygon[(index + 1) % polygon.count] - polygon[index], point - polygon[index]) >= -epsilon
-        }
-    }
-
-    private static func segmentsIntersect(
-        _ a: FaceInsetPoint2D, _ b: FaceInsetPoint2D,
-        _ c: FaceInsetPoint2D, _ d: FaceInsetPoint2D, epsilon: Double
-    ) -> Bool {
-        let ab = b - a, cd = d - c
-        let first = cross(ab, c - a), second = cross(ab, d - a)
-        let third = cross(cd, a - c), fourth = cross(cd, b - c)
-        if ((first > epsilon && second < -epsilon) || (first < -epsilon && second > epsilon)),
-           ((third > epsilon && fourth < -epsilon) || (third < -epsilon && fourth > epsilon)) {
-            return true
-        }
-        return (abs(first) <= epsilon && pointOnSegment(c, a, b, epsilon: epsilon))
-            || (abs(second) <= epsilon && pointOnSegment(d, a, b, epsilon: epsilon))
-            || (abs(third) <= epsilon && pointOnSegment(a, c, d, epsilon: epsilon))
-            || (abs(fourth) <= epsilon && pointOnSegment(b, c, d, epsilon: epsilon))
-    }
-
-    private static func validatePairBudget(_ count: Int) throws {
-        guard count >= 0 else { throw FaceInsetError.arithmeticOverflow }
-        let pairs = try multiply(count, max(0, count - 1)) / 2
-        guard pairs <= maximumInnerIntersectionPairChecks else {
-            throw FaceInsetError.innerTriangulationLimitExceeded
-        }
-    }
-
-    private static func segmentsHaveInvalidIntersection(
-        a: FaceInsetPoint2D, aID: UInt32, b: FaceInsetPoint2D, bID: UInt32,
-        c: FaceInsetPoint2D, cID: UInt32, d: FaceInsetPoint2D, dID: UInt32,
-        sharedVertexID: UInt32?, epsilon: Double
-    ) -> Bool {
-        guard segmentsIntersect(a, b, c, d, epsilon: epsilon) else { return false }
-        guard let sharedVertexID else { return true }
-        let firstOther = aID == sharedVertexID ? b : a
-        let secondOther = cID == sharedVertexID ? d : c
-        return pointOnSegment(firstOther, c, d, epsilon: epsilon)
-            || pointOnSegment(secondOther, a, b, epsilon: epsilon)
-    }
-
-    private static func pointOnSegment(
-        _ point: FaceInsetPoint2D, _ a: FaceInsetPoint2D, _ b: FaceInsetPoint2D,
-        epsilon: Double
-    ) -> Bool {
-        let coordinateTolerance = sqrt(max(epsilon, 0))
-        return abs(cross(b - a, point - a)) <= epsilon
-            && point.x >= min(a.x, b.x) - coordinateTolerance
-            && point.x <= max(a.x, b.x) + coordinateTolerance
-            && point.y >= min(a.y, b.y) - coordinateTolerance
-            && point.y <= max(a.y, b.y) + coordinateTolerance
-    }
-
-    private static func isStrictlyInside(
-        _ point: FaceInsetPoint2D, triangle: [UInt32],
-        pointsByVertex: [UInt32: FaceInsetPoint2D], epsilon: Double
-    ) -> Bool {
-        guard triangle.count == 3,
-              let a = pointsByVertex[triangle[0]],
-              let b = pointsByVertex[triangle[1]],
-              let c = pointsByVertex[triangle[2]] else { return false }
-        return cross(b - a, point - a) > epsilon
-            && cross(c - b, point - b) > epsilon
-            && cross(a - c, point - c) > epsilon
-    }
-
-    private static func polygonScale(_ polygon: [FaceInsetPoint2D]) -> Double {
-        guard let first = polygon.first else { return 0 }
-        var minX = first.x, maxX = first.x, minY = first.y, maxY = first.y
-        for point in polygon.dropFirst() {
-            minX = min(minX, point.x); maxX = max(maxX, point.x)
-            minY = min(minY, point.y); maxY = max(maxY, point.y)
-        }
-        return max(hypot(maxX - minX, maxY - minY), 1.0e-12)
-    }
-
-    private static func cross(_ lhs: FaceInsetPoint2D, _ rhs: FaceInsetPoint2D) -> Double {
-        lhs.x * rhs.y - lhs.y * rhs.x
+        PlanarFaceRegionGeometry.matrixIsFinite(matrix)
     }
 
     private static func fingerprint(
