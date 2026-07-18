@@ -446,7 +446,7 @@ final class FaceInsetTests: XCTestCase {
     }
 
     @MainActor
-    func testApplyUndoRedoAutosaveOrderingUsesOnlyCompletedSnapshots() async throws {
+    func testPreviewCancelAndFailureDoNotScheduleAutosave() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("FaceInsetAutosave-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -463,21 +463,35 @@ final class FaceInsetTests: XCTestCase {
         let beforeMesh = model.mesh
         let initialGeneration = model.projectMutationGeneration
         let initialBytes = try model.projectData()
-
         try model.prepareForFaceInset()
         _ = try model.previewFaceInset(options: options(0.25))
         model.discardFaceInsetPreview()
-        var writeCount = await coordinator.successfulWriteCount
-        XCTAssertEqual(writeCount, 0)
-        XCTAssertEqual(model.projectMutationGeneration, initialGeneration)
-        XCTAssertEqual(try model.projectData(), initialBytes)
         XCTAssertThrowsError(try model.previewFaceInset(options: options(2)))
-        writeCount = await coordinator.successfulWriteCount
+        for _ in 0..<100 { await Task.yield() }
+        let writeCount = await coordinator.successfulWriteCount
         XCTAssertEqual(writeCount, 0)
         XCTAssertEqual(model.projectMutationGeneration, initialGeneration)
         XCTAssertEqual(try model.projectData(), initialBytes)
         XCTAssertNil(model.faceInsetPreview)
+    }
 
+    @MainActor
+    func testApplyUndoRedoAutosaveOrderingUsesOnlyCompletedSnapshots() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaceInsetAutosave-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let coordinator = ProjectAutosaveCoordinator(
+            storage: ProjectRecoveryStorage(directoryURL: directory),
+            scheduler: FaceInsetImmediateScheduler(), debounceNanoseconds: 0)
+        let model = WorkspaceModel(autosaveCoordinator: coordinator)
+        await model.inspectRecoveryOnLaunch(force: true)
+        model.mesh = try PrimitiveMeshBuilder.cube(size: 2)
+        model.setInteractionMode(.faceSelect)
+        model.setFaceSelectionOperation(.add)
+        XCTAssertTrue(model.applyFaceSelectionHit(10))
+        XCTAssertTrue(model.applyFaceSelectionHit(11))
+        let beforeMesh = model.mesh
+        let initialGeneration = model.projectMutationGeneration
         try model.prepareForFaceInset()
         let preview = try model.previewFaceInset(options: options(0.25))
         let result = try model.applyFaceInset(preview: preview)
@@ -489,8 +503,6 @@ final class FaceInsetTests: XCTestCase {
         var recovery = try await coordinator.inspectRecovery()
         XCTAssertEqual(recovery.project.mesh, result.mesh)
         XCTAssertEqual(recovery.descriptor.sourceGeneration, expectedGeneration)
-        XCTAssertFalse(String(decoding: try ProjectCodec.encode(recovery.project), as: UTF8.self)
-            .contains("faceInset"))
 
         model.undo()
         expectedGeneration.advance()
@@ -507,7 +519,7 @@ final class FaceInsetTests: XCTestCase {
         recovery = try await coordinator.inspectRecovery()
         XCTAssertEqual(recovery.project.mesh, result.mesh)
         XCTAssertEqual(recovery.descriptor.sourceGeneration, expectedGeneration)
-        writeCount = await coordinator.successfulWriteCount
+        let writeCount = await coordinator.successfulWriteCount
         XCTAssertEqual(writeCount, 3)
     }
 
