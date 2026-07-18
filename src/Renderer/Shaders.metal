@@ -23,6 +23,22 @@ fragment float4 meshFragment(VertexOut in [[stage_in]]) {
     return float4(color, 1.0);
 }
 
+struct FaceSelectionUniforms { float4x4 viewProjection; float4x4 model; };
+struct FaceSelectionVertexOut { float4 position [[position]]; };
+
+vertex FaceSelectionVertexOut faceSelectionVertex(
+    uint id [[vertex_id]],
+    constant MeshVertex *vertices [[buffer(0)]],
+    constant FaceSelectionUniforms &uniforms [[buffer(1)]]) {
+    FaceSelectionVertexOut out;
+    out.position = uniforms.viewProjection * uniforms.model * float4(vertices[id].position, 1.0);
+    return out;
+}
+
+fragment float4 faceSelectionFragment(FaceSelectionVertexOut in [[stage_in]]) {
+    return float4(1.0, 0.56, 0.08, 0.34);
+}
+
 struct GizmoVertex { float3 position; float4 color; int handle; };
 struct GizmoUniforms { float4x4 viewProjection; float3 origin; float scale; int hoverHandle; int activeHandle; };
 struct GizmoVertexOut { float4 position [[position]]; float4 color; };

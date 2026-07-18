@@ -17,6 +17,7 @@ final class WorkspaceModel: ObservableObject {
                 markMeshDiagnosticsStale()
                 if !isInstallingMeshCleanup { lastMeshCleanupSummary = nil }
             }
+            reconcileFaceSelection(previousMesh: oldValue)
         }
     }
     @Published var camera = CameraState()
@@ -30,6 +31,12 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var translationGizmoState = TranslationGizmoState()
     @Published private(set) var rotationGizmoState = RotationGizmoState()
     @Published private(set) var scaleGizmoState = ScaleGizmoState()
+    @Published private(set) var interactionMode = WorkspaceInteractionMode.sculpt
+    @Published private(set) var faceSelectionOperation = FaceSelectionOperation.replace
+    @Published private(set) var faceSelection = FaceSelection.emptyUnavailable(
+        sourceTopologyID: UUID(), sourceTopologyRevision: 0)
+    @Published private(set) var isFaceSelectionProcessing = false
+    @Published private(set) var faceSelectionError: String?
     @Published var brush = BrushKind.draw
     @Published var brushSettings = BrushSettings()
     @Published var symmetry = SculptSymmetry.none
@@ -80,15 +87,18 @@ final class WorkspaceModel: ObservableObject {
     private var strokeSymmetry = SculptSymmetry.none
     private var flattenPlane: FlattenPlane?
     private var panelTransformBefore: ObjectTransform?
+    private var faceSelectionTask: Task<Void, Never>?
+    private var faceSelectionTaskID: UUID?
 
     init(autosaveCoordinator: ProjectAutosaveCoordinator = ProjectAutosaveCoordinator()) {
         self.autosaveCoordinator = autosaveCoordinator
         self.lastSavedGeneration = projectMutationGeneration
+        rebuildFaceSelectionForCurrentTopology()
         profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
     }
 
     func beginStroke() {
-        guard !isGizmoDragging else { return }
+        guard interactionMode == .sculpt, !isGizmoDragging else { return }
         #if DEBUG
         guard !isBenchmarkRunning else { return }
         #endif
@@ -101,6 +111,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func updateStroke(sample: PencilSample, ray: Ray) {
+        guard interactionMode == .sculpt else { return }
         guard let localRay = objectTransform.localRay(fromWorld: ray),
               let hit = MeshPicker.hit(ray: localRay, mesh: mesh, profiler: profiler, cache: pickingCache) else { return }
         let drag = lastHit.map { hit.position - $0 } ?? .zero
@@ -437,6 +448,160 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var objectDimensions: ObjectDimensions? { ObjectDimensions.make(mesh: mesh, transform: objectTransform) }
+
+    var selectedFaceCount: Int { faceSelection.matches(mesh) ? faceSelection.selectedCount : 0 }
+    var totalFaceCount: Int { mesh.indices.count.isMultiple(of: 3) ? mesh.indices.count / 3 : 0 }
+
+    var isFaceSelectionInteractionEnabled: Bool {
+        guard interactionMode == .faceSelect,
+              faceSelection.matches(mesh),
+              !isFaceSelectionProcessing,
+              !isStrokeActive,
+              !isGizmoDragging,
+              !isTransformPanelEditing,
+              !isSTLImporting,
+              !isMeshDiagnosticsRunning,
+              !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress,
+              !isRecoveryPromptPresented else { return false }
+        #if DEBUG
+        return !isBenchmarkRunning
+        #else
+        return true
+        #endif
+    }
+
+    func setInteractionMode(_ mode: WorkspaceInteractionMode) {
+        guard mode != interactionMode else { return }
+        #if DEBUG
+        guard !isBenchmarkRunning else { return }
+        #endif
+        commitTransformPanelTransaction()
+        cancelStroke()
+        cancelAllGizmoDrags()
+        cancelFaceSelectionProcessing()
+        hoverLocation = nil
+        interactionMode = mode
+        faceSelectionError = nil
+        status = mode == .faceSelect ? "Face Select mode" : "Sculpt mode"
+    }
+
+    func setFaceSelectionOperation(_ operation: FaceSelectionOperation) {
+        guard operation != faceSelectionOperation else { return }
+        #if DEBUG
+        guard !isBenchmarkRunning else { return }
+        #endif
+        faceSelectionOperation = operation
+        faceSelectionError = nil
+    }
+
+    @discardableResult
+    func selectFace(fromWorldRay ray: Ray) -> Bool {
+        guard isFaceSelectionInteractionEnabled else {
+            reportFaceSelectionError(FaceSelectionError.unavailable)
+            return false
+        }
+        guard let localRay = objectTransform.localRay(fromWorld: ray) else {
+            reportFaceSelectionError(FaceSelectionError.invalidMesh)
+            return false
+        }
+        switch MeshPicker.indexedHit(ray: localRay, mesh: mesh, culling: .none,
+                                     profiler: profiler, cache: pickingCache) {
+        case .hit(let hit):
+            return applyFaceSelectionHit(hit.triangleIndex)
+        case .miss:
+            return applyFaceSelectionHit(nil)
+        case .unavailable:
+            reportFaceSelectionError(FaceSelectionError.staleTopology)
+            return false
+        }
+    }
+
+    @discardableResult
+    func applyFaceSelectionHit(_ faceID: Int?) -> Bool {
+        guard isFaceSelectionInteractionEnabled else {
+            reportFaceSelectionError(FaceSelectionError.unavailable)
+            return false
+        }
+        do {
+            var updated = faceSelection
+            let changed: Bool
+            switch faceSelectionOperation {
+            case .replace:
+                changed = try updated.replace(with: faceID)
+            case .add:
+                if let faceID { changed = try updated.set(faceID, selected: true) }
+                else { changed = false }
+            case .remove:
+                if let faceID { changed = try updated.set(faceID, selected: false) }
+                else { changed = false }
+            case .toggle:
+                if let faceID { changed = try updated.toggle(faceID) }
+                else { changed = false }
+            }
+            if changed { commitFaceSelection(updated) }
+            else { faceSelectionError = nil }
+            return changed
+        } catch {
+            reportFaceSelectionError(error)
+            return false
+        }
+    }
+
+    func clearFaceSelection() {
+        mutateFaceSelection { $0.clear() }
+    }
+
+    func selectAllFaces() {
+        mutateFaceSelection { $0.selectAll() }
+    }
+
+    func invertFaceSelection() {
+        mutateFaceSelection { $0.invert() }
+    }
+
+    func selectConnectedFaces() {
+        guard isFaceSelectionInteractionEnabled else {
+            reportFaceSelectionError(FaceSelectionError.unavailable)
+            return
+        }
+        guard faceSelection.selectedCount > 0 else { return }
+        let sourceMesh = mesh
+        let sourceSelection = faceSelection
+        isFaceSelectionProcessing = true
+        faceSelectionError = nil
+        let taskID = UUID()
+        faceSelectionTaskID = taskID
+        faceSelectionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.faceSelectionTaskID == taskID {
+                    self.isFaceSelectionProcessing = false
+                    self.faceSelectionTask = nil
+                    self.faceSelectionTaskID = nil
+                }
+            }
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            guard !self.isStrokeActive, !self.isGizmoDragging,
+                  self.mesh.runtime.topologyID == sourceMesh.runtime.topologyID,
+                  self.mesh.runtime.topologyRevision == sourceMesh.runtime.topologyRevision,
+                  self.mesh.indices.count == sourceMesh.indices.count,
+                  self.faceSelection == sourceSelection else {
+                self.reportFaceSelectionError(FaceSelectionError.activeEdit)
+                return
+            }
+            do {
+                let connected = try FaceSelectionConnectivity.connectedFaceIDs(
+                    mesh: sourceMesh, seeds: sourceSelection.selectedFaceIDs())
+                guard !Task.isCancelled else { return }
+                var updated = sourceSelection
+                if try updated.formUnion(connected) { self.commitFaceSelection(updated) }
+            } catch {
+                self.reportFaceSelectionError(error)
+            }
+        }
+    }
 
     var isMeshDiagnosticsStale: Bool {
         guard let report = meshDiagnosticsReport else { return false }
@@ -984,6 +1149,66 @@ final class WorkspaceModel: ObservableObject {
 
     private var workspaceSnapshot: WorkspaceMeshSnapshot {
         WorkspaceMeshSnapshot(mesh: mesh, transform: objectTransform, camera: camera)
+    }
+
+    private func reconcileFaceSelection(previousMesh: EditableMesh) {
+        let topologyChanged = previousMesh.runtime.topologyID != mesh.runtime.topologyID
+            || previousMesh.runtime.topologyRevision != mesh.runtime.topologyRevision
+            || previousMesh.indices.count / 3 != mesh.indices.count / 3
+            || !mesh.indices.count.isMultiple(of: 3)
+        guard topologyChanged else { return }
+        rebuildFaceSelectionForCurrentTopology()
+    }
+
+    private func rebuildFaceSelectionForCurrentTopology() {
+        cancelFaceSelectionProcessing()
+        let triangleCount = mesh.indices.count.isMultiple(of: 3) ? mesh.indices.count / 3 : -1
+        do {
+            faceSelection = try FaceSelection(
+                sourceTopologyID: mesh.runtime.topologyID,
+                sourceTopologyRevision: mesh.runtime.topologyRevision,
+                triangleCount: triangleCount)
+            faceSelectionError = nil
+        } catch {
+            faceSelection = FaceSelection.emptyUnavailable(
+                sourceTopologyID: mesh.runtime.topologyID,
+                sourceTopologyRevision: mesh.runtime.topologyRevision)
+            reportFaceSelectionError(error)
+        }
+        isFaceSelectionProcessing = false
+    }
+
+    private func mutateFaceSelection(_ operation: (inout FaceSelection) throws -> Bool) {
+        guard isFaceSelectionInteractionEnabled else {
+            reportFaceSelectionError(FaceSelectionError.unavailable)
+            return
+        }
+        do {
+            var updated = faceSelection
+            if try operation(&updated) { commitFaceSelection(updated) }
+            else { faceSelectionError = nil }
+        } catch {
+            reportFaceSelectionError(error)
+        }
+    }
+
+    private func commitFaceSelection(_ updated: FaceSelection) {
+        faceSelection = updated
+        faceSelectionError = nil
+        status = "Selected \(updated.selectedCount) of \(updated.triangleCount) faces"
+    }
+
+    private func reportFaceSelectionError(_ error: Error) {
+        let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        faceSelectionError = message
+        status = "Face selection: \(message)"
+    }
+
+    private func cancelFaceSelectionProcessing() {
+        faceSelectionTask?.cancel()
+        faceSelectionTask = nil
+        faceSelectionTaskID = nil
+        isFaceSelectionProcessing = false
     }
 
     private func projectMutationDidCommit() {

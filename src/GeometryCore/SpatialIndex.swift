@@ -141,6 +141,7 @@ enum MeshBVHError: Error { case invalidMesh, nonFiniteBounds }
 final class MeshBVHCache {
     private(set) var bvh: MeshBVH?
     private(set) var topologyID: UUID?
+    private(set) var topologyRevision: UInt64?
     private(set) var revision: UInt64?
     private(set) var buildCount = 0
     private(set) var refitCount = 0
@@ -148,14 +149,19 @@ final class MeshBVHCache {
 
     func index(for mesh: EditableMesh) -> MeshBVH? {
         do {
-            if bvh == nil || topologyID != mesh.runtime.topologyID {
-                bvh = try MeshBVH(mesh: mesh); topologyID = mesh.runtime.topologyID; revision = mesh.runtime.revision; buildCount += 1
+            if bvh == nil || topologyID != mesh.runtime.topologyID
+                || topologyRevision != mesh.runtime.topologyRevision {
+                bvh = try MeshBVH(mesh: mesh)
+                topologyID = mesh.runtime.topologyID
+                topologyRevision = mesh.runtime.topologyRevision
+                revision = mesh.runtime.revision
+                buildCount += 1
             } else if revision != mesh.runtime.revision {
                 try bvh?.refit(mesh: mesh); revision = mesh.runtime.revision; refitCount += 1
             } else { reuseCount += 1 }
             return bvh
         } catch {
-            bvh = nil; topologyID = nil; revision = nil
+            bvh = nil; topologyID = nil; topologyRevision = nil; revision = nil
             return nil
         }
     }
@@ -163,6 +169,7 @@ final class MeshBVHCache {
     func install(_ rebuilt: MeshBVH, for mesh: EditableMesh) {
         bvh = rebuilt
         topologyID = mesh.runtime.topologyID
+        topologyRevision = mesh.runtime.topologyRevision
         revision = mesh.runtime.revision
         buildCount += 1
     }

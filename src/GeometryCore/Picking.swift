@@ -10,6 +10,14 @@ struct MeshHit {
     var barycentric: SIMD3<Float>
     var distance: Float
     var triangleStart: Int
+
+    var triangleIndex: Int { triangleStart / 3 }
+}
+
+enum IndexedMeshPickResult {
+    case hit(MeshHit)
+    case miss
+    case unavailable
 }
 
 private struct TriangleIntersection {
@@ -37,8 +45,31 @@ enum MeshPicker {
         hitLinearUnmeasured(ray: ray, mesh: mesh, culling: culling)
     }
 
+    static func indexedHit(
+        ray: Ray,
+        mesh: EditableMesh,
+        culling: FaceCulling = .none,
+        profiler: PerformanceProfiler? = nil,
+        cache: MeshBVHCache
+    ) -> IndexedMeshPickResult {
+        PerformanceProfiler.measure(profiler, metric: .picking) {
+            guard isValid(ray) else { return .unavailable }
+            guard let bvh = cache.index(for: mesh),
+                  cache.topologyID == mesh.runtime.topologyID,
+                  cache.topologyRevision == mesh.runtime.topologyRevision,
+                  cache.revision == mesh.runtime.revision else { return .unavailable }
+            guard let hit = hitBVHUnmeasured(ray: ray, mesh: mesh, culling: culling, bvh: bvh) else {
+                return .miss
+            }
+            guard hit.triangleStart.isMultiple(of: 3),
+                  hit.triangleIndex >= 0,
+                  hit.triangleIndex < mesh.indices.count / 3 else { return .unavailable }
+            return .hit(hit)
+        }
+    }
+
     private static func hitLinearUnmeasured(ray: Ray, mesh: EditableMesh, culling: FaceCulling) -> MeshHit? {
-        guard ray.origin.allFinite, ray.direction.allFinite else { return nil }
+        guard isValid(ray) else { return nil }
         var nearest: MeshHit?
         for triangle in stride(from: 0, to: mesh.indices.count, by: 3) {
             if let hit = triangleHit(ray: ray, mesh: mesh, triangleStart: triangle, culling: culling), isPreferred(hit, over: nearest) { nearest = hit }
@@ -47,7 +78,7 @@ enum MeshPicker {
     }
 
     private static func hitBVHUnmeasured(ray: Ray, mesh: EditableMesh, culling: FaceCulling, bvh: MeshBVH) -> MeshHit? {
-        guard ray.origin.allFinite, ray.direction.allFinite, !bvh.nodes.isEmpty,
+        guard isValid(ray), !bvh.nodes.isEmpty,
               let rootNear = bvh.nodes[0].bounds.rayNearDistance(ray) else { return nil }
         var nearest: MeshHit?
         var stack: [(index: Int, near: Float)] = [(0, rootNear)]
@@ -122,5 +153,12 @@ enum MeshPicker {
         let distance = inverse * simd_dot(edge2, q)
         guard distance > epsilon, distance.isFinite else { return nil }
         return TriangleIntersection(distance: distance, u: u, v: v)
+    }
+
+
+    private static func isValid(_ ray: Ray) -> Bool {
+        guard ray.origin.allFinite, ray.direction.allFinite else { return false }
+        let lengthSquared = simd_length_squared(ray.direction)
+        return lengthSquared.isFinite && lengthSquared > 0.000_000_000_001
     }
 }
