@@ -13,7 +13,7 @@ enum FaceSelectionOperation: String, CaseIterable, Hashable {
 }
 
 struct FaceSelectionVersion: Equatable {
-    let epoch: UInt64
+    let identity: UUID
     let value: UInt64
 }
 
@@ -26,13 +26,14 @@ struct FaceSelection: Equatable {
     private var words: [UInt64]
     private(set) var selectedCount: Int
     private(set) var revision: UInt64
-    private var revisionEpoch: UInt64
+    private var revisionIdentity: UUID
 
     var version: FaceSelectionVersion {
-        FaceSelectionVersion(epoch: revisionEpoch, value: revision)
+        FaceSelectionVersion(identity: revisionIdentity, value: revision)
     }
 
-    init(sourceTopologyID: UUID, sourceTopologyRevision: UInt64, triangleCount: Int) throws {
+    init(sourceTopologyID: UUID, sourceTopologyRevision: UInt64, triangleCount: Int,
+         versionIdentity: UUID = UUID(), revision: UInt64 = 0) throws {
         guard triangleCount >= 0, triangleCount <= Self.maximumTriangleCount else {
             throw FaceSelectionError.triangleLimitExceeded
         }
@@ -46,8 +47,8 @@ struct FaceSelection: Equatable {
         self.triangleCount = triangleCount
         words = Array(repeating: 0, count: wordCount)
         selectedCount = 0
-        revision = 0
-        revisionEpoch = 0
+        self.revision = revision
+        revisionIdentity = versionIdentity
     }
 
     static func emptyUnavailable(sourceTopologyID: UUID, sourceTopologyRevision: UInt64) -> FaceSelection {
@@ -100,7 +101,7 @@ struct FaceSelection: Equatable {
         guard let faceID else { return clear() }
         guard isValid(faceID) else { throw FaceSelectionError.invalidFaceID }
         if selectedCount == 1, contains(faceID) { return false }
-        words = Array(repeating: 0, count: words.count)
+        for index in words.indices { words[index] = 0 }
         words[faceID >> 6] = UInt64(1) << UInt64(faceID & 63)
         selectedCount = 1
         advanceRevision()
@@ -110,7 +111,7 @@ struct FaceSelection: Equatable {
     @discardableResult
     mutating func clear() -> Bool {
         guard selectedCount > 0 else { return false }
-        words = Array(repeating: 0, count: words.count)
+        for index in words.indices { words[index] = 0 }
         selectedCount = 0
         advanceRevision()
         return true
@@ -119,7 +120,7 @@ struct FaceSelection: Equatable {
     @discardableResult
     mutating func selectAll() -> Bool {
         guard triangleCount > 0, selectedCount != triangleCount else { return false }
-        words = Array(repeating: .max, count: words.count)
+        for index in words.indices { words[index] = .max }
         maskUnusedTailBits()
         selectedCount = triangleCount
         advanceRevision()
@@ -178,7 +179,9 @@ struct FaceSelection: Equatable {
         result.reserveCapacity(indexCount)
         for faceID in selectedFaceIDs() {
             let (offset, offsetOverflow) = faceID.multipliedReportingOverflow(by: 3)
-            guard !offsetOverflow, offset >= 0, offset + 2 < mesh.indices.count else {
+            let (lastOffset, lastOffsetOverflow) = offset.addingReportingOverflow(2)
+            guard !offsetOverflow, !lastOffsetOverflow, offset >= 0,
+                  lastOffset < mesh.indices.count else {
                 throw FaceSelectionError.invalidFaceID
             }
             guard Int(mesh.indices[offset]) < mesh.vertices.count,
@@ -205,8 +208,10 @@ struct FaceSelection: Equatable {
 
     private mutating func advanceRevision() {
         if revision == .max {
+            var nextIdentity = UUID()
+            while nextIdentity == revisionIdentity { nextIdentity = UUID() }
+            revisionIdentity = nextIdentity
             revision = 0
-            revisionEpoch &+= 1
         } else {
             revision += 1
         }
@@ -236,7 +241,9 @@ enum FaceSelectionConnectivity {
 
         for faceID in 0..<triangleCount {
             let (offset, offsetOverflow) = faceID.multipliedReportingOverflow(by: 3)
-            guard !offsetOverflow, offset + 2 < mesh.indices.count else { throw FaceSelectionError.invalidMesh }
+            let (lastOffset, lastOffsetOverflow) = offset.addingReportingOverflow(2)
+            guard !offsetOverflow, !lastOffsetOverflow,
+                  lastOffset < mesh.indices.count else { throw FaceSelectionError.invalidMesh }
             let a = mesh.indices[offset], b = mesh.indices[offset + 1], c = mesh.indices[offset + 2]
             guard a != b, b != c, c != a,
                   Int(a) < mesh.vertices.count, Int(b) < mesh.vertices.count, Int(c) < mesh.vertices.count,

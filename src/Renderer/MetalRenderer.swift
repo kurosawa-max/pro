@@ -30,7 +30,8 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private(set) var gizmoWorldScale: Float = 1
     private(set) var viewProjection = matrix_identity_float4x4
 
-    init?(view: MTKView, profiler: PerformanceProfiler?) {
+    init?(view: MTKView, profiler: PerformanceProfiler?,
+          faceSelectionBufferAllocator: FaceSelectionIndexBufferAllocating = MetalFaceSelectionIndexBufferAllocator()) {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
         self.device = device; self.queue = queue; self.profiler = profiler
         view.device = device; view.depthStencilPixelFormat = .depth32Float; view.colorPixelFormat = .bgra8Unorm_srgb
@@ -54,7 +55,8 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
                                                            depthPixelFormat: view.depthStencilPixelFormat),
               let faceSelectionOverlayRenderer = FaceSelectionOverlayRenderer(
                 device: device, library: library, colorPixelFormat: view.colorPixelFormat,
-                depthPixelFormat: view.depthStencilPixelFormat),
+                depthPixelFormat: view.depthStencilPixelFormat,
+                bufferAllocator: faceSelectionBufferAllocator),
               let diagnosticsOverlayRenderer = MeshDiagnosticsOverlayRenderer(
                 device: device, library: library, colorPixelFormat: view.colorPixelFormat,
                 depthPixelFormat: view.depthStencilPixelFormat) else { return nil }
@@ -105,8 +107,9 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         _ = diagnosticsOverlayRenderer.update(data: data, revision: revision)
     }
 
-    func updateFaceSelection(mesh: EditableMesh, selection: FaceSelection) {
-        _ = faceSelectionOverlayRenderer.update(mesh: mesh, selection: selection)
+    @discardableResult
+    func updateFaceSelection(mesh: EditableMesh, selection: FaceSelection) -> Bool {
+        faceSelectionOverlayRenderer.update(mesh: mesh, selection: selection)
     }
 
     private func makeOrReuse(buffer: MTLBuffer?, requiredLength: Int) -> MTLBuffer? {
@@ -213,6 +216,9 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     #if DEBUG
     var faceSelectionOverlayUploadCount: Int { faceSelectionOverlayRenderer.uploadCount }
     var faceSelectionOverlayIndexCount: Int { faceSelectionOverlayRenderer.selectedIndexCount }
+    var faceSelectionOverlayUploadedKey: FaceSelectionOverlayCacheKey? {
+        faceSelectionOverlayRenderer.uploadedKey
+    }
     #endif
 }
 

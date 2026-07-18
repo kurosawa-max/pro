@@ -2,6 +2,16 @@ import Foundation
 import MetalKit
 import simd
 
+protocol FaceSelectionIndexBufferAllocating {
+    func makeBuffer(device: MTLDevice, length: Int) -> MTLBuffer?
+}
+
+struct MetalFaceSelectionIndexBufferAllocator: FaceSelectionIndexBufferAllocating {
+    func makeBuffer(device: MTLDevice, length: Int) -> MTLBuffer? {
+        device.makeBuffer(length: length, options: .storageModeShared)
+    }
+}
+
 struct FaceSelectionOverlayCacheKey: Equatable {
     let meshTopologyID: UUID
     let meshTopologyRevision: UInt64
@@ -13,6 +23,7 @@ struct FaceSelectionOverlayCacheKey: Equatable {
 
 final class FaceSelectionOverlayRenderer {
     private let device: MTLDevice
+    private let bufferAllocator: FaceSelectionIndexBufferAllocating
     private let pipeline: MTLRenderPipelineState
     private let depthState: MTLDepthStencilState
     private var indexBuffer: MTLBuffer?
@@ -23,10 +34,12 @@ final class FaceSelectionOverlayRenderer {
     #endif
 
     init?(device: MTLDevice, library: MTLLibrary, colorPixelFormat: MTLPixelFormat,
-          depthPixelFormat: MTLPixelFormat) {
+          depthPixelFormat: MTLPixelFormat,
+          bufferAllocator: FaceSelectionIndexBufferAllocating = MetalFaceSelectionIndexBufferAllocator()) {
         guard let vertex = library.makeFunction(name: "faceSelectionVertex"),
               let fragment = library.makeFunction(name: "faceSelectionFragment") else { return nil }
         self.device = device
+        self.bufferAllocator = bufferAllocator
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
@@ -57,21 +70,28 @@ final class FaceSelectionOverlayRenderer {
             triangleCount: selection.triangleCount,
             selectionVersion: selection.version)
         guard Self.requiresUpload(previous: uploadedKey, current: key) else { return false }
-        uploadedKey = key
+        uploadedKey = nil
         selectedIndexCount = 0
-        guard selection.matches(mesh), selection.selectedCount > 0 else { return true }
-
-        guard let indices = try? selection.selectedIndices(from: mesh), !indices.isEmpty else { return true }
-        let (byteCount, overflow) = indices.count.multipliedReportingOverflow(by: MemoryLayout<UInt32>.stride)
-        guard !overflow, byteCount > 0 else { return true }
-        guard let target = indexBuffer.flatMap({ $0.length >= byteCount ? $0 : nil })
-            ?? device.makeBuffer(length: byteCount, options: .storageModeShared) else { return true }
-        indices.withUnsafeBufferPointer { source in
-            guard let source = source.baseAddress else { return }
-            target.contents().copyMemory(from: source, byteCount: byteCount)
+        guard selection.matches(mesh) else { return false }
+        guard selection.selectedCount > 0 else {
+            uploadedKey = key
+            return true
         }
+
+        guard let indices = try? selection.selectedIndices(from: mesh), !indices.isEmpty else { return false }
+        let (byteCount, overflow) = indices.count.multipliedReportingOverflow(by: MemoryLayout<UInt32>.stride)
+        guard !overflow, byteCount > 0 else { return false }
+        guard let target = indexBuffer.flatMap({ $0.length >= byteCount ? $0 : nil })
+            ?? bufferAllocator.makeBuffer(device: device, length: byteCount) else { return false }
+        let copied = indices.withUnsafeBufferPointer { source -> Bool in
+            guard let source = source.baseAddress else { return false }
+            target.contents().copyMemory(from: source, byteCount: byteCount)
+            return true
+        }
+        guard copied else { return false }
         indexBuffer = target
         selectedIndexCount = indices.count
+        uploadedKey = key
         #if DEBUG
         uploadCount += 1
         #endif

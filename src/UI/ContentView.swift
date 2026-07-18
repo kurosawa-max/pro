@@ -24,17 +24,16 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             ZStack(alignment: .topTrailing) {
-                MetalCanvas(model: model).ignoresSafeArea(edges: .bottom)
+                MetalCanvas(model: model, isInputSuppressed: isWorkspaceModalPresented)
+                    .ignoresSafeArea(edges: .bottom)
                 if model.interactionMode == .sculpt, let p = model.hoverLocation {
                     Circle().stroke(.white.opacity(0.9), lineWidth: 2)
                         .frame(width: brushCursorDiameter, height: brushCursorDiameter)
                         .position(p).allowsHitTesting(false)
                 }
-                VStack {
-                    Spacer()
-                    if model.interactionMode == .faceSelect {
-                        FaceSelectionPanel(model: model).padding()
-                    } else {
+                if model.interactionMode == .sculpt {
+                    VStack {
+                        Spacer()
                         controls.padding()
                     }
                 }
@@ -51,6 +50,14 @@ struct ContentView: View {
                     .padding(.top, 8)
                     .padding(.leading, 8)
                 #endif
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if model.interactionMode == .faceSelect {
+                    FaceSelectionPanel(model: model)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 4)
+                }
             }
             .navigationTitle("Forge3D")
             .navigationBarTitleDisplayMode(.inline)
@@ -177,6 +184,13 @@ struct ContentView: View {
         } message: {
             Text("Forge3D will write a Recovery snapshot before opening another project. The existing project will not be overwritten.")
         }
+    }
+
+    private var isWorkspaceModalPresented: Bool {
+        showImporter || showSTLImporter || showSTLImportConfirmation
+            || showProjectExporter || showSTLExporter || showSTLOptions
+            || showPrimitiveCreator || showSubdivision || showMeshDiagnostics
+            || confirmsOpeningWithUnsavedChanges || model.isRecoveryPromptPresented
     }
 
     private var controls: some View {

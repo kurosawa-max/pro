@@ -1,5 +1,6 @@
 import Foundation
 import MetalKit
+import SwiftUI
 import XCTest
 import simd
 @testable import Forge3D
@@ -38,6 +39,31 @@ final class FaceSelectionTests: XCTestCase {
         XCTAssertNotEqual(selection.version, selectedVersion)
     }
 
+    func testSelectionVersionAdvancesAndRotatesIdentityAfterCounterMaximum() throws {
+        let identity = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+        var normal = try FaceSelection(
+            sourceTopologyID: UUID(), sourceTopologyRevision: 1, triangleCount: 2,
+            versionIdentity: identity, revision: 40)
+        XCTAssertTrue(try normal.set(0, selected: true))
+        XCTAssertEqual(normal.version, FaceSelectionVersion(identity: identity, value: 41))
+        let unchanged = normal.version
+        XCTAssertFalse(try normal.set(0, selected: true))
+        XCTAssertEqual(normal.version, unchanged)
+
+        var boundary = try FaceSelection(
+            sourceTopologyID: UUID(), sourceTopologyRevision: 1, triangleCount: 2,
+            versionIdentity: identity, revision: .max - 1)
+        let beforeMaximum = boundary.version
+        XCTAssertTrue(try boundary.set(0, selected: true))
+        XCTAssertEqual(boundary.version, FaceSelectionVersion(identity: identity, value: .max))
+        let atMaximum = boundary.version
+        XCTAssertTrue(try boundary.set(1, selected: true))
+        XCTAssertNotEqual(boundary.version.identity, identity)
+        XCTAssertEqual(boundary.version.value, 0)
+        XCTAssertNotEqual(boundary.version, beforeMaximum)
+        XCTAssertNotEqual(boundary.version, atMaximum)
+    }
+
     func testSelectAllInvertAndTailMaskAtWordBoundaries() throws {
         for triangleCount in [0, 1, 63, 64, 65, 129] {
             var selection = try makeSelection(triangleCount: triangleCount)
@@ -74,10 +100,11 @@ final class FaceSelectionTests: XCTestCase {
 
     func testSelectionEqualityAndUnionAreDeterministic() throws {
         let topologyID = UUID()
+        let versionIdentity = UUID()
         var first = try FaceSelection(sourceTopologyID: topologyID, sourceTopologyRevision: 7,
-                                      triangleCount: 6)
+                                      triangleCount: 6, versionIdentity: versionIdentity)
         var second = try FaceSelection(sourceTopologyID: topologyID, sourceTopologyRevision: 7,
-                                       triangleCount: 6)
+                                       triangleCount: 6, versionIdentity: versionIdentity)
         XCTAssertEqual(first, second)
         XCTAssertTrue(try first.formUnion([5, 1, 5, 3]))
         XCTAssertTrue(try second.formUnion([1, 3, 5]))
@@ -272,6 +299,43 @@ final class FaceSelectionTests: XCTestCase {
         XCTAssertEqual(result.count, triangleCount)
         XCTAssertEqual(result.first, 0)
         XCTAssertEqual(result.last, triangleCount - 1)
+    }
+
+    @MainActor
+    func testConnectedProgressTransitionsAndModeChangeCancelsWithoutCommit() async {
+        let model = faceSelectionModel(mesh: connectivityMesh())
+        _ = model.applyFaceSelectionHit(0)
+        let before = model.faceSelection
+        model.selectConnectedFaces()
+        XCTAssertTrue(model.isFaceSelectionProcessing)
+        model.setInteractionMode(.sculpt)
+        XCTAssertFalse(model.isFaceSelectionProcessing)
+        await Task.yield()
+        XCTAssertEqual(model.faceSelection, before)
+
+        model.setInteractionMode(.faceSelect)
+        model.selectConnectedFaces()
+        XCTAssertTrue(model.isFaceSelectionProcessing)
+        for _ in 0..<1_000 where model.isFaceSelectionProcessing { await Task.yield() }
+        XCTAssertFalse(model.isFaceSelectionProcessing)
+        XCTAssertEqual(model.faceSelection.selectedFaceIDs(), [0, 1])
+    }
+
+    @MainActor
+    func testConnectedTopologyChangeCancelsAndCannotCommitOldResult() async {
+        let model = faceSelectionModel(mesh: connectivityMesh())
+        _ = model.applyFaceSelectionHit(0)
+        model.selectConnectedFaces()
+        XCTAssertTrue(model.isFaceSelectionProcessing)
+
+        let replacement = EditableMesh.icosphere(subdivisions: 0)
+        model.mesh = replacement
+        XCTAssertFalse(model.isFaceSelectionProcessing)
+        XCTAssertEqual(model.selectedFaceCount, 0)
+        XCTAssertTrue(model.faceSelection.matches(replacement))
+        await Task.yield()
+        XCTAssertEqual(model.selectedFaceCount, 0)
+        XCTAssertTrue(model.faceSelection.matches(replacement))
     }
 
     @MainActor
@@ -481,8 +545,138 @@ final class FaceSelectionTests: XCTestCase {
                                                 triangleCount: selection.triangleCount,
                                                 selectionVersion: selection.version)
         XCTAssertTrue(FaceSelectionOverlayRenderer.requiresUpload(previous: key0, current: key1))
+        let topologyRevisionKey = FaceSelectionOverlayCacheKey(
+            meshTopologyID: mesh.runtime.topologyID,
+            meshTopologyRevision: mesh.runtime.topologyRevision + 1,
+            selectionTopologyID: selection.sourceTopologyID,
+            selectionTopologyRevision: selection.sourceTopologyRevision,
+            triangleCount: selection.triangleCount,
+            selectionVersion: selection.version)
+        XCTAssertTrue(FaceSelectionOverlayRenderer.requiresUpload(previous: key1,
+                                                                  current: topologyRevisionKey))
         XCTAssertEqual(MemoryLayout<FaceSelectionOverlayUniforms>.stride, 128)
         XCTAssertEqual(MetalRenderer.drawOrder, [.mesh, .faceSelection, .diagnostics, .gizmo])
+    }
+
+    func testOverlayReuploadsAfterSelectionVersionIdentityChanges() throws {
+        #if DEBUG
+        let mesh = twoTriangleMesh()
+        let identity = UUID()
+        var selection = try FaceSelection(
+            sourceTopologyID: mesh.runtime.topologyID,
+            sourceTopologyRevision: mesh.runtime.topologyRevision,
+            triangleCount: mesh.indices.count / 3,
+            versionIdentity: identity,
+            revision: .max - 1)
+        _ = try selection.set(0, selected: true)
+        let renderer = try XCTUnwrap(MetalRenderer(view: MTKView(), profiler: nil))
+        renderer.update(mesh: mesh)
+        XCTAssertTrue(renderer.updateFaceSelection(mesh: mesh, selection: selection))
+        XCTAssertEqual(renderer.faceSelectionOverlayUploadCount, 1)
+        let maximumKey = try XCTUnwrap(renderer.faceSelectionOverlayUploadedKey)
+
+        _ = try selection.set(1, selected: true)
+        XCTAssertNotEqual(selection.version.identity, identity)
+        XCTAssertTrue(renderer.updateFaceSelection(mesh: mesh, selection: selection))
+        XCTAssertEqual(renderer.faceSelectionOverlayUploadCount, 2)
+        XCTAssertNotEqual(renderer.faceSelectionOverlayUploadedKey, maximumKey)
+        XCTAssertEqual(renderer.faceSelectionOverlayIndexCount, 6)
+        #endif
+    }
+
+    @MainActor
+    func testOverlayAllocationFailureHidesOldDataAndRetriesSameSelection() throws {
+        #if DEBUG
+        let allocator = ControlledFaceSelectionBufferAllocator(failingCalls: [2])
+        let profiler = PerformanceProfiler()
+        let model = faceSelectionModel(mesh: twoTriangleMesh())
+        _ = model.applyFaceSelectionHit(0)
+        let renderer = try XCTUnwrap(MetalRenderer(
+            view: MTKView(), profiler: profiler,
+            faceSelectionBufferAllocator: allocator))
+        renderer.update(mesh: model.mesh)
+        XCTAssertTrue(renderer.updateFaceSelection(mesh: model.mesh, selection: model.faceSelection))
+        XCTAssertEqual(renderer.faceSelectionOverlayIndexCount, 3)
+        let previousKey = renderer.faceSelectionOverlayUploadedKey
+
+        model.mesh = EditableMesh.icosphere(subdivisions: 0)
+        model.selectAllFaces()
+        renderer.update(mesh: model.mesh)
+        profiler.reset(vertexCount: model.mesh.vertices.count,
+                       triangleCount: model.mesh.indices.count / 3)
+        let projectBefore = try model.projectData()
+        let selectionBefore = model.faceSelection
+        let runtimeBefore = model.mesh.runtime
+        let historyBefore = (model.undoCount, model.redoCount, model.canUndo, model.canRedo)
+
+        XCTAssertFalse(renderer.updateFaceSelection(mesh: model.mesh, selection: model.faceSelection))
+        XCTAssertEqual(renderer.faceSelectionOverlayIndexCount, 0)
+        XCTAssertNotNil(previousKey)
+        XCTAssertNil(renderer.faceSelectionOverlayUploadedKey)
+        XCTAssertEqual(renderer.faceSelectionOverlayUploadCount, 1)
+        XCTAssertEqual(allocator.allocationCallCount, 2)
+        XCTAssertEqual(try model.projectData(), projectBefore)
+        XCTAssertEqual(model.faceSelection, selectionBefore)
+        XCTAssertEqual(model.mesh.runtime, runtimeBefore)
+        XCTAssertEqual(model.undoCount, historyBefore.0)
+        XCTAssertEqual(model.redoCount, historyBefore.1)
+        XCTAssertEqual(model.canUndo, historyBefore.2)
+        XCTAssertEqual(model.canRedo, historyBefore.3)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 0)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 0)
+
+        XCTAssertTrue(renderer.updateFaceSelection(mesh: model.mesh, selection: model.faceSelection))
+        XCTAssertEqual(allocator.allocationCallCount, 3)
+        XCTAssertEqual(renderer.faceSelectionOverlayUploadCount, 2)
+        XCTAssertEqual(renderer.faceSelectionOverlayIndexCount, model.mesh.indices.count)
+        XCTAssertEqual(renderer.faceSelectionOverlayUploadedKey?.selectionVersion,
+                       model.faceSelection.version)
+        XCTAssertEqual(try model.projectData(), projectBefore)
+        XCTAssertEqual(model.faceSelection, selectionBefore)
+        XCTAssertEqual(model.mesh.runtime, runtimeBefore)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 0)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 0)
+        #endif
+    }
+
+    func testOverlayEmptySelectionCachesWithoutAllocation() throws {
+        #if DEBUG
+        let allocator = ControlledFaceSelectionBufferAllocator(failingCalls: [1])
+        let mesh = twoTriangleMesh()
+        let selection = try self.selection(for: mesh)
+        let renderer = try XCTUnwrap(MetalRenderer(
+            view: MTKView(), profiler: nil,
+            faceSelectionBufferAllocator: allocator))
+        renderer.update(mesh: mesh)
+        XCTAssertTrue(renderer.updateFaceSelection(mesh: mesh, selection: selection))
+        XCTAssertEqual(allocator.allocationCallCount, 0)
+        XCTAssertEqual(renderer.faceSelectionOverlayIndexCount, 0)
+        XCTAssertNotNil(renderer.faceSelectionOverlayUploadedKey)
+        XCTAssertFalse(renderer.updateFaceSelection(mesh: mesh, selection: selection))
+        XCTAssertEqual(allocator.allocationCallCount, 0)
+        #endif
+    }
+
+    func testOverlayReusesCapacityAndShorterSelectionDoesNotDrawOldTail() throws {
+        #if DEBUG
+        let allocator = ControlledFaceSelectionBufferAllocator()
+        let mesh = EditableMesh.icosphere(subdivisions: 0)
+        var selection = try self.selection(for: mesh)
+        _ = selection.selectAll()
+        let renderer = try XCTUnwrap(MetalRenderer(
+            view: MTKView(), profiler: nil,
+            faceSelectionBufferAllocator: allocator))
+        renderer.update(mesh: mesh)
+        XCTAssertTrue(renderer.updateFaceSelection(mesh: mesh, selection: selection))
+        XCTAssertEqual(renderer.faceSelectionOverlayIndexCount, mesh.indices.count)
+        XCTAssertEqual(allocator.allocationCallCount, 1)
+
+        _ = try selection.replace(with: 0)
+        XCTAssertTrue(renderer.updateFaceSelection(mesh: mesh, selection: selection))
+        XCTAssertEqual(allocator.allocationCallCount, 1)
+        XCTAssertEqual(renderer.faceSelectionOverlayIndexCount, 3)
+        XCTAssertEqual(renderer.faceSelectionOverlayUploadCount, 2)
+        #endif
     }
 
     func testRendererUploadsSelectionOnlyWhenSelectionOrTopologyChanges() throws {
@@ -543,6 +737,45 @@ final class FaceSelectionTests: XCTestCase {
         XCTAssertFalse(String(decoding: before, as: UTF8.self).contains("faceSelection"))
     }
 
+    @MainActor
+    func testModalInputSuppressionCancelsActiveEditAndRejectsCameraGesture() {
+        let model = WorkspaceModel()
+        model.beginStroke()
+        XCTAssertTrue(model.isStrokeActive)
+        let coordinator = MetalCanvas.Coordinator(model: model)
+        coordinator.setInputSuppressed(true)
+        XCTAssertTrue(coordinator.isInputSuppressed)
+        XCTAssertFalse(model.isStrokeActive)
+        XCTAssertFalse(coordinator.gestureRecognizerShouldBegin(UIPanGestureRecognizer()))
+    }
+
+    @MainActor
+    func testFaceSelectionPanelFitsCompactAndAccessibilityLayouts() {
+        let model = faceSelectionModel(mesh: twoTriangleMesh())
+        for width in [CGFloat(320), 744, 834, 1_024, 1_194] {
+            let root = FaceSelectionPanel(model: model)
+                .environment(\.horizontalSizeClass, width < 700 ? .compact : .regular)
+            let host = UIHostingController(rootView: root)
+            let size = host.sizeThatFits(in: CGSize(width: width, height: 1_200))
+            XCTAssertTrue(size.width.isFinite && size.height.isFinite)
+            XCTAssertLessThanOrEqual(size.width, width + 1)
+            XCTAssertGreaterThan(size.height, 0)
+        }
+
+        let accessibilityRoot = FaceSelectionPanel(model: model)
+            .environment(\.horizontalSizeClass, .compact)
+            .environment(\.dynamicTypeSize, .accessibility5)
+        let accessibilityHost = UIHostingController(rootView: accessibilityRoot)
+        let accessibilitySize = accessibilityHost.sizeThatFits(
+            in: CGSize(width: 320, height: 1_600))
+        XCTAssertLessThanOrEqual(accessibilitySize.width, 321)
+        XCTAssertTrue(accessibilitySize.height.isFinite)
+        XCTAssertGreaterThan(accessibilitySize.height, 0)
+        XCTAssertGreaterThan(
+            FaceSelectionPanelLayout.commandMinimumWidth(accessibilityText: true),
+            FaceSelectionPanelLayout.commandMinimumWidth(accessibilityText: false))
+    }
+
     private func makeSelection(triangleCount: Int) throws -> FaceSelection {
         try FaceSelection(sourceTopologyID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
                           sourceTopologyRevision: 1, triangleCount: triangleCount)
@@ -599,5 +832,20 @@ final class FaceSelectionTests: XCTestCase {
         EditableMesh(
             vertices: [vertex(0, 0, 0), vertex(1, 0, 0), vertex(1, 1, 0), vertex(0, 1, 0)],
             indices: [0, 1, 2, 0, 1, 2, 0, 2, 3])
+    }
+}
+
+private final class ControlledFaceSelectionBufferAllocator: FaceSelectionIndexBufferAllocating {
+    private let failingCalls: Set<Int>
+    private(set) var allocationCallCount = 0
+
+    init(failingCalls: Set<Int> = []) {
+        self.failingCalls = failingCalls
+    }
+
+    func makeBuffer(device: MTLDevice, length: Int) -> MTLBuffer? {
+        allocationCallCount += 1
+        guard !failingCalls.contains(allocationCallCount) else { return nil }
+        return device.makeBuffer(length: length, options: .storageModeShared)
     }
 }

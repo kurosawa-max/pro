@@ -137,6 +137,8 @@ Recovery wrapperは通常project formatVersion 1を変更せず、metadata、長
 
 Rendererはmesh vertex bufferを再利用し、選択faceのindexだけを独立bufferへ選択変更時にuploadする。半透明fillの後にDiagnostics、続いてGizmoを描くため、診断edgeと操作handleを隠さない。Sculpt vertex変更、camera、Transformではselection indexを再uploadしない。
 
+selection versionはruntime UUID identityとUInt64 valueで構成し、value上限後は新identityへ切り替えてoverlay cache keyのwrapを防ぐ。非empty overlayはindex検証、buffer確保、copy成功後だけcache済みにし、失敗時は古いoverlayを隠して次frameで再試行する。panelはsafe-area insetとadaptive gridを使い、compact widthとaccessibility Dynamic Typeではoperationをmenu表示する。
+
 selectionはmeshを変更せず、dirty generation、Autosave、Recovery、Workspace history、project formatVersion 1へ含めない。Primitive、Subdivision、STL Import、Cleanup、Load、Recover、topology Undo／Redoでclearし、Sculpt、Transform、camera、Save、Diagnosticsでは維持する。詳細と上限は`FACE_SELECTION.md`を参照。Edge／Vertex／Box／Lasso selection、selection Undo、selection永続化、Extrude／Inset／Bevelは未実装である。
 
 ## 実機検証項目

@@ -3,8 +3,11 @@ import MetalKit
 
 struct MetalCanvas: UIViewRepresentable {
     @ObservedObject var model: WorkspaceModel
+    var isInputSuppressed = false
 
-    func makeCoordinator() -> Coordinator { Coordinator(model: model) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(model: model, isInputSuppressed: isInputSuppressed)
+    }
     func makeUIView(context: Context) -> SculptMTKView {
         let view = SculptMTKView(frame: .zero)
         guard let renderer = MetalRenderer(view: view, profiler: model.profiler) else { return view }
@@ -34,6 +37,7 @@ struct MetalCanvas: UIViewRepresentable {
 
     func updateUIView(_ view: SculptMTKView, context: Context) {
         context.coordinator.model = model
+        context.coordinator.setInputSuppressed(isInputSuppressed)
         context.coordinator.renderer?.camera = model.camera
         context.coordinator.renderer?.objectTransform = model.objectTransform
         context.coordinator.renderer?.gizmoState = model.translationGizmoState
@@ -55,11 +59,27 @@ struct MetalCanvas: UIViewRepresentable {
     @MainActor final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var model: WorkspaceModel
         var renderer: MetalRenderer?
+        private(set) var isInputSuppressed: Bool
         private var orbitStart = CameraState(), panStart = CameraState(), zoomStart: Float = 0
         private var faceSelectionTap = FaceSelectionTapTracker()
-        init(model: WorkspaceModel) { self.model = model }
+        init(model: WorkspaceModel, isInputSuppressed: Bool = false) {
+            self.model = model
+            self.isInputSuppressed = isInputSuppressed
+        }
+
+        func setInputSuppressed(_ suppressed: Bool) {
+            guard suppressed != isInputSuppressed else { return }
+            isInputSuppressed = suppressed
+            guard suppressed else { return }
+            faceSelectionTap.cancel()
+            if model.isGizmoDragging { model.cancelAllGizmoDrags() }
+            else { model.cancelStroke() }
+            model.hoverLocation = nil
+            updateGizmoHover(ray: nil, scale: 1)
+        }
 
         func pencilBegan(_ sample: PencilSample, in view: UIView) {
+            guard !isInputSuppressed else { return }
             guard let renderer, let ray = renderer.ray(at: sample.location, viewSize: view.bounds.size) else { return }
             if beginGizmoDrag(ray: ray, renderer: renderer) { return }
             if model.interactionMode == .faceSelect {
@@ -71,6 +91,7 @@ struct MetalCanvas: UIViewRepresentable {
             model.updateStroke(sample: sample, ray: ray)
         }
         func pencilMoved(_ sample: PencilSample, in view: UIView) {
+            guard !isInputSuppressed else { return }
             if model.isGizmoDragging, let renderer {
                 guard let ray = renderer.ray(at: sample.location, viewSize: view.bounds.size) else { return }
                 updateGizmoDrag(ray: ray, renderer: renderer)
@@ -84,6 +105,7 @@ struct MetalCanvas: UIViewRepresentable {
         }
 
         func inputEnded(_ sample: PencilSample?, in view: UIView) {
+            guard !isInputSuppressed else { return }
             if model.isGizmoDragging {
                 faceSelectionTap.cancel()
                 endGizmoDrag()
@@ -108,6 +130,11 @@ struct MetalCanvas: UIViewRepresentable {
         }
 
         func hover(_ point: CGPoint?, in view: UIView) {
+            guard !isInputSuppressed else {
+                model.hoverLocation = nil
+                updateGizmoHover(ray: nil, scale: 1)
+                return
+            }
             guard let point, let renderer, let ray = renderer.ray(at: point, viewSize: view.bounds.size) else {
                 model.hoverLocation = nil
                 updateGizmoHover(ray: nil, scale: 1)
@@ -176,10 +203,11 @@ struct MetalCanvas: UIViewRepresentable {
         }
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            !model.isGizmoDragging
+            !isInputSuppressed && !model.isGizmoDragging
         }
 
         @objc private func orbit(_ gesture: UIPanGestureRecognizer) {
+            guard !isInputSuppressed else { return }
             if gesture.state == .began {
                 if let view = gesture.view, let renderer,
                    let ray = renderer.ray(at: gesture.location(in: view), viewSize: view.bounds.size),
@@ -210,7 +238,7 @@ struct MetalCanvas: UIViewRepresentable {
             }
         }
         @objc private func zoom(_ gesture: UIPinchGestureRecognizer) {
-            guard !model.isGizmoDragging else { return }
+            guard !isInputSuppressed, !model.isGizmoDragging else { return }
             if gesture.state == .began { zoomStart = model.camera.distance }
             let before = CameraState(yaw: model.camera.yaw, pitch: model.camera.pitch,
                                      distance: zoomStart, target: model.camera.target)
@@ -220,7 +248,7 @@ struct MetalCanvas: UIViewRepresentable {
             }
         }
         @objc private func pan(_ gesture: UIPanGestureRecognizer) {
-            guard !model.isGizmoDragging else { return }
+            guard !isInputSuppressed, !model.isGizmoDragging else { return }
             if gesture.state == .began { panStart = model.camera }
             let p = gesture.translation(in: gesture.view)
             let scale = model.camera.distance * 0.0015
