@@ -687,6 +687,14 @@ final class FaceInsetTests: XCTestCase {
         XCTAssertEqual(actual.y, expected.y, accuracy: accuracy, file: file, line: line)
         XCTAssertEqual(actual.z, expected.z, accuracy: accuracy, file: file, line: line)
     }
+    private func assertVector(
+        _ actual: SIMD3<Float>, _ expected: SIMD3<Float>, accuracy: Float = 0.000_01,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        XCTAssertEqual(actual.x, expected.x, accuracy: accuracy, file: file, line: line)
+        XCTAssertEqual(actual.y, expected.y, accuracy: accuracy, file: file, line: line)
+        XCTAssertEqual(actual.z, expected.z, accuracy: accuracy, file: file, line: line)
+    }
 }
 
 private struct FaceInsetImmediateScheduler: AutosaveDelayScheduler {
