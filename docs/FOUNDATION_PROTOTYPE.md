@@ -139,7 +139,15 @@ Rendererはmesh vertex bufferを再利用し、選択faceのindexだけを独立
 
 selection versionはruntime UUID identityとUInt64 valueで構成し、value上限後は新identityへ切り替えてoverlay cache keyのwrapを防ぐ。非empty overlayはindex検証、buffer確保、copy成功後だけcache済みにし、失敗時は古いoverlayを隠して次frameで再試行する。panelはsafe-area insetとadaptive gridを使い、compact widthとaccessibility Dynamic Typeではoperationをmenu表示する。
 
-selectionはmeshを変更せず、dirty generation、Autosave、Recovery、Workspace history、project formatVersion 1へ含めない。Primitive、Subdivision、STL Import、Cleanup、Load、Recover、topology Undo／Redoでclearし、Sculpt、Transform、camera、Save、Diagnosticsでは維持する。詳細と上限は`FACE_SELECTION.md`を参照。Edge／Vertex／Box／Lasso selection、selection Undo、selection永続化、Extrude／Inset／Bevelは未実装である。
+selectionはmeshを変更せず、dirty generation、Autosave、Recovery、Workspace history、project formatVersion 1へ含めない。Primitive、Subdivision、STL Import、Cleanup、Load、Recover、topology Undo／Redoでclearし、Sculpt、Transform、camera、Save、Diagnosticsでは維持する。詳細と上限は`FACE_SELECTION.md`を参照。Edge／Vertex／Box／Lasso selection、selection Undo、selection永続化、Inset／Bevelは未実装である。
+
+## Face Extrude foundation
+
+Face Select panelの`Extrude…`は、共有edgeで接続された選択componentごとにworld-space area-weighted normalを求め、signed millimeter distanceだけ平行移動したtop facesとboundary side wallsを生成する。distanceはlocal→world displacement→inverse localの順に適用するため、rotationと非一様scale下でもworld mmを維持する。同一componentの元vertexは1回duplicateし、vertex-only接触component間では分離する。元selected interior vertexは決定論的にcompactする。
+
+全selected incident edgeはglobal use 2件と反対windingを必要とし、open boundary、non-manifold、winding conflict、degenerate、duplicate、non-finite、boundaryのないwhole-shell selectionを拒否する。previewはtopology／vertex／selection／Transformの非巻戻しruntime identity、distance、解析fingerprintへ結合し、Apply時に全再計算して一致を要求する。resultはWorkspace外でnormal、adjacency、Diagnostics invariants、Picking BVHまで検証してから1回installする。
+
+成功は`ReplaceMeshCommand` 1件としてUndo／Redoし、新topologyでselectionとpreviewをclearする。Transform、camera、brush、symmetry、Gizmo mode、Face Select mode、selection operationは維持する。Applyだけがdirty generationを1回進めAutosaveをscheduleし、preview／Cancel／failureはproject状態を変更しない。formatVersion 1には結果vertices／indicesだけを保存する。2,000,000 vertices、4,000,000 triangles、1,000,000 selected faces、768 MiB working estimateを上限とする。同期処理、self-intersection非検出、open surface／whole shell非対応、Inset／Bevel／multiple object未実装が既知の制限である。詳細は`FACE_EXTRUDE.md`を参照。
 
 ## 実機検証項目
 

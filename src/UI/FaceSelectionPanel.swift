@@ -2,6 +2,7 @@ import SwiftUI
 
 struct FaceSelectionPanel: View {
     @ObservedObject var model: WorkspaceModel
+    var onExtrude: () -> Void = {}
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -102,6 +103,10 @@ struct FaceSelectionPanel: View {
             Button("Select Connected", systemImage: "link") { model.selectConnectedFaces() }
                 .disabled(!model.isFaceSelectionInteractionEnabled || model.selectedFaceCount == 0)
                 .accessibilityHint("Add every face connected to the current selection by shared edges")
+                .frame(maxWidth: .infinity)
+            Button("Extrude…", systemImage: "square.3.layers.3d") { onExtrude() }
+                .disabled(!model.canBeginFaceExtrude)
+                .accessibilityHint("Preview a world-space millimeter extrusion of the selected face region")
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)

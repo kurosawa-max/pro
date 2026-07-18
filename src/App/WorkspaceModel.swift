@@ -14,6 +14,7 @@ final class WorkspaceModel: ObservableObject {
         didSet {
             if oldValue != mesh || oldValue.runtime != mesh.runtime {
                 meshMutationGeneration.advance()
+                faceExtrudeMeshChangeVersion.advance()
                 markMeshDiagnosticsStale()
                 if !isInstallingMeshCleanup { lastMeshCleanupSummary = nil }
             }
@@ -23,7 +24,10 @@ final class WorkspaceModel: ObservableObject {
     @Published var camera = CameraState()
     @Published private(set) var objectTransform = ObjectTransform.identity {
         didSet {
-            if oldValue.sanitized() != objectTransform.sanitized() { markMeshDiagnosticsStale() }
+            if oldValue.sanitized() != objectTransform.sanitized() {
+                faceExtrudeTransformChangeVersion.advance()
+                markMeshDiagnosticsStale()
+            }
         }
     }
     @Published var showsTranslationGizmo = true
@@ -52,6 +56,9 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var meshDiagnosticsOverlayRevision: UInt64 = 0
     @Published private(set) var isMeshCleanupRunning = false
     @Published private(set) var lastMeshCleanupSummary: MeshCleanupSummary? = nil
+    @Published private(set) var isFaceExtrudeRunning = false
+    @Published private(set) var faceExtrudePreview: FaceExtrudePreview? = nil
+    @Published private(set) var faceExtrudeError: String? = nil
     @Published private(set) var saveState = ProjectSaveState.saved
     @Published private(set) var recoveryDescriptor: RecoveryDescriptor?
     @Published private(set) var recoveryInspectionError: String?
@@ -73,6 +80,9 @@ final class WorkspaceModel: ObservableObject {
     private var meshDiagnosticsNeedsRefresh = false
     private var isInstallingMeshCleanup = false
     private var meshMutationGeneration = MutationGeneration()
+    private var faceExtrudeMeshChangeVersion = FaceExtrudeChangeVersion()
+    private var faceExtrudeTransformChangeVersion = FaceExtrudeChangeVersion()
+    private var isFaceExtrudeSnapshotSafe = false
     private(set) var projectMutationGeneration = MutationGeneration()
     private(set) var lastSavedGeneration: MutationGeneration
     private var workspaceSessionID = UUID()
@@ -199,7 +209,8 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing else {
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isFaceExtrudeRunning || isFaceExtrudeSnapshotSafe else {
             throw WorkspaceError.activeEditInProgress
         }
         return ProjectAutosaveSnapshot(project: currentProject,
@@ -462,6 +473,28 @@ final class WorkspaceModel: ObservableObject {
               !isSTLImporting,
               !isMeshDiagnosticsRunning,
               !isMeshCleanupRunning,
+              !isFaceExtrudeRunning,
+              !isRecoveryOperationInProgress,
+              !isRecoveryPromptPresented else { return false }
+        #if DEBUG
+        return !isBenchmarkRunning
+        #else
+        return true
+        #endif
+    }
+
+    var canBeginFaceExtrude: Bool {
+        guard interactionMode == .faceSelect,
+              faceSelection.matches(mesh),
+              faceSelection.selectedCount > 0,
+              !isFaceSelectionProcessing,
+              !isStrokeActive,
+              !isGizmoDragging,
+              !isTransformPanelEditing,
+              !isSTLImporting,
+              !isMeshDiagnosticsRunning,
+              !isMeshCleanupRunning,
+              !isFaceExtrudeRunning,
               !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { return false }
         #if DEBUG
@@ -480,6 +513,7 @@ final class WorkspaceModel: ObservableObject {
         cancelStroke()
         cancelAllGizmoDrags()
         cancelFaceSelectionProcessing()
+        discardFaceExtrudePreview()
         hoverLocation = nil
         interactionMode = mode
         faceSelectionError = nil
@@ -671,6 +705,146 @@ final class WorkspaceModel: ObservableObject {
         cancelAllGizmoDrags()
         commitTransformPanelTransaction()
         hoverLocation = nil
+    }
+
+    func prepareForFaceExtrude() throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isFaceExtrudeRunning else { throw FaceExtrudeError.operationInProgress }
+        guard interactionMode == .faceSelect,
+              faceSelection.matches(mesh), faceSelection.selectedCount > 0,
+              !isSTLImporting, !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw FaceExtrudeError.unavailable
+        }
+        cancelStroke()
+        cancelAllGizmoDrags()
+        commitTransformPanelTransaction()
+        cancelFaceSelectionProcessing()
+        hoverLocation = nil
+        faceExtrudePreview = nil
+        faceExtrudeError = nil
+    }
+
+    @discardableResult
+    func previewFaceExtrude(options: FaceExtrudeOptions) throws -> FaceExtrudePreview {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isFaceExtrudeRunning else { throw FaceExtrudeError.operationInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw FaceExtrudeError.activeEdit
+        }
+        isFaceExtrudeRunning = true
+        defer { isFaceExtrudeRunning = false }
+        do {
+            let preview = try FaceExtrude.makePreview(
+                mesh: mesh,
+                selection: faceSelection,
+                transform: objectTransform,
+                options: options,
+                meshChangeVersion: faceExtrudeMeshChangeVersion,
+                transformChangeVersion: faceExtrudeTransformChangeVersion
+            )
+            faceExtrudePreview = preview
+            faceExtrudeError = nil
+            return preview
+        } catch {
+            reportFaceExtrudeError(error)
+            throw error
+        }
+    }
+
+    var isFaceExtrudePreviewStale: Bool {
+        guard let preview = faceExtrudePreview else { return false }
+        return !isFaceExtrudePreviewCurrent(preview)
+    }
+
+    func isFaceExtrudePreviewCurrent(_ preview: FaceExtrudePreview) -> Bool {
+        faceExtrudePreview == preview && preview.source.matches(
+            mesh: mesh,
+            selection: faceSelection,
+            transform: objectTransform,
+            meshChangeVersion: faceExtrudeMeshChangeVersion,
+            transformChangeVersion: faceExtrudeTransformChangeVersion,
+            options: preview.options
+        )
+    }
+
+    @discardableResult
+    func applyFaceExtrude(preview: FaceExtrudePreview) throws -> FaceExtrudeResult {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isFaceExtrudeRunning else { throw FaceExtrudeError.operationInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw FaceExtrudeError.activeEdit
+        }
+        guard faceExtrudePreview == preview,
+              preview.source.matches(
+                mesh: mesh,
+                selection: faceSelection,
+                transform: objectTransform,
+                meshChangeVersion: faceExtrudeMeshChangeVersion,
+                transformChangeVersion: faceExtrudeTransformChangeVersion,
+                options: preview.options
+              ) else { throw FaceExtrudeError.stalePreview }
+
+        isFaceExtrudeRunning = true
+        defer { isFaceExtrudeRunning = false }
+        do {
+            let result = try FaceExtrude.extrude(
+                mesh: mesh, selection: faceSelection,
+                transform: objectTransform, options: preview.options)
+            guard result.estimate == preview.estimate,
+                  result.analysisFingerprint == preview.source.analysisFingerprint else {
+                throw FaceExtrudeError.stalePreview
+            }
+            let rebuiltPickingIndex = try MeshBVH(mesh: result.mesh)
+            let before = workspaceSnapshot
+            mesh = result.mesh
+            hoverLocation = nil
+            #if DEBUG
+            benchmarkPreset = nil
+            #endif
+            profiler?.updateMeshCounts(vertexCount: mesh.vertices.count,
+                                       triangleCount: mesh.indices.count / 3)
+            pickingCache.install(rebuiltPickingIndex, for: mesh)
+            sculptSpatialIndex.prepare(for: mesh)
+            isFaceExtrudeSnapshotSafe = true
+            record(.replaceMesh(ReplaceMeshCommand(before: before, after: workspaceSnapshot)))
+            isFaceExtrudeSnapshotSafe = false
+            meshDiagnosticsCache.invalidate()
+            meshDiagnosticsNeedsRefresh = meshDiagnosticsReport != nil
+            meshDiagnosticsError = nil
+            meshDiagnosticsOverlayRevision &+= 1
+            faceExtrudePreview = nil
+            faceExtrudeError = nil
+            status = "Extruded \(result.estimate.selectedFaceCount) faces by \(preview.options.distanceMillimeters) mm"
+            return result
+        } catch {
+            reportFaceExtrudeError(error)
+            throw error
+        }
+    }
+
+    func discardFaceExtrudePreview() {
+        guard !isFaceExtrudeRunning else { return }
+        faceExtrudePreview = nil
+        faceExtrudeError = nil
+    }
+
+    private func reportFaceExtrudeError(_ error: Error) {
+        let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        faceExtrudeError = message
+        status = "Extrude failed: \(message)"
     }
 
     func previewMeshCleanup(options: MeshCleanupOptions) throws -> MeshCleanupPreview {
@@ -1139,11 +1313,17 @@ final class WorkspaceModel: ObservableObject {
             objectTransform = (useAfter ? transform.after : transform.before).sanitized()
         case .replaceMesh(let replacement):
             let snapshot = useAfter ? replacement.after : replacement.before
+            faceExtrudePreview = nil
+            faceExtrudeError = nil
             mesh = snapshot.mesh
             objectTransform = snapshot.transform.sanitized()
             camera = snapshot.camera
             hoverLocation = nil
             profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
+            if let rebuiltPickingIndex = try? MeshBVH(mesh: mesh) {
+                pickingCache.install(rebuiltPickingIndex, for: mesh)
+            }
+            sculptSpatialIndex.prepare(for: mesh)
         }
     }
 
@@ -1162,6 +1342,8 @@ final class WorkspaceModel: ObservableObject {
 
     private func rebuildFaceSelectionForCurrentTopology() {
         cancelFaceSelectionProcessing()
+        faceExtrudePreview = nil
+        faceExtrudeError = nil
         let triangleCount = mesh.indices.count.isMultiple(of: 3) ? mesh.indices.count / 3 : -1
         do {
             faceSelection = try FaceSelection(
