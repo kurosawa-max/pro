@@ -9,7 +9,7 @@ struct FaceExtrudeOptions: Equatable {
     var distanceMillimeters = defaultDistanceMillimeters
 }
 
-struct FaceExtrudeChangeVersion: Equatable {
+struct TopologyEditChangeVersion: Equatable {
     private(set) var identity: UUID
     private(set) var value: UInt64
 
@@ -29,6 +29,8 @@ struct FaceExtrudeChangeVersion: Equatable {
         }
     }
 }
+
+typealias FaceExtrudeChangeVersion = TopologyEditChangeVersion
 
 struct FaceExtrudeEstimate: Equatable {
     let originalVertexCount: Int

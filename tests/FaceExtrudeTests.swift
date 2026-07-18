@@ -760,7 +760,7 @@ final class FaceExtrudeTests: XCTestCase {
     func testPanelAndSheetFitCompactAndAccessibilityLayouts() throws {
         let model = try configuredModel(faces: [10, 11])
         for width in [CGFloat(320), 744, 1_024] {
-            let panel = UIHostingController(rootView: FaceSelectionPanel(model: model) {})
+            let panel = UIHostingController(rootView: FaceSelectionPanel(model: model, onExtrude: {}))
             let panelSize = panel.sizeThatFits(in: CGSize(width: width, height: 1_400))
             XCTAssertLessThanOrEqual(panelSize.width, width + 1)
             XCTAssertGreaterThan(panelSize.height, 0)
