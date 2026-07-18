@@ -225,7 +225,7 @@ final class FaceInsetTests: XCTestCase {
         XCTAssertFalse(preview.source.matches(
             mesh: cube, selection: selected, transform: .identity,
             meshChangeVersion: meshVersion, transformChangeVersion: transformVersion,
-            options: options(0.25)))
+            options: options(0.5)))
     }
 
     func testResultOrderingAndFingerprintAreDeterministic() throws {
