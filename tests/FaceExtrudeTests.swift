@@ -478,7 +478,7 @@ final class FaceExtrudeTests: XCTestCase {
         let preview = try model.previewFaceExtrude(options: options())
         _ = try model.applyFaceExtrude(preview: preview)
         renderer.update(mesh: model.mesh)
-        XCTAssertFalse(renderer.updateFaceSelection(mesh: model.mesh, selection: model.faceSelection))
+        XCTAssertTrue(renderer.updateFaceSelection(mesh: model.mesh, selection: model.faceSelection))
         XCTAssertEqual(renderer.faceSelectionOverlayIndexCount, 0)
         XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 1)
         XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 1)
