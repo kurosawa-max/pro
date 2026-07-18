@@ -755,10 +755,9 @@ enum FaceExtrude {
     }
 
     private static func matrixIsFinite(_ matrix: simd_float4x4) -> Bool {
-        for column in 0..<4 {
-            for row in 0..<4 where !matrix.columns[column][row].isFinite { return false }
+        [matrix.columns.0, matrix.columns.1, matrix.columns.2, matrix.columns.3].allSatisfy {
+            $0.x.isFinite && $0.y.isFinite && $0.z.isFinite && $0.w.isFinite
         }
-        return true
     }
 
     private struct DoubleBounds {
