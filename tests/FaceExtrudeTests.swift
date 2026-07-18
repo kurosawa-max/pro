@@ -123,6 +123,45 @@ final class FaceExtrudeTests: XCTestCase {
         XCTAssertEqual(negative.vertices.suffix(4).map(\.position.y), [0.5, 0.5, 0.5, 0.5])
     }
 
+    func testNegativeMultipleComponentTopologyRemainsManifoldUnderTransform() throws {
+        let cube = try PrimitiveMeshBuilder.cube(size: 2)
+        let transform = ObjectTransform(
+            translation: SIMD3<Float>(8, -4, 2),
+            rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(20, 35, 70)),
+            scale: SIMD3<Float>(2, 3, 0.5))
+        for distance in [-0.001, -0.25, -999.999] {
+            let result = try FaceExtrude.extrude(
+                mesh: cube, selection: try selection(cube, faces: [8, 9, 10, 11]),
+                transform: transform, options: options(distance))
+            XCTAssertEqual(result.estimate.componentCount, 2)
+            XCTAssertEqual(result.estimate.boundaryEdgeCount, 8)
+            let topology = MeshTopologyDiagnostics.analyze(result.mesh)
+            XCTAssertEqual(topology.degenerateTriangleCount, 0)
+            XCTAssertEqual(topology.duplicateTriangleCount, 0)
+            XCTAssertEqual(topology.boundaryEdgeCount, 0)
+            XCTAssertEqual(topology.nonManifoldEdgeCount, 0)
+            XCTAssertEqual(topology.inconsistentWindingEdgeCount, 0)
+            XCTAssertTrue(result.mesh.bounds.isFinite)
+            XCTAssertTrue(result.mesh.vertices.allSatisfy {
+                $0.normal.allFinite && abs(simd_length($0.normal) - 1) <= 0.000_1
+            })
+        }
+    }
+
+    func testPrecisionCollapsedMinimumDistanceIsRejectedInsteadOfInstalled() throws {
+        let cube = try PrimitiveMeshBuilder.cube(size: 2)
+        let transform = ObjectTransform(translation: SIMD3<Float>(100_000_000, 0, 0))
+        XCTAssertThrowsError(try FaceExtrude.extrude(
+            mesh: cube, selection: try selection(cube, faces: [8, 9]),
+            transform: transform, options: options(0.001))) {
+            guard let error = $0 as? FaceExtrudeError else {
+                return XCTFail("Expected a Face Extrude validation error")
+            }
+            XCTAssertTrue([.zeroComponentNormal, .inverseTransformFailure,
+                           .validationFailed].contains(error))
+        }
+    }
+
     func testWorldMillimeterDirectionHandlesTranslationRotationAndNonUniformScale() throws {
         let cube = try PrimitiveMeshBuilder.cube(size: 2)
         let transform = ObjectTransform(
@@ -258,6 +297,49 @@ final class FaceExtrudeTests: XCTestCase {
 
         let duplicate = mesh(cubePositions, [0, 1, 2, 2, 0, 1])
         try assertExtrudeError(duplicate, faces: [0], expected: .duplicateTriangle)
+    }
+
+    func testDistantMeshIssuePolicyIsExplicitAndCountPreserving() throws {
+        let cube = try PrimitiveMeshBuilder.cube(size: 2)
+        let distantDegenerate = appendedMesh(
+            cube,
+            positions: [SIMD3(10, 0, 0), SIMD3(11, 0, 0), SIMD3(12, 0, 0)],
+            indices: [0, 1, 2])
+        try assertExtrudeError(distantDegenerate, faces: [10, 11], expected: .degenerateTriangle)
+
+        let distantDuplicate = appendedMesh(
+            cube,
+            positions: [SIMD3(10, 0, 0), SIMD3(11, 0, 0), SIMD3(10, 1, 0)],
+            indices: [0, 1, 2, 0, 1, 2])
+        try assertExtrudeError(distantDuplicate, faces: [10, 11], expected: .duplicateTriangle)
+
+        let distantOpen = appendedMesh(
+            cube,
+            positions: [SIMD3(10, 0, 0), SIMD3(11, 0, 0), SIMD3(10, 1, 0)],
+            indices: [0, 1, 2])
+        let distantNonManifold = appendedMesh(
+            cube,
+            positions: [SIMD3(10, 0, 0), SIMD3(11, 0, 0), SIMD3(10, 1, 0),
+                        SIMD3(10, -1, 0), SIMD3(10, 0, 1)],
+            indices: [0, 1, 2, 1, 0, 3, 0, 1, 4])
+        let distantWinding = appendedMesh(
+            cube,
+            positions: [SIMD3(10, 0, 0), SIMD3(11, 0, 0), SIMD3(10, 1, 0), SIMD3(10, -1, 0)],
+            indices: [0, 1, 2, 0, 1, 3])
+
+        for source in [distantOpen, distantNonManifold, distantWinding] {
+            let sourceTopology = MeshTopologyDiagnostics.analyze(source)
+            let result = try FaceExtrude.extrude(
+                mesh: source, selection: try selection(source, faces: [10, 11]),
+                transform: .identity, options: options())
+            let resultTopology = MeshTopologyDiagnostics.analyze(result.mesh)
+            XCTAssertEqual(resultTopology.boundaryEdgeCount, sourceTopology.boundaryEdgeCount)
+            XCTAssertEqual(resultTopology.nonManifoldEdgeCount, sourceTopology.nonManifoldEdgeCount)
+            XCTAssertEqual(resultTopology.inconsistentWindingEdgeCount,
+                           sourceTopology.inconsistentWindingEdgeCount)
+            XCTAssertEqual(resultTopology.degenerateTriangleCount, 0)
+            XCTAssertEqual(resultTopology.duplicateTriangleCount, 0)
+        }
     }
 
     func testOpenNonManifoldWindingAndWholeShellSelectionsAreRejected() throws {
@@ -427,6 +509,20 @@ final class FaceExtrudeTests: XCTestCase {
     }
 
     @MainActor
+    func testFailedPreviewRecalculationInvalidatesPreviousModelPreview() throws {
+        let model = try configuredModel(faces: [10, 11])
+        try model.prepareForFaceExtrude()
+        let original = try model.previewFaceExtrude(options: options())
+        XCTAssertTrue(model.isFaceExtrudePreviewCurrent(original))
+        XCTAssertThrowsError(try model.previewFaceExtrude(options: options(0))) {
+            XCTAssertEqual($0 as? FaceExtrudeError, .distanceTooSmall)
+        }
+        XCTAssertNil(model.faceExtrudePreview)
+        XCTAssertFalse(model.isFaceExtrudePreviewCurrent(original))
+        XCTAssertNotNil(model.faceExtrudeError)
+    }
+
+    @MainActor
     func testUndoRedoRestoreMeshesWithoutRestoringSelection() throws {
         let model = try configuredModel(faces: [10, 11])
         let before = model.mesh
@@ -445,6 +541,123 @@ final class FaceExtrudeTests: XCTestCase {
         XCTAssertEqual(model.selectedFaceCount, 0)
         XCTAssertNotEqual(model.projectMutationGeneration, generationAfterUndo)
         XCTAssertTrue(model.mesh.hasCachedAdjacency)
+    }
+
+    func testBVHRebuildFailureInvalidatesStaleCacheAndLaterPickingRetries() throws {
+        var failNextBuild = false
+        let cache = MeshBVHCache(builder: { mesh in
+            if failNextBuild {
+                failNextBuild = false
+                throw MeshBVHError.invalidMesh
+            }
+            return try MeshBVH(mesh: mesh)
+        })
+        let original = EditableMesh.icosphere(subdivisions: 0)
+        XCTAssertNotNil(cache.index(for: original))
+        XCTAssertEqual(cache.topologyID, original.runtime.topologyID)
+
+        let replacement = EditableMesh.icosphere(subdivisions: 1)
+        failNextBuild = true
+        XCTAssertFalse(cache.rebuild(for: replacement))
+        XCTAssertNil(cache.bvh)
+        XCTAssertNil(cache.topologyID)
+        XCTAssertNil(cache.topologyRevision)
+        XCTAssertNil(cache.revision)
+
+        let ray = Ray(origin: SIMD3<Float>(0, 0, 3), direction: SIMD3<Float>(0, 0, -1))
+        let unavailable = MeshBVHCache(builder: { _ in throw MeshBVHError.invalidMesh })
+        XCTAssertNil(MeshPicker.hit(ray: ray, mesh: replacement, profiler: nil,
+                                    cache: unavailable))
+        XCTAssertNil(unavailable.bvh)
+        let indexed = MeshPicker.indexedHit(ray: ray, mesh: replacement, culling: .none,
+                                            profiler: nil, cache: cache)
+        guard case .hit(let hit) = indexed else {
+            return XCTFail("Picking should rebuild the invalidated cache")
+        }
+        XCTAssertTrue((0..<(replacement.indices.count / 3)).contains(hit.triangleIndex))
+        XCTAssertNotNil(MeshPicker.hit(ray: ray, mesh: replacement, profiler: nil, cache: cache))
+        XCTAssertEqual(cache.topologyID, replacement.runtime.topologyID)
+    }
+
+    @MainActor
+    func testUndoRedoBVHFailureNeverUsesStaleTopologyAndCanRetry() throws {
+        var failNextBuild = false
+        let cache = MeshBVHCache(builder: { mesh in
+            if failNextBuild {
+                failNextBuild = false
+                throw MeshBVHError.invalidMesh
+            }
+            return try MeshBVH(mesh: mesh)
+        })
+        let model = try configuredModel(faces: [10, 11], pickingCache: cache)
+        let before = model.mesh
+        try model.prepareForFaceExtrude()
+        let preview = try model.previewFaceExtrude(options: options())
+        let after = try model.applyFaceExtrude(preview: preview).mesh
+        _ = try model.analyzeCurrentMesh()
+        XCTAssertNotNil(model.currentMeshDiagnosticsReport)
+
+        failNextBuild = true
+        model.undo()
+        XCTAssertEqual(model.mesh, before)
+        XCTAssertFalse(model.pickingCacheHasIndexForTesting)
+        XCTAssertNil(model.pickingCacheTopologyIDForTesting)
+        XCTAssertNil(model.currentMeshDiagnosticsReport)
+        XCTAssertTrue(model.selectFace(fromWorldRay: Ray(
+            origin: SIMD3<Float>(0, 4, 0), direction: SIMD3<Float>(0, -1, 0))))
+        XCTAssertEqual(model.pickingCacheTopologyIDForTesting, model.mesh.runtime.topologyID)
+        _ = try model.analyzeCurrentMesh()
+        XCTAssertNotNil(model.currentMeshDiagnosticsReport)
+
+        failNextBuild = true
+        model.redo()
+        XCTAssertEqual(model.mesh, after)
+        XCTAssertFalse(model.pickingCacheHasIndexForTesting)
+        XCTAssertNil(model.currentMeshDiagnosticsReport)
+        XCTAssertTrue(model.selectFace(fromWorldRay: Ray(
+            origin: SIMD3<Float>(0, 4, 0), direction: SIMD3<Float>(0, -1, 0))))
+        XCTAssertEqual(model.pickingCacheTopologyIDForTesting, model.mesh.runtime.topologyID)
+    }
+
+    @MainActor
+    func testPickingBVHPreparationFailureLeavesWorkspaceAtomic() throws {
+        let cache = MeshBVHCache(builder: { _ in throw MeshBVHError.invalidMesh })
+        let model = try configuredModel(faces: [10, 11], pickingCache: cache)
+        _ = try model.analyzeCurrentMesh()
+        try model.prepareForFaceExtrude()
+        let preview = try model.previewFaceExtrude(options: options())
+        let sourceMesh = model.mesh
+        let sourceTransform = model.objectTransform
+        let sourceCamera = model.camera
+        let sourceSelection = model.faceSelection
+        let sourceHistory = (model.undoCount, model.redoCount, model.canUndo, model.canRedo)
+        let sourceGeneration = model.projectMutationGeneration
+        let sourceProject = try model.projectData()
+        let sourceSTL = try model.stlData()
+        let sourceDiagnostics = model.currentMeshDiagnosticsReport
+        let sourceProfiler = model.profiler?.snapshot()
+
+        XCTAssertThrowsError(try model.applyFaceExtrude(preview: preview)) { error in
+            guard let pickingError = error as? MeshBVHError,
+                  case .invalidMesh = pickingError else {
+                return XCTFail("Expected the injected Picking BVH build failure")
+            }
+        }
+        XCTAssertEqual(model.mesh, sourceMesh)
+        XCTAssertEqual(model.objectTransform, sourceTransform)
+        XCTAssertEqual(model.camera, sourceCamera)
+        XCTAssertEqual(model.faceSelection, sourceSelection)
+        XCTAssertEqual(model.undoCount, sourceHistory.0)
+        XCTAssertEqual(model.redoCount, sourceHistory.1)
+        XCTAssertEqual(model.canUndo, sourceHistory.2)
+        XCTAssertEqual(model.canRedo, sourceHistory.3)
+        XCTAssertEqual(model.projectMutationGeneration, sourceGeneration)
+        XCTAssertEqual(try model.projectData(), sourceProject)
+        XCTAssertEqual(try model.stlData(), sourceSTL)
+        XCTAssertEqual(model.currentMeshDiagnosticsReport, sourceDiagnostics)
+        XCTAssertEqual(model.profiler?.snapshot(), sourceProfiler)
+        XCTAssertEqual(model.faceExtrudePreview, preview)
+        XCTAssertFalse(model.isFaceExtrudeSnapshotSafeForTesting)
     }
 
     @MainActor
@@ -524,14 +737,21 @@ final class FaceExtrudeTests: XCTestCase {
         try model.prepareForFaceExtrude()
         let preview = try model.previewFaceExtrude(options: options())
         _ = try model.applyFaceExtrude(preview: preview)
+        XCTAssertFalse(model.isFaceExtrudeSnapshotSafeForTesting)
+        await waitForWriteCount(1, coordinator: coordinator)
+        var recovery = try await coordinator.inspectRecovery()
+        XCTAssertEqual(recovery.project.mesh, model.mesh)
+        XCTAssertEqual(recovery.descriptor.sourceGeneration, model.projectMutationGeneration)
 
-        for _ in 0..<200 {
-            if await coordinator.successfulWriteCount == 1 { break }
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
-        let writeCount = await coordinator.successfulWriteCount
-        XCTAssertEqual(writeCount, 1)
-        let recovery = try await coordinator.inspectRecovery()
+        model.undo()
+        await waitForWriteCount(2, coordinator: coordinator)
+        recovery = try await coordinator.inspectRecovery()
+        XCTAssertEqual(recovery.project.mesh, model.mesh)
+        XCTAssertEqual(recovery.descriptor.sourceGeneration, model.projectMutationGeneration)
+
+        model.redo()
+        await waitForWriteCount(3, coordinator: coordinator)
+        recovery = try await coordinator.inspectRecovery()
         XCTAssertEqual(recovery.project.mesh, model.mesh)
         XCTAssertEqual(recovery.descriptor.sourceGeneration, model.projectMutationGeneration)
     }
@@ -567,13 +787,39 @@ final class FaceExtrudeTests: XCTestCase {
     }
 
     @MainActor
-    private func configuredModel(faces: [Int]) throws -> WorkspaceModel {
-        let model = WorkspaceModel()
+    private func configuredModel(
+        faces: [Int], pickingCache: MeshBVHCache = MeshBVHCache()
+    ) throws -> WorkspaceModel {
+        let model = WorkspaceModel(pickingCache: pickingCache)
         model.mesh = try PrimitiveMeshBuilder.cube(size: 2)
         model.setInteractionMode(.faceSelect)
         model.setFaceSelectionOperation(.add)
         for faceID in faces { XCTAssertTrue(model.applyFaceSelectionHit(faceID)) }
         return model
+    }
+
+    private func appendedMesh(
+        _ source: EditableMesh,
+        positions: [SIMD3<Float>],
+        indices: [UInt32]
+    ) -> EditableMesh {
+        let offset = UInt32(source.vertices.count)
+        return mesh(source.vertices.map(\.position) + positions,
+                    source.indices + indices.map { $0 + offset })
+    }
+
+    private func waitForWriteCount(
+        _ expected: Int,
+        coordinator: ProjectAutosaveCoordinator,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        for _ in 0..<10_000 {
+            if await coordinator.successfulWriteCount == expected { return }
+            await Task.yield()
+        }
+        let actual = await coordinator.successfulWriteCount
+        XCTAssertEqual(actual, expected, file: file, line: line)
     }
 
     private func assertExtrudeError(

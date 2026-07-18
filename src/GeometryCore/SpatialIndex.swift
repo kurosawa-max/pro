@@ -139,6 +139,8 @@ struct MeshBVH {
 enum MeshBVHError: Error { case invalidMesh, nonFiniteBounds }
 
 final class MeshBVHCache {
+    typealias Builder = (EditableMesh) throws -> MeshBVH
+
     private(set) var bvh: MeshBVH?
     private(set) var topologyID: UUID?
     private(set) var topologyRevision: UInt64?
@@ -146,12 +148,21 @@ final class MeshBVHCache {
     private(set) var buildCount = 0
     private(set) var refitCount = 0
     private(set) var reuseCount = 0
+    private let builder: Builder
+
+    init(builder: @escaping Builder = { try MeshBVH(mesh: $0) }) {
+        self.builder = builder
+    }
+
+    func makeIndex(for mesh: EditableMesh) throws -> MeshBVH {
+        try builder(mesh)
+    }
 
     func index(for mesh: EditableMesh) -> MeshBVH? {
         do {
             if bvh == nil || topologyID != mesh.runtime.topologyID
                 || topologyRevision != mesh.runtime.topologyRevision {
-                bvh = try MeshBVH(mesh: mesh)
+                bvh = try makeIndex(for: mesh)
                 topologyID = mesh.runtime.topologyID
                 topologyRevision = mesh.runtime.topologyRevision
                 revision = mesh.runtime.revision
@@ -161,8 +172,20 @@ final class MeshBVHCache {
             } else { reuseCount += 1 }
             return bvh
         } catch {
-            bvh = nil; topologyID = nil; topologyRevision = nil; revision = nil
+            invalidate()
             return nil
+        }
+    }
+
+    @discardableResult
+    func rebuild(for mesh: EditableMesh) -> Bool {
+        invalidate()
+        do {
+            install(try makeIndex(for: mesh), for: mesh)
+            return true
+        } catch {
+            invalidate()
+            return false
         }
     }
 
@@ -172,6 +195,13 @@ final class MeshBVHCache {
         topologyRevision = mesh.runtime.topologyRevision
         revision = mesh.runtime.revision
         buildCount += 1
+    }
+
+    func invalidate() {
+        bvh = nil
+        topologyID = nil
+        topologyRevision = nil
+        revision = nil
     }
 }
 

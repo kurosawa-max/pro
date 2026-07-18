@@ -132,10 +132,10 @@ enum FaceExtrudeError: Error, Equatable, LocalizedError {
         case .invalidDistance: "Enter a finite extrusion distance in millimeters."
         case .distanceTooSmall: "Extrusion distance must be at least 0.001 mm in magnitude."
         case .distanceLimitExceeded: "Extrusion distance must be between -1000 and 1000 mm."
-        case .invalidMesh: "The mesh structure or an index is invalid."
-        case .nonFiniteValue: "The mesh contains NaN or Infinity."
-        case .degenerateTriangle: "Extrude requires a mesh without degenerate triangles."
-        case .duplicateTriangle: "Extrude requires a mesh without duplicate triangles."
+        case .invalidMesh: "Face Extrude validates the entire mesh and found an invalid structure or index. Review Mesh Diagnostics before retrying."
+        case .nonFiniteValue: "Face Extrude validates the entire mesh and found NaN or Infinity. Review Mesh Diagnostics before retrying."
+        case .degenerateTriangle: "Face Extrude requires the entire mesh, including faces outside the selection, to contain no degenerate triangles. Review Mesh Diagnostics and run Mesh Cleanup before retrying."
+        case .duplicateTriangle: "Face Extrude requires the entire mesh, including faces outside the selection, to contain no duplicate triangles. Review Mesh Diagnostics and run Mesh Cleanup before retrying."
         case .openSelectedEdge: "The selected region touches an open mesh boundary."
         case .nonManifoldSelectedEdge: "The selected region touches a non-manifold edge."
         case .windingConflict: "The selected region touches an edge with inconsistent winding."
@@ -466,9 +466,9 @@ enum FaceExtrude {
         processedEdges.reserveCapacity(try multiply(selectedFaceIDs.count, 2))
         for faceID in selectedFaceIDs {
             let triangle = try triangleIndices(faceID: faceID, mesh: mesh)
-            for (slot, pair) in [(triangle[0], triangle[1]),
-                                 (triangle[1], triangle[2]),
-                                 (triangle[2], triangle[0])].enumerated() {
+            for pair in [(triangle[0], triangle[1]),
+                         (triangle[1], triangle[2]),
+                         (triangle[2], triangle[0])] {
                 let key = DiagnosticEdgeKey(pair.0, pair.1)
                 guard processedEdges.insert(key).inserted else { continue }
                 guard let record = edgeRecords[key] else { throw FaceExtrudeError.invalidMesh }

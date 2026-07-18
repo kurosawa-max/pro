@@ -35,8 +35,14 @@ enum MeshPicker {
         cache: MeshBVHCache? = nil
     ) -> MeshHit? {
         PerformanceProfiler.measure(profiler, metric: .picking) {
-            let activeCache = cache ?? MeshBVHCache()
-            guard let bvh = activeCache.index(for: mesh) else { return hitLinearUnmeasured(ray: ray, mesh: mesh, culling: culling) }
+            if let cache {
+                guard let bvh = cache.index(for: mesh) else { return nil }
+                return hitBVHUnmeasured(ray: ray, mesh: mesh, culling: culling, bvh: bvh)
+            }
+            let activeCache = MeshBVHCache()
+            guard let bvh = activeCache.index(for: mesh) else {
+                return hitLinearUnmeasured(ray: ray, mesh: mesh, culling: culling)
+            }
             return hitBVHUnmeasured(ray: ray, mesh: mesh, culling: culling, bvh: bvh)
         }
     }

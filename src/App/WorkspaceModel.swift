@@ -74,7 +74,7 @@ final class WorkspaceModel: ObservableObject {
     #endif
 
     private var history = WorkspaceHistory()
-    private let pickingCache = MeshBVHCache()
+    private let pickingCache: MeshBVHCache
     private let sculptSpatialIndex = VertexSpatialIndex()
     private let meshDiagnosticsCache = MeshDiagnosticsCache()
     private var meshDiagnosticsNeedsRefresh = false
@@ -100,8 +100,16 @@ final class WorkspaceModel: ObservableObject {
     private var faceSelectionTask: Task<Void, Never>?
     private var faceSelectionTaskID: UUID?
 
-    init(autosaveCoordinator: ProjectAutosaveCoordinator = ProjectAutosaveCoordinator()) {
+    private struct PreparedFaceExtrudeCommit {
+        let result: FaceExtrudeResult
+        let before: WorkspaceMeshSnapshot
+        let pickingIndex: MeshBVH
+    }
+
+    init(autosaveCoordinator: ProjectAutosaveCoordinator = ProjectAutosaveCoordinator(),
+         pickingCache: MeshBVHCache = MeshBVHCache()) {
         self.autosaveCoordinator = autosaveCoordinator
+        self.pickingCache = pickingCache
         self.lastSavedGeneration = projectMutationGeneration
         rebuildFaceSelectionForCurrentTopology()
         profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
@@ -739,6 +747,8 @@ final class WorkspaceModel: ObservableObject {
               !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
             throw FaceExtrudeError.activeEdit
         }
+        faceExtrudePreview = nil
+        faceExtrudeError = nil
         isFaceExtrudeRunning = true
         defer { isFaceExtrudeRunning = false }
         do {
@@ -800,39 +810,61 @@ final class WorkspaceModel: ObservableObject {
         isFaceExtrudeRunning = true
         defer { isFaceExtrudeRunning = false }
         do {
-            let result = try FaceExtrude.extrude(
-                mesh: mesh, selection: faceSelection,
-                transform: objectTransform, options: preview.options)
-            guard result.estimate == preview.estimate,
-                  result.analysisFingerprint == preview.source.analysisFingerprint else {
-                throw FaceExtrudeError.stalePreview
-            }
-            let rebuiltPickingIndex = try MeshBVH(mesh: result.mesh)
-            let before = workspaceSnapshot
-            mesh = result.mesh
-            hoverLocation = nil
-            #if DEBUG
-            benchmarkPreset = nil
-            #endif
-            profiler?.updateMeshCounts(vertexCount: mesh.vertices.count,
-                                       triangleCount: mesh.indices.count / 3)
-            pickingCache.install(rebuiltPickingIndex, for: mesh)
-            sculptSpatialIndex.prepare(for: mesh)
-            isFaceExtrudeSnapshotSafe = true
-            record(.replaceMesh(ReplaceMeshCommand(before: before, after: workspaceSnapshot)))
-            isFaceExtrudeSnapshotSafe = false
-            meshDiagnosticsCache.invalidate()
-            meshDiagnosticsNeedsRefresh = meshDiagnosticsReport != nil
-            meshDiagnosticsError = nil
-            meshDiagnosticsOverlayRevision &+= 1
-            faceExtrudePreview = nil
-            faceExtrudeError = nil
-            status = "Extruded \(result.estimate.selectedFaceCount) faces by \(preview.options.distanceMillimeters) mm"
-            return result
+            let prepared = try prepareFaceExtrudeCommit(preview: preview)
+            return commitFaceExtrude(prepared, options: preview.options)
         } catch {
             reportFaceExtrudeError(error)
             throw error
         }
+    }
+
+    private func prepareFaceExtrudeCommit(
+        preview: FaceExtrudePreview
+    ) throws -> PreparedFaceExtrudeCommit {
+        let result = try FaceExtrude.extrude(
+            mesh: mesh, selection: faceSelection,
+            transform: objectTransform, options: preview.options)
+        guard result.estimate == preview.estimate,
+              result.analysisFingerprint == preview.source.analysisFingerprint else {
+            throw FaceExtrudeError.stalePreview
+        }
+        return PreparedFaceExtrudeCommit(
+            result: result,
+            before: workspaceSnapshot,
+            pickingIndex: try pickingCache.makeIndex(for: result.mesh))
+    }
+
+    private func commitFaceExtrude(
+        _ prepared: PreparedFaceExtrudeCommit,
+        options: FaceExtrudeOptions
+    ) -> FaceExtrudeResult {
+        let result = prepared.result
+        mesh = result.mesh
+        hoverLocation = nil
+        #if DEBUG
+        benchmarkPreset = nil
+        #endif
+        profiler?.updateMeshCounts(vertexCount: mesh.vertices.count,
+                                   triangleCount: mesh.indices.count / 3)
+        pickingCache.install(prepared.pickingIndex, for: mesh)
+        sculptSpatialIndex.prepare(for: mesh)
+        let command = ReplaceMeshCommand(before: prepared.before, after: workspaceSnapshot)
+        recordFaceExtrudeReplacement(command)
+        meshDiagnosticsCache.invalidate()
+        meshDiagnosticsNeedsRefresh = meshDiagnosticsReport != nil
+        meshDiagnosticsError = nil
+        meshDiagnosticsOverlayRevision &+= 1
+        faceExtrudePreview = nil
+        faceExtrudeError = nil
+        status = "Extruded \(result.estimate.selectedFaceCount) faces by \(options.distanceMillimeters) mm"
+        return result
+    }
+
+    private func recordFaceExtrudeReplacement(_ command: ReplaceMeshCommand) {
+        precondition(isFaceExtrudeRunning)
+        isFaceExtrudeSnapshotSafe = true
+        defer { isFaceExtrudeSnapshotSafe = false }
+        record(.replaceMesh(command))
     }
 
     func discardFaceExtrudePreview() {
@@ -1320,10 +1352,14 @@ final class WorkspaceModel: ObservableObject {
             camera = snapshot.camera
             hoverLocation = nil
             profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
-            if let rebuiltPickingIndex = try? MeshBVH(mesh: mesh) {
-                pickingCache.install(rebuiltPickingIndex, for: mesh)
+            if !pickingCache.rebuild(for: mesh) {
+                status = "Mesh restored, but Picking is temporarily unavailable. The next pick will retry the index build."
             }
             sculptSpatialIndex.prepare(for: mesh)
+            meshDiagnosticsCache.invalidate()
+            meshDiagnosticsNeedsRefresh = meshDiagnosticsReport != nil
+            meshDiagnosticsError = nil
+            meshDiagnosticsOverlayRevision &+= 1
         }
     }
 
@@ -1398,6 +1434,12 @@ final class WorkspaceModel: ObservableObject {
         saveState = .unsavedChanges
         scheduleAutosaveIfSafe()
     }
+
+    #if DEBUG
+    var isFaceExtrudeSnapshotSafeForTesting: Bool { isFaceExtrudeSnapshotSafe }
+    var pickingCacheHasIndexForTesting: Bool { pickingCache.bvh != nil }
+    var pickingCacheTopologyIDForTesting: UUID? { pickingCache.topologyID }
+    #endif
 
     private func scheduleAutosaveIfSafe() {
         guard isAutosaveEnabled else { return }

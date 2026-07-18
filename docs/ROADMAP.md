@@ -38,7 +38,7 @@ Diagnosticsに続く限定Mesh Cleanupとして、preview選択式のisolated ve
 
 単一objectのFace Selection foundationとしてtriangle ID、dense bitset、Replace／Add／Remove／Toggle、Clear／All／Invert／edge-connected selection、CPU BVH picking、再試行可能な専用Metal fill overlay、compact／Dynamic Type UIを追加する。selection versionはUUID identityで整数wrapを防ぐ。selectionはruntime-onlyで、topology置換時にclearし、vertex-only変更では維持する。project dirty、Autosave、Recovery、Undo／Redo、formatVersion 1へ参加しない。Edge／Vertex／Box／Lasso selectionとInset／Bevelは後続作業とする。
 
-Face Selectionを入力とする安全なFace Extrude foundationとして、共有edge component、area-weighted world normal、signed millimeter distance、top face／boundary side wall、deterministic compaction、必須preview、stale identity、原子的mesh install、snapshot Undo／Redoを追加する。open boundary、non-manifold selected edge、winding conflict、whole shell、degenerate／duplicate／non-finite inputを拒否し、self-intersection検出やrepairは行わない。Inset／Bevel、individual extrusion、interactive gizmo、multiple objectは後続範囲とする。
+Face Selectionを入力とする安全なFace Extrude foundationとして、共有edge component、area-weighted world normal、signed millimeter distance、top face／boundary side wall、deterministic compaction、必須preview、stale identity、prepared／commit分離した原子的mesh install、snapshot Undo／Redoを追加する。mesh全体のinvalid／degenerate／duplicate／non-finite入力、selected open boundary、non-manifold edge、winding conflict、whole shellを拒否する。Undo／RedoのBVH failureはcache invalidateと後続retryで安全に扱う。self-intersection検出やrepairは行わず、Inset／Bevel、individual extrusion、interactive gizmo、multiple objectは後続範囲とする。
 
 ## Milestone 0 — Repository Foundation
 

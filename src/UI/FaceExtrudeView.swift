@@ -60,6 +60,8 @@ struct FaceExtrudeView: View {
                     Label("Apply creates one Undo command.", systemImage: "arrow.uturn.backward.circle")
                     Label("This operation changes mesh topology and clears face selection.",
                           systemImage: "exclamationmark.triangle")
+                    Text("Face Extrude validates the entire mesh for invalid indices, non-finite values, degenerate triangles, and duplicate triangles. A problem outside the selection also blocks extrusion; use Mesh Diagnostics and Mesh Cleanup before retrying.")
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("Self-intersections and collisions are not detected. Open boundaries, non-manifold selected edges, inconsistent winding, and whole-shell selections are rejected.")
                         .fixedSize(horizontal: false, vertical: true)
                     if parsedDistance.map({ $0 < 0 }) == true {
