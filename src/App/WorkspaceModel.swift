@@ -88,6 +88,7 @@ final class WorkspaceModel: ObservableObject {
     private var flattenPlane: FlattenPlane?
     private var panelTransformBefore: ObjectTransform?
     private var faceSelectionTask: Task<Void, Never>?
+    private var faceSelectionTaskID: UUID?
 
     init(autosaveCoordinator: ProjectAutosaveCoordinator = ProjectAutosaveCoordinator()) {
         self.autosaveCoordinator = autosaveCoordinator
@@ -569,11 +570,16 @@ final class WorkspaceModel: ObservableObject {
         let sourceSelection = faceSelection
         isFaceSelectionProcessing = true
         faceSelectionError = nil
+        let taskID = UUID()
+        faceSelectionTaskID = taskID
         faceSelectionTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
-                self.isFaceSelectionProcessing = false
-                self.faceSelectionTask = nil
+                if self.faceSelectionTaskID == taskID {
+                    self.isFaceSelectionProcessing = false
+                    self.faceSelectionTask = nil
+                    self.faceSelectionTaskID = nil
+                }
             }
             await Task.yield()
             guard !Task.isCancelled else { return }
@@ -1201,6 +1207,7 @@ final class WorkspaceModel: ObservableObject {
     private func cancelFaceSelectionProcessing() {
         faceSelectionTask?.cancel()
         faceSelectionTask = nil
+        faceSelectionTaskID = nil
         isFaceSelectionProcessing = false
     }
 
