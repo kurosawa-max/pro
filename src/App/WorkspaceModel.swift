@@ -65,6 +65,9 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var isFaceBevelRunning = false
     @Published private(set) var faceBevelPreview: FaceBevelPreview? = nil
     @Published private(set) var faceBevelError: String? = nil
+    @Published private(set) var isMeshMirrorRunning = false
+    @Published private(set) var meshMirrorPreview: MeshMirrorPreview? = nil
+    @Published private(set) var meshMirrorError: String? = nil
     @Published private(set) var saveState = ProjectSaveState.saved
     @Published private(set) var recoveryDescriptor: RecoveryDescriptor?
     @Published private(set) var recoveryInspectionError: String?
@@ -110,6 +113,10 @@ final class WorkspaceModel: ObservableObject {
         isFaceExtrudeRunning || isFaceInsetRunning || isFaceBevelRunning
     }
 
+    private var isTopologyEditRunning: Bool {
+        isFaceTopologyEditRunning || isMeshMirrorRunning
+    }
+
     private struct PreparedFaceExtrudeCommit {
         let result: FaceExtrudeResult
         let before: WorkspaceMeshSnapshot
@@ -124,6 +131,12 @@ final class WorkspaceModel: ObservableObject {
 
     private struct PreparedFaceBevelCommit {
         let result: FaceBevelResult
+        let before: WorkspaceMeshSnapshot
+        let pickingIndex: MeshBVH
+    }
+
+    private struct PreparedMeshMirrorCommit {
+        let result: MeshMirrorResult
         let before: WorkspaceMeshSnapshot
         let pickingIndex: MeshBVH
     }
@@ -240,7 +253,7 @@ final class WorkspaceModel: ObservableObject {
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
-              (!isFaceExtrudeRunning && !isFaceInsetRunning && !isFaceBevelRunning)
+              (!isFaceExtrudeRunning && !isFaceInsetRunning && !isFaceBevelRunning && !isMeshMirrorRunning)
                 || isTopologyEditSnapshotSafe else {
             throw WorkspaceError.activeEditInProgress
         }
@@ -507,6 +520,7 @@ final class WorkspaceModel: ObservableObject {
               !isFaceExtrudeRunning,
               !isFaceInsetRunning,
               !isFaceBevelRunning,
+              !isMeshMirrorRunning,
               !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { return false }
         #if DEBUG
@@ -530,6 +544,7 @@ final class WorkspaceModel: ObservableObject {
               !isFaceExtrudeRunning,
               !isFaceInsetRunning,
               !isFaceBevelRunning,
+              !isMeshMirrorRunning,
               !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { return false }
         #if DEBUG
@@ -553,6 +568,7 @@ final class WorkspaceModel: ObservableObject {
               !isFaceExtrudeRunning,
               !isFaceInsetRunning,
               !isFaceBevelRunning,
+              !isMeshMirrorRunning,
               !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { return false }
         #if DEBUG
@@ -576,6 +592,7 @@ final class WorkspaceModel: ObservableObject {
               !isFaceExtrudeRunning,
               !isFaceInsetRunning,
               !isFaceBevelRunning,
+              !isMeshMirrorRunning,
               !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { return false }
         #if DEBUG
@@ -597,6 +614,7 @@ final class WorkspaceModel: ObservableObject {
         discardFaceExtrudePreview()
         discardFaceInsetPreview()
         discardFaceBevelPreview()
+        discardMeshMirrorPreview()
         hoverLocation = nil
         interactionMode = mode
         faceSelectionError = nil
@@ -787,6 +805,7 @@ final class WorkspaceModel: ObservableObject {
         cancelStroke()
         cancelAllGizmoDrags()
         commitTransformPanelTransaction()
+        discardMeshMirrorPreview()
         hoverLocation = nil
     }
 
@@ -794,7 +813,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceTopologyEditRunning else { throw FaceExtrudeError.operationInProgress }
+        guard !isTopologyEditRunning else { throw FaceExtrudeError.operationInProgress }
         guard interactionMode == .faceSelect,
               faceSelection.matches(mesh), faceSelection.selectedCount > 0,
               !isSTLImporting, !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -812,6 +831,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        meshMirrorPreview = nil
+        meshMirrorError = nil
     }
 
     @discardableResult
@@ -819,7 +840,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceTopologyEditRunning else { throw FaceExtrudeError.operationInProgress }
+        guard !isTopologyEditRunning else { throw FaceExtrudeError.operationInProgress }
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
               !isFaceSelectionProcessing, !isSTLImporting,
               !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -869,7 +890,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceTopologyEditRunning else { throw FaceExtrudeError.operationInProgress }
+        guard !isTopologyEditRunning else { throw FaceExtrudeError.operationInProgress }
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
               !isFaceSelectionProcessing, !isSTLImporting,
               !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -962,7 +983,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceTopologyEditRunning else { throw FaceInsetError.operationInProgress }
+        guard !isTopologyEditRunning else { throw FaceInsetError.operationInProgress }
         guard interactionMode == .faceSelect,
               faceSelection.matches(mesh), faceSelection.selectedCount > 0,
               !isSTLImporting, !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -980,6 +1001,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        meshMirrorPreview = nil
+        meshMirrorError = nil
     }
 
     @discardableResult
@@ -987,7 +1010,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceTopologyEditRunning else { throw FaceInsetError.operationInProgress }
+        guard !isTopologyEditRunning else { throw FaceInsetError.operationInProgress }
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
               !isFaceSelectionProcessing, !isSTLImporting,
               !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -1029,7 +1052,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceTopologyEditRunning else { throw FaceInsetError.operationInProgress }
+        guard !isTopologyEditRunning else { throw FaceInsetError.operationInProgress }
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
               !isFaceSelectionProcessing, !isSTLImporting,
               !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -1115,7 +1138,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceTopologyEditRunning else { throw FaceBevelError.operationInProgress }
+        guard !isTopologyEditRunning else { throw FaceBevelError.operationInProgress }
         guard interactionMode == .faceSelect,
               faceSelection.matches(mesh), faceSelection.selectedCount > 0,
               !isSTLImporting, !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -1133,6 +1156,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        meshMirrorPreview = nil
+        meshMirrorError = nil
     }
 
     @discardableResult
@@ -1140,7 +1165,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceTopologyEditRunning else { throw FaceBevelError.operationInProgress }
+        guard !isTopologyEditRunning else { throw FaceBevelError.operationInProgress }
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
               !isFaceSelectionProcessing, !isSTLImporting,
               !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -1187,7 +1212,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
-        guard !isFaceTopologyEditRunning else { throw FaceBevelError.operationInProgress }
+        guard !isTopologyEditRunning else { throw FaceBevelError.operationInProgress }
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
               !isFaceSelectionProcessing, !isSTLImporting,
               !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
@@ -1283,6 +1308,177 @@ final class WorkspaceModel: ObservableObject {
         let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
         faceBevelError = message
         status = "Bevel failed: \(message)"
+    }
+
+    func prepareForMeshMirror() throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isTopologyEditRunning else { throw MeshMirrorError.operationInProgress }
+        guard !isSTLImporting, !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw MeshMirrorError.unavailable
+        }
+        cancelStroke()
+        cancelAllGizmoDrags()
+        commitTransformPanelTransaction()
+        cancelFaceSelectionProcessing()
+        hoverLocation = nil
+        faceExtrudePreview = nil
+        faceExtrudeError = nil
+        faceInsetPreview = nil
+        faceInsetError = nil
+        faceBevelPreview = nil
+        faceBevelError = nil
+        meshMirrorPreview = nil
+        meshMirrorError = nil
+    }
+
+    @discardableResult
+    func previewMeshMirror(options: MeshMirrorOptions) throws -> MeshMirrorPreview {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isTopologyEditRunning else { throw MeshMirrorError.operationInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw MeshMirrorError.activeEdit
+        }
+        meshMirrorPreview = nil
+        meshMirrorError = nil
+        isMeshMirrorRunning = true
+        defer { isMeshMirrorRunning = false }
+        do {
+            let preview = try MeshMirror.makePreview(
+                mesh: mesh,
+                transform: objectTransform,
+                options: options,
+                meshChangeVersion: topologyEditMeshChangeVersion,
+                transformChangeVersion: topologyEditTransformChangeVersion)
+            meshMirrorPreview = preview
+            return preview
+        } catch {
+            reportMeshMirrorError(error)
+            throw error
+        }
+    }
+
+    var isMeshMirrorPreviewStale: Bool {
+        guard let preview = meshMirrorPreview else { return false }
+        return !isMeshMirrorPreviewCurrent(preview)
+    }
+
+    func isMeshMirrorPreviewCurrent(_ preview: MeshMirrorPreview) -> Bool {
+        meshMirrorPreview == preview && preview.source.matches(
+            mesh: mesh,
+            transform: objectTransform,
+            meshChangeVersion: topologyEditMeshChangeVersion,
+            transformChangeVersion: topologyEditTransformChangeVersion,
+            options: preview.options)
+    }
+
+    @discardableResult
+    func applyMeshMirror(preview: MeshMirrorPreview) throws -> MeshMirrorResult {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isTopologyEditRunning else { throw MeshMirrorError.operationInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw MeshMirrorError.activeEdit
+        }
+        guard meshMirrorPreview == preview,
+              preview.source.matches(
+                mesh: mesh,
+                transform: objectTransform,
+                meshChangeVersion: topologyEditMeshChangeVersion,
+                transformChangeVersion: topologyEditTransformChangeVersion,
+                options: preview.options) else {
+            throw MeshMirrorError.stalePreview
+        }
+
+        isMeshMirrorRunning = true
+        defer { isMeshMirrorRunning = false }
+        do {
+            let prepared = try prepareMeshMirrorCommit(preview: preview)
+            return commitMeshMirror(prepared, options: preview.options)
+        } catch {
+            reportMeshMirrorError(error)
+            throw error
+        }
+    }
+
+    private func prepareMeshMirrorCommit(
+        preview: MeshMirrorPreview
+    ) throws -> PreparedMeshMirrorCommit {
+        let result = try MeshMirror.mirror(
+            mesh: mesh,
+            transform: objectTransform,
+            options: preview.options)
+        guard result.estimate == preview.estimate,
+              result.analysisFingerprint == preview.source.analysisFingerprint else {
+            throw MeshMirrorError.stalePreview
+        }
+        return PreparedMeshMirrorCommit(
+            result: result,
+            before: workspaceSnapshot,
+            pickingIndex: try pickingCache.makeIndex(for: result.mesh))
+    }
+
+    private func commitMeshMirror(
+        _ prepared: PreparedMeshMirrorCommit,
+        options: MeshMirrorOptions
+    ) -> MeshMirrorResult {
+        // Geometry, validation, adjacency, bounds, snapshots, and BVH preparation
+        // must remain in the throwing phase. Everything after this installation
+        // is required to stay nonthrowing so a partial topology commit cannot escape.
+        let result = prepared.result
+        mesh = result.mesh
+        hoverLocation = nil
+        #if DEBUG
+        benchmarkPreset = nil
+        #endif
+        profiler?.updateMeshCounts(
+            vertexCount: mesh.vertices.count,
+            triangleCount: mesh.indices.count / 3)
+        pickingCache.install(prepared.pickingIndex, for: mesh)
+        sculptSpatialIndex.prepare(for: mesh)
+        let command = ReplaceMeshCommand(before: prepared.before, after: workspaceSnapshot)
+        recordMeshMirrorReplacement(command)
+        clearMeshDiagnostics()
+        faceExtrudePreview = nil
+        faceExtrudeError = nil
+        faceInsetPreview = nil
+        faceInsetError = nil
+        faceBevelPreview = nil
+        faceBevelError = nil
+        meshMirrorPreview = nil
+        meshMirrorError = nil
+        status = "Mirrored across local \(options.axis.rawValue) = 0"
+        return result
+    }
+
+    private func recordMeshMirrorReplacement(_ command: ReplaceMeshCommand) {
+        precondition(isMeshMirrorRunning)
+        isTopologyEditSnapshotSafe = true
+        defer { isTopologyEditSnapshotSafe = false }
+        record(.replaceMesh(command))
+    }
+
+    func discardMeshMirrorPreview() {
+        guard !isMeshMirrorRunning else { return }
+        meshMirrorPreview = nil
+        meshMirrorError = nil
+    }
+
+    private func reportMeshMirrorError(_ error: Error) {
+        let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        meshMirrorError = message
+        status = "Mirror failed: \(message)"
     }
 
     func previewMeshCleanup(options: MeshCleanupOptions) throws -> MeshCleanupPreview {
@@ -1757,6 +1953,8 @@ final class WorkspaceModel: ObservableObject {
             faceInsetError = nil
             faceBevelPreview = nil
             faceBevelError = nil
+            meshMirrorPreview = nil
+            meshMirrorError = nil
             mesh = snapshot.mesh
             objectTransform = snapshot.transform.sanitized()
             camera = snapshot.camera
@@ -1794,6 +1992,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        meshMirrorPreview = nil
+        meshMirrorError = nil
         let triangleCount = mesh.indices.count.isMultiple(of: 3) ? mesh.indices.count / 3 : -1
         do {
             faceSelection = try FaceSelection(
@@ -1853,6 +2053,7 @@ final class WorkspaceModel: ObservableObject {
     var isFaceExtrudeSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var isFaceInsetSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var isFaceBevelSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
+    var isMeshMirrorSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var pickingCacheHasIndexForTesting: Bool { pickingCache.bvh != nil }
     var pickingCacheTopologyIDForTesting: UUID? { pickingCache.topologyID }
     #endif
