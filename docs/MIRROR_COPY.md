@@ -50,7 +50,7 @@ Validation uses a stable precedence so fixtures and user guidance identify the e
 1. Empty/invalid structure, non-finite values, pre-existing degenerate triangles, pre-existing index- or geometry-duplicate triangles, non-manifold edges, winding conflicts, and isolated vertices.
 2. No off-plane vertices, a triangle crossing the plane, or disconnected positive/negative source sides.
 3. Snap-induced collapse, snap-induced geometry duplicate, then remaining exact-position snap collision.
-4. Component topology: seam triangle, bow-tie/invalid loop, closed-plane contact, off-plane open boundary, seam interior vertex, seam interior edge, and incomplete/branched loop.
+4. Component topology: bow-tie vertex reuse, closed-plane contact for boundaryless components, seam triangle for open components, off-plane open boundary, seam interior vertex, seam interior edge, and incomplete/branched loop.
 5. Count, index, working-memory, result topology, component-count, symmetry, bounds, stale-preview, and prepared-runtime failures.
 
 No Workspace mutation occurs at any validation stage.

@@ -509,11 +509,12 @@ enum MeshMirror {
         edges.reserveCapacity(mesh.indices.count)
         var edgeOrder: [DiagnosticEdgeKey] = []
         var union = MirrorUnionFind(count: triangleCount)
+        var seamTriangleByFace = Array(repeating: false, count: triangleCount)
         for faceID in 0..<triangleCount {
             let offset = faceID * 3
             let ids = [mesh.indices[offset], mesh.indices[offset + 1], mesh.indices[offset + 2]]
             guard ids.allSatisfy({ Int($0) < mesh.vertices.count }) else { throw MeshMirrorError.invalidMesh }
-            if ids.allSatisfy({ sides[Int($0)] == .seam }) { throw MeshMirrorError.seamTriangle }
+            seamTriangleByFace[faceID] = ids.allSatisfy { sides[Int($0)] == .seam }
             for (from, to) in [(ids[0], ids[1]), (ids[1], ids[2]), (ids[2], ids[0])] {
                 let key = DiagnosticEdgeKey(from, to)
                 if let first = edges[key]?.first { union.union(faceID, first.faceID) }
@@ -587,6 +588,10 @@ enum MeshMirror {
                     boundaryEdges: [], seamVertexIDs: [],
                     seamLoopCount: 0, isClosed: true))
                 continue
+            }
+
+            if faceIDs.contains(where: { seamTriangleByFace[$0] }) {
+                throw MeshMirrorError.seamTriangle
             }
 
             guard boundary.allSatisfy({ sides[Int($0.low)] == .seam && sides[Int($0.high)] == .seam }) else {
