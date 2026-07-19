@@ -163,6 +163,14 @@ preview source identity、prepared／nonthrowing commit、fresh topology、norma
 
 ## 実機検証項目
 
+## Mirror Copy foundation
+
+通常toolbarの`Mirror`は、現在meshをobject-local `X/Y/Z = 0`面で破壊的に複製する。planeを跨ぐmeshは切断せず拒否する。shared-edge componentごとに、plane非接触のclosed shellはdetached copy、boundary全体がplane上のclosed degree-2 loopであるopen half meshはseam vertex共有のwelded copyとして扱う。seamはscale-aware tolerance内だけexact zeroへsnapし、別vertexが同一点になる場合やnearby-only weldは拒否する。
+
+source vertex/triangle順を保持し、mirror vertexはsource index順、mirror triangleは`(a,c,b)`で追加する。結果はboundary 0、expected component count、finite/normalized normal、degenerate/duplicate/non-manifold/winding、symmetry、local/world bounds、adjacency、Picking BVHをinstall前に検証する。previewはmesh/Transformの非巻戻しidentity、axis、分類、fingerprintへ結合する。
+
+Applyはprepared／nonthrowing commit境界を使い、`ReplaceMeshCommand` 1件としてUndo/Redoする。Transform、camera、brush、symmetry、Gizmo、interaction modeを維持し、Face Selectionとtopology previewをclearする。Applyだけがdirty generationを1回進め、Autosave snapshot許可はhistory record中だけ有効である。resultは通常meshとしてformatVersion 1へ保存され、Mirror axis/tolerance/planは保存しない。Rendererはfresh topologyのvertex/index bufferを通常経路で各1回uploadする。詳細は`MIRROR_COPY.md`を参照する。
+
 1. iPadOS 17+ の iPad で起動し、球体が表示される。
 2. 指操作と Pencil ストロークが競合しない。
 3. Pencil hover のブラシ円、筆圧、Draw/Smooth/Grab を確認する。

@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var showFaceExtrude = false
     @State private var showFaceInset = false
     @State private var showFaceBevel = false
+    @State private var showMeshMirror = false
     @State private var projectExport = ForgeFile(data: Data())
     @State private var stlExport = STLFile(data: Data())
     @State private var stlImportResult: STLImportResult?
@@ -83,6 +84,11 @@ struct ContentView: View {
                     #endif
                     Button("Diagnostics", systemImage: "stethoscope") { showMeshDiagnostics = true }
                         .accessibilityHint("Inspect mesh topology, dimensions, and printability warnings")
+                    Button("Mirror", systemImage: "square.split.2x1") { beginMeshMirror() }
+                        .accessibilityHint("Create a validated copy across an object-local zero plane")
+                    #if DEBUG
+                    .disabled(model.isBenchmarkRunning)
+                    #endif
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Picker("Editing Mode", selection: Binding(get: { model.interactionMode },
@@ -161,6 +167,9 @@ struct ContentView: View {
         .sheet(isPresented: $showFaceBevel, onDismiss: { model.discardFaceBevelPreview() }) {
             FaceBevelView(model: model)
         }
+        .sheet(isPresented: $showMeshMirror, onDismiss: { model.discardMeshMirrorPreview() }) {
+            MeshMirrorView(model: model)
+        }
         .sheet(isPresented: $showSTLImportConfirmation, onDismiss: { stlImportResult = nil }) {
             if let stlImportResult {
                 STLImportView(model: model, result: stlImportResult, fileName: stlImportFileName)
@@ -206,7 +215,7 @@ struct ContentView: View {
         showImporter || showSTLImporter || showSTLImportConfirmation
             || showProjectExporter || showSTLExporter || showSTLOptions
             || showPrimitiveCreator || showSubdivision || showMeshDiagnostics
-            || showFaceExtrude || showFaceInset || showFaceBevel
+            || showFaceExtrude || showFaceInset || showFaceBevel || showMeshMirror
             || confirmsOpeningWithUnsavedChanges || model.isRecoveryPromptPresented
     }
 
@@ -310,6 +319,15 @@ struct ContentView: View {
             showFaceBevel = true
         } catch {
             model.status = "Bevel unavailable: \(error.localizedDescription)"
+        }
+    }
+
+    private func beginMeshMirror() {
+        do {
+            try model.prepareForMeshMirror()
+            showMeshMirror = true
+        } catch {
+            model.status = "Mirror unavailable: \(error.localizedDescription)"
         }
     }
 

@@ -14,4 +14,5 @@
 - `FACE_EXTRUDE.md` — manifold face patchのworld-mm extrusion、preview、atomic topology install、Undo
 - `FACE_INSET.md` — planar convex single-loop face patchのconstant-width world-mm inset、preview、atomic install
 - `FACE_BEVEL.md` — planar convex single-loop face patchのworld-mm chamfer、preview、atomic install
+- `MIRROR_COPY.md` — local zero-plane Mirror Copy、closed/open component分類、seam weld、atomic install
 - `adr/` — 重要な設計判断
