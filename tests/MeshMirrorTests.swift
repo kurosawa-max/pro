@@ -138,6 +138,7 @@ final class MeshMirrorTests: XCTestCase {
         let source = try shiftedCube(offset: SIMD3<Float>(1, 0, 0))
         XCTAssertThrowsError(try MeshMirror.estimate(
             mesh: source, transform: .identity, options: MeshMirrorOptions(axis: .x))) {
+            print("Mirror classification for closed plane contact: \($0)")
             XCTAssertEqual($0 as? MeshMirrorError, .closedComponentTouchesPlane)
         }
     }
@@ -153,6 +154,7 @@ final class MeshMirrorTests: XCTestCase {
         plane.recalculateNormals()
         XCTAssertThrowsError(try MeshMirror.estimate(
             mesh: plane, transform: .identity, options: MeshMirrorOptions(axis: .x))) {
+            print("Mirror classification for plane-only mesh: \($0)")
             XCTAssertEqual($0 as? MeshMirrorError, .noOffPlaneVertices)
         }
 
@@ -166,6 +168,7 @@ final class MeshMirrorTests: XCTestCase {
         interiorSeam.recalculateNormals()
         XCTAssertThrowsError(try MeshMirror.estimate(
             mesh: interiorSeam, transform: .identity, options: MeshMirrorOptions(axis: .x))) {
+            print("Mirror classification for interior seam edge: \($0)")
             XCTAssertEqual($0 as? MeshMirrorError, .seamInteriorEdge)
         }
     }
