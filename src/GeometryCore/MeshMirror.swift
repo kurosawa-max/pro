@@ -337,6 +337,24 @@ enum MeshMirror {
         }
         let sourceSide: MeshMirrorSourceSide = hasPositive ? .positive : .negative
 
+        if topology.isClosed, sides.contains(.seam) {
+            throw MeshMirrorError.closedComponentTouchesPlane
+        }
+        if topology.boundaryEdgeCount > 0 {
+            var seamEdgeUseCount: [DiagnosticEdgeKey: Int] = [:]
+            seamEdgeUseCount.reserveCapacity(mesh.indices.count)
+            for offset in stride(from: 0, to: mesh.indices.count, by: 3) {
+                let ids = [mesh.indices[offset], mesh.indices[offset + 1], mesh.indices[offset + 2]]
+                for (first, second) in [(ids[0], ids[1]), (ids[1], ids[2]), (ids[2], ids[0])]
+                    where sides[Int(first)] == .seam && sides[Int(second)] == .seam {
+                    seamEdgeUseCount[DiagnosticEdgeKey(first, second), default: 0] += 1
+                }
+            }
+            if seamEdgeUseCount.values.contains(where: { $0 == 2 }) {
+                throw MeshMirrorError.seamInteriorEdge
+            }
+        }
+
         var snappedVertices = mesh.vertices
         var snappedCount = 0
         var snappedPositions: [PositionKey: Int] = [:]

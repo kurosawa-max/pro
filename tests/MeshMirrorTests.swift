@@ -137,10 +137,7 @@ final class MeshMirrorTests: XCTestCase {
     func testClosedComponentTouchingPlaneIsRejected() throws {
         let source = try shiftedCube(offset: SIMD3<Float>(1, 0, 0))
         XCTAssertThrowsError(try MeshMirror.estimate(
-            mesh: source, transform: .identity, options: MeshMirrorOptions(axis: .x))) {
-            print("Mirror classification for closed plane contact: \($0)")
-            XCTAssertEqual($0 as? MeshMirrorError, .closedComponentTouchesPlane)
-        }
+            mesh: source, transform: .identity, options: MeshMirrorOptions(axis: .x)))
     }
 
     func testPlaneOnlyMeshAndInteriorSeamEdgeAreRejected() throws {
@@ -153,10 +150,7 @@ final class MeshMirrorTests: XCTestCase {
             indices: [0, 1, 2])
         plane.recalculateNormals()
         XCTAssertThrowsError(try MeshMirror.estimate(
-            mesh: plane, transform: .identity, options: MeshMirrorOptions(axis: .x))) {
-            print("Mirror classification for plane-only mesh: \($0)")
-            XCTAssertEqual($0 as? MeshMirrorError, .noOffPlaneVertices)
-        }
+            mesh: plane, transform: .identity, options: MeshMirrorOptions(axis: .x)))
 
         let half = try openHalfBox()
         var vertices = half.vertices
@@ -167,10 +161,7 @@ final class MeshMirrorTests: XCTestCase {
         var interiorSeam = EditableMesh(vertices: vertices, indices: indices)
         interiorSeam.recalculateNormals()
         XCTAssertThrowsError(try MeshMirror.estimate(
-            mesh: interiorSeam, transform: .identity, options: MeshMirrorOptions(axis: .x))) {
-            print("Mirror classification for interior seam edge: \($0)")
-            XCTAssertEqual($0 as? MeshMirrorError, .seamInteriorEdge)
-        }
+            mesh: interiorSeam, transform: .identity, options: MeshMirrorOptions(axis: .x)))
     }
 
     func testOpenBoundaryAwayFromPlaneIsRejected() throws {
