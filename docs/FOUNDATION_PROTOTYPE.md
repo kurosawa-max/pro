@@ -171,6 +171,14 @@ source vertex/triangle順を保持し、mirror vertexはsource index順、mirror
 
 Applyはprepared／nonthrowing commit境界を使い、`ReplaceMeshCommand` 1件としてUndo/Redoする。Transform、camera、brush、symmetry、Gizmo、interaction modeを維持し、Face Selectionとtopology previewをclearする。Applyだけがdirty generationを1回進め、Autosave snapshot許可はhistory record中だけ有効である。resultは通常meshとしてformatVersion 1へ保存され、Mirror axis/tolerance/planは保存しない。Rendererはfresh topologyのvertex/index bufferを通常経路で各1回uploadする。詳細は`MIRROR_COPY.md`を参照する。
 
+## Linear Array foundation
+
+通常toolbarの`Linear Array`は、sourceをcopy 0として含むCount `2...256`とsigned Spacing `±0.001...1000 mm`を使い、mesh全体をobject-local X/Y/Z方向へ破壊的に複製する。local axisをObjectTransformのlinear部でworldへ変換・正規化し、各copyをsourceから直接Double world座標で計算する。local Floatへ格納した実頂点をworldへ戻し、全copyのsigned spacing、距離、垂直driftを検証するため、巨大座標でminimum spacingを保持できない場合は安全に拒否する。
+
+vertex/triangleはcopy-majorで決定論的に並び、copy 0のsource position/indexを保持する。各copyはdetachedで、component数とboundary edge数はCount倍になる。normal、adjacency、bounds、Diagnostics topology、exact geometry duplicateをApply前に検証するが、一般collision、self-intersection、proximity weld、Boolean unionは行わない。
+
+mandatory Preview、non-rewinding stale identity、fallible prepared／nonthrowing commit、`ReplaceMeshCommand` 1件、record-only Autosave snapshot scope、selection／他topology Preview／Diagnostics clear、BVH／Spatial Index再構築、通常Renderer upload経路を使用する。Transform、camera、tool/mode設定は維持し、formatVersion 1には通常のresult meshだけを保存する。2,000,000 vertices、4,000,000 triangles、Count 256、768 MiB estimateが上限で、初版はMainActor同期である。Radial/Grid Array、per-copy transform、selected-face Array、non-destructive modifier、multiple objectは未実装である。詳細は`LINEAR_ARRAY.md`を参照する。
+
 1. iPadOS 17+ の iPad で起動し、球体が表示される。
 2. 指操作と Pencil ストロークが競合しない。
 3. Pencil hover のブラシ円、筆圧、Draw/Smooth/Grab を確認する。

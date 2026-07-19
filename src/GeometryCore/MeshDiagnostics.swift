@@ -228,6 +228,23 @@ final class MeshDiagnosticsCache {
 enum MeshTopologyDiagnostics {
     static let representativeLimit = 1_000
 
+    static func hasGeometricDuplicateTriangles(_ mesh: EditableMesh) -> Bool? {
+        guard !mesh.vertices.isEmpty, !mesh.indices.isEmpty,
+              mesh.indices.count.isMultiple(of: 3) else { return nil }
+        var seen = Set<DiagnosticPositionTriangleKey>()
+        seen.reserveCapacity(mesh.indices.count / 3)
+        for offset in stride(from: 0, to: mesh.indices.count, by: 3) {
+            let raw = [mesh.indices[offset], mesh.indices[offset + 1], mesh.indices[offset + 2]]
+            guard raw.allSatisfy({ Int($0) < mesh.vertices.count }) else { return nil }
+            let positions = raw.map { mesh.vertices[Int($0)].position }
+            guard positions.allSatisfy(\.allFinite) else { return nil }
+            if !seen.insert(DiagnosticPositionTriangleKey(
+                positions[0], positions[1], positions[2]
+            )).inserted { return true }
+        }
+        return false
+    }
+
     static func analyze(_ mesh: EditableMesh) -> MeshTopologyReport {
         let vertexCount = mesh.vertices.count
         let triangleCount = mesh.indices.count / 3
@@ -399,6 +416,37 @@ enum MeshTopologyDiagnostics {
             representativeDegeneratePoints: Array(degeneratePoints.prefix(representativeLimit)),
             representativeIsolatedPoints: Array(isolatedPoints)
         )
+    }
+}
+
+private struct DiagnosticPositionKey: Hashable, Comparable {
+    let x: UInt32
+    let y: UInt32
+    let z: UInt32
+
+    init(_ position: SIMD3<Float>) {
+        x = position.x == 0 ? 0 : position.x.bitPattern
+        y = position.y == 0 ? 0 : position.y.bitPattern
+        z = position.z == 0 ? 0 : position.z.bitPattern
+    }
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        if lhs.x != rhs.x { return lhs.x < rhs.x }
+        if lhs.y != rhs.y { return lhs.y < rhs.y }
+        return lhs.z < rhs.z
+    }
+}
+
+private struct DiagnosticPositionTriangleKey: Hashable {
+    let first: DiagnosticPositionKey
+    let second: DiagnosticPositionKey
+    let third: DiagnosticPositionKey
+
+    init(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ c: SIMD3<Float>) {
+        let ordered = [DiagnosticPositionKey(a), DiagnosticPositionKey(b), DiagnosticPositionKey(c)].sorted()
+        first = ordered[0]
+        second = ordered[1]
+        third = ordered[2]
     }
 }
 

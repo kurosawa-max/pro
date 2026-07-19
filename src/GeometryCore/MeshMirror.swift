@@ -322,19 +322,6 @@ enum MeshMirror {
         }
     }
 
-    private struct PositionTriangleKey: Hashable {
-        let first: PositionKey
-        let second: PositionKey
-        let third: PositionKey
-
-        init(_ first: SIMD3<Float>, _ second: SIMD3<Float>, _ third: SIMD3<Float>) {
-            let sorted = [PositionKey(first), PositionKey(second), PositionKey(third)].sorted()
-            self.first = sorted[0]
-            self.second = sorted[1]
-            self.third = sorted[2]
-        }
-    }
-
     private enum Side: Equatable { case seam, positive, negative }
 
     private static func makePlan(
@@ -688,24 +675,14 @@ enum MeshMirror {
         vertices: [MeshVertex],
         indices: [UInt32]
     ) throws -> Bool {
-        guard !vertices.isEmpty, !indices.isEmpty, indices.count.isMultiple(of: 3) else {
-            throw MeshMirrorError.invalidMesh
-        }
-        var seen = Set<PositionTriangleKey>()
-        seen.reserveCapacity(indices.count / 3)
-        for offset in stride(from: 0, to: indices.count, by: 3) {
-            let raw = [indices[offset], indices[offset + 1], indices[offset + 2]]
-            guard raw.allSatisfy({ Int($0) < vertices.count }) else {
-                throw MeshMirrorError.invalidMesh
-            }
-            let positions = raw.map { vertices[Int($0)].position }
-            guard positions.allSatisfy({ $0.allFinite }) else {
+        let candidate = EditableMesh(vertices: vertices, indices: indices)
+        guard let result = MeshTopologyDiagnostics.hasGeometricDuplicateTriangles(candidate) else {
+            guard vertices.allSatisfy({ $0.position.allFinite && $0.normal.allFinite }) else {
                 throw MeshMirrorError.nonFiniteValue
             }
-            let key = PositionTriangleKey(positions[0], positions[1], positions[2])
-            if !seen.insert(key).inserted { return true }
+            throw MeshMirrorError.invalidMesh
         }
-        return false
+        return result
     }
 
     private static func validateResult(

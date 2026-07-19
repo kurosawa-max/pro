@@ -18,6 +18,7 @@ struct ContentView: View {
     @State private var showFaceInset = false
     @State private var showFaceBevel = false
     @State private var showMeshMirror = false
+    @State private var showMeshLinearArray = false
     @State private var projectExport = ForgeFile(data: Data())
     @State private var stlExport = STLFile(data: Data())
     @State private var stlImportResult: STLImportResult?
@@ -86,6 +87,13 @@ struct ContentView: View {
                         .accessibilityHint("Inspect mesh topology, dimensions, and printability warnings")
                     Button("Mirror", systemImage: "square.split.2x1") { beginMeshMirror() }
                         .accessibilityHint("Create a validated copy across an object-local zero plane")
+                    #if DEBUG
+                    .disabled(model.isBenchmarkRunning)
+                    #endif
+                    Button("Linear Array", systemImage: "square.grid.3x1.below.line.grid.1x2") {
+                        beginMeshLinearArray()
+                    }
+                    .accessibilityHint("Create detached copies along an object-local axis using world-space millimeter spacing")
                     #if DEBUG
                     .disabled(model.isBenchmarkRunning)
                     #endif
@@ -170,6 +178,9 @@ struct ContentView: View {
         .sheet(isPresented: $showMeshMirror, onDismiss: { model.discardMeshMirrorPreview() }) {
             MeshMirrorView(model: model)
         }
+        .sheet(isPresented: $showMeshLinearArray, onDismiss: { model.discardMeshLinearArrayPreview() }) {
+            MeshLinearArrayView(model: model)
+        }
         .sheet(isPresented: $showSTLImportConfirmation, onDismiss: { stlImportResult = nil }) {
             if let stlImportResult {
                 STLImportView(model: model, result: stlImportResult, fileName: stlImportFileName)
@@ -216,6 +227,7 @@ struct ContentView: View {
             || showProjectExporter || showSTLExporter || showSTLOptions
             || showPrimitiveCreator || showSubdivision || showMeshDiagnostics
             || showFaceExtrude || showFaceInset || showFaceBevel || showMeshMirror
+            || showMeshLinearArray
             || confirmsOpeningWithUnsavedChanges || model.isRecoveryPromptPresented
     }
 
@@ -328,6 +340,15 @@ struct ContentView: View {
             showMeshMirror = true
         } catch {
             model.status = "Mirror unavailable: \(error.localizedDescription)"
+        }
+    }
+
+    private func beginMeshLinearArray() {
+        do {
+            try model.prepareForMeshLinearArray()
+            showMeshLinearArray = true
+        } catch {
+            model.status = "Linear Array unavailable: \(error.localizedDescription)"
         }
     }
 
