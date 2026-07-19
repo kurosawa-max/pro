@@ -4,7 +4,7 @@
 
 Face Inset is a single-object topology operation driven by runtime Face Selection. It creates a constant-width inner boundary and a ring of triangles while preserving the selected patch as an inner surface. The distance is positive and measured in world-space millimeters. Preview is mandatory; Apply records one `ReplaceMeshCommand`.
 
-This first version accepts each shared-edge connected selected component only when it is a planar, simple, strictly convex disk with exactly one oriented boundary loop. Every selected incident edge must have exactly two global uses with opposite winding, so a selection touching an open mesh boundary is rejected. Concave regions, holes, multiple loops, handles, non-planar patches, negative distance, outset, bevel, and self-intersection repair are rejected rather than approximated.
+This first version accepts each shared-edge connected selected component only when it is a planar, simple, strictly convex disk with exactly one oriented boundary loop. Every selected incident edge must have exactly two global uses with opposite winding, so a selection touching an open mesh boundary is rejected. Concave regions, holes, multiple loops, handles, non-planar patches, negative distance, outset, and self-intersection repair are rejected rather than approximated. A separate face-region chamfer operation reuses the safe planar geometry and is described in `FACE_BEVEL.md`.
 
 ## Region and boundary validation
 
@@ -12,7 +12,9 @@ Selected components use shared undirected edges; vertex-only contact remains sep
 
 The operation validates the entire source mesh for structure, finite values, degenerate triangles, and duplicate triangles. Boundary, non-manifold, and winding-conflict counts outside the edit must be identical after construction.
 
-## World-space geometry
+## Shared geometry and world-space processing
+
+`PlanarFaceRegion` owns the UI-independent component analysis, deterministic basis, convex offset, Float round-trip checks, inner triangulation safety, mesh construction, and result validation shared with Face Bevel. Inset supplies height-zero inner positions; Bevel owns its signed normal displacement and chamfer validation. Workspace transaction and preview identity remain operation-specific.
 
 Positions are transformed from object-local to world space before analysis. The component area vector determines a stable normal. A deterministic 2D basis chooses the world X, Y, or Z axis least parallel to the normal, with X/Y/Z as the tie order, then constructs a right-handed basis with cross products.
 
@@ -52,4 +54,4 @@ Preview, Cancel, and failure do not change project generation, dirty state, Auto
 
 The operation shares limits of 2,000,000 result vertices, 4,000,000 result triangles, 1,000,000 selected faces, and 768 MiB estimated working memory. The additional intersection safety limit is 8,000,000 edge pairs and 8,000,000 triangle pairs per selected component. Analysis and construction are initially synchronous on MainActor after one yield, so a near-limit mesh can temporarily occupy the UI. There is no fixed performance threshold.
 
-General concave offsetting, holes, multiple boundary loops, negative inset/outset, bevel, local face Transform, material/UV handling, multiple objects, collision detection, and automatic repair are not implemented.
+General concave offsetting, holes, multiple boundary loops, negative inset/outset, general edge bevel, local face Transform, material/UV handling, multiple objects, collision detection, and automatic repair are not implemented.

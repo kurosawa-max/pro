@@ -4,6 +4,7 @@ struct FaceSelectionPanel: View {
     @ObservedObject var model: WorkspaceModel
     var onExtrude: () -> Void = {}
     var onInset: () -> Void = {}
+    var onBevel: () -> Void = {}
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -112,6 +113,10 @@ struct FaceSelectionPanel: View {
             Button("Inset…", systemImage: "square.dashed.inset.filled") { onInset() }
                 .disabled(!model.canBeginFaceInset)
                 .accessibilityHint("Preview a constant-width inset of the selected planar face region")
+                .frame(maxWidth: .infinity)
+            Button("Bevel…", systemImage: "square.on.square.badge.person.crop") { onBevel() }
+                .disabled(!model.canBeginFaceBevel)
+                .accessibilityHint("Preview a constant-width and signed-height bevel of the selected planar face region")
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)

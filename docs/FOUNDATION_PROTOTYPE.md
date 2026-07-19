@@ -139,7 +139,7 @@ Rendererはmesh vertex bufferを再利用し、選択faceのindexだけを独立
 
 selection versionはruntime UUID identityとUInt64 valueで構成し、value上限後は新identityへ切り替えてoverlay cache keyのwrapを防ぐ。非empty overlayはindex検証、buffer確保、copy成功後だけcache済みにし、失敗時は古いoverlayを隠して次frameで再試行する。panelはsafe-area insetとadaptive gridを使い、compact widthとaccessibility Dynamic Typeではoperationをmenu表示する。
 
-selectionはmeshを変更せず、dirty generation、Autosave、Recovery、Workspace history、project formatVersion 1へ含めない。Primitive、Subdivision、STL Import、Cleanup、Load、Recover、topology Undo／Redoでclearし、Sculpt、Transform、camera、Save、Diagnosticsでは維持する。詳細と上限は`FACE_SELECTION.md`を参照。Edge／Vertex／Box／Lasso selection、selection Undo、selection永続化、Bevelは未実装である。
+selectionはmeshを変更せず、dirty generation、Autosave、Recovery、Workspace history、project formatVersion 1へ含めない。Primitive、Subdivision、STL Import、Cleanup、Load、Recover、topology Undo／Redoでclearし、Sculpt、Transform、camera、Save、Diagnosticsでは維持する。詳細と上限は`FACE_SELECTION.md`を参照。Edge／Vertex／Box／Lasso selection、selection Undo、selection永続化、general edge bevelは未実装である。
 
 ## Face Extrude foundation
 
@@ -147,13 +147,19 @@ Face Select panelの`Extrude…`は、共有edgeで接続された選択componen
 
 全selected incident edgeはglobal use 2件と反対windingを必要とし、selected open boundary、non-manifold、winding conflict、boundaryのないwhole-shell selectionを拒否する。さらにmesh全体へinvalid index、non-finite、degenerate、duplicateがないことを保守的に要求し、選択外のboundary／non-manifold／winding issueは結果で件数不変の場合だけ維持する。previewはtopology／vertex／selection／Transformの非巻戻しruntime identity、distance、解析fingerprintへ結合し、再計算開始時に旧previewを無効化してApply時に全再計算一致を要求する。resultはWorkspace外でnormal、adjacency、Diagnostics invariants、Picking BVHまで検証してから1回installする。
 
-成功は`ReplaceMeshCommand` 1件としてUndo／Redoし、新topologyでselectionとpreviewをclearする。Applyはthrow可能なprepared phaseとnonthrowing commit phaseを分離し、snapshot許可flagを履歴record中の`defer` scopeへ閉じる。Undo／RedoのPicking BVH rebuildが失敗した場合はcacheをinvalidateし、mesh表示とhistory結果を維持して後続pickで再試行する。Transform、camera、brush、symmetry、Gizmo mode、Face Select mode、selection operationは維持する。Applyだけがdirty generationを1回進めAutosaveをscheduleし、preview／Cancel／failureはproject状態を変更しない。formatVersion 1には結果vertices／indicesだけを保存する。2,000,000 vertices、4,000,000 triangles、1,000,000 selected faces、768 MiB working estimateを上限とする。同期処理、self-intersection非検出、open surface／whole shell非対応、Bevel／multiple object未実装が既知の制限である。詳細は`FACE_EXTRUDE.md`を参照。
+成功は`ReplaceMeshCommand` 1件としてUndo／Redoし、新topologyでselectionとpreviewをclearする。Applyはthrow可能なprepared phaseとnonthrowing commit phaseを分離し、snapshot許可flagを履歴record中の`defer` scopeへ閉じる。Undo／RedoのPicking BVH rebuildが失敗した場合はcacheをinvalidateし、mesh表示とhistory結果を維持して後続pickで再試行する。Transform、camera、brush、symmetry、Gizmo mode、Face Select mode、selection operationは維持する。Applyだけがdirty generationを1回進めAutosaveをscheduleし、preview／Cancel／failureはproject状態を変更しない。formatVersion 1には結果vertices／indicesだけを保存する。2,000,000 vertices、4,000,000 triangles、1,000,000 selected faces、768 MiB working estimateを上限とする。同期処理、self-intersection非検出、open surface／whole shell非対応、general edge bevel／multiple object未実装が既知の制限である。詳細は`FACE_EXTRUDE.md`を参照。
 
 ## Face Inset foundation
 
 Face InsetはFace Selectionのshared-edge componentをworld-spaceへ投影し、positive millimeter widthのconstant-width inner boundaryとring triangleを生成する。初版はplanar、simple、strictly convex、single-loop、disk topologyのcomponentだけを許可し、concave、hole、multiple loop、non-planar、collapse、unsafe miterを明示的に拒否する。boundary頂点をoffsetし、選択内点は同じ位置でcomponentごとに複製する。local Floatへの格納後にworldへ戻した実座標でedge距離、strict interior、inner edge交差、triangle overlap／fold-over、area充填、preview boundsを再検証する。pairwise交差検査はcomponentごとに8,000,000 pairを安全上限とする。
 
 preview source identity、prepared／nonthrowing commit、全mesh validation、fresh topology、normal／adjacency／BVH／Spatial Index再構築、ReplaceMeshCommand 1件、selection clear、dirty／Autosave挙動はFace Extrudeと同じ安全境界を使う。snapshot許可flagは履歴recordの同期scopeだけで有効になる。preview、Cancel、failureはWorkspace不変で、formatVersion 1には通常のresult meshだけを保存する。詳細は`FACE_INSET.md`を参照する。
+
+## Face Bevel foundation
+
+Face BevelはFace Insetと共有するplanar region geometryを使い、positive world-mm widthのinner boundaryをcomponent normalへsigned world-mm heightだけ移動し、outer boundaryとの間へ2 triangles/edgeのchamfer ringとshifted inner capを作る。初版はplanar、simple、strictly convex、single-loop diskだけを許可する。local Float格納後の実world座標でwidth、height、slope、inner intersection／coverage、ring degeneracy、result boundsを検証し、一般collisionやautomatic repairは行わない。
+
+preview source identity、prepared／nonthrowing commit、fresh topology、normal／adjacency／BVH／Spatial Index再構築、ReplaceMeshCommand 1件、selection clear、record-only Autosave snapshot scope、dirty／failure atomicityはInsetと同じである。stored Float頂点からworld width／height／edge垂直断面slopeとring windingを検証し、minimum dimensionをFloat精度で保持できない場合は拒否する。width／height／previewは保存せずproject formatVersion 1を維持する。normalはarea-weighted shared-vertex方式のためsharp chamferがviewportで滑らかに見える場合がある。general edge bevel、concave／hole／multiple-loop／non-planar region、複数segment、hard-normal split、multiple objectは未実装である。詳細は`FACE_BEVEL.md`を参照する。
 
 ## 実機検証項目
 
