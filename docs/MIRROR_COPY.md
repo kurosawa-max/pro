@@ -8,7 +8,9 @@ The operation does not cut geometry. Every off-plane source vertex must be on on
 
 ## Source validation and component classification
 
-The complete source must be a finite indexed triangle mesh without invalid indices, isolated vertices, degenerate or duplicate triangles, non-manifold edges, or winding conflicts. Components are computed by shared undirected edges in expected `O(T + E)` time; vertex-only contact remains separate.
+The complete source must be a finite indexed triangle mesh without invalid indices, isolated vertices, degenerate or duplicate triangles, non-manifold edges, or winding conflicts. Components are computed by shared undirected edges. After Union-Find resolves every face root, faces are grouped in face-ID order and the global first-seen edge list is visited once to build root-specific edge and boundary arrays. Classification then visits only each component's own arrays. Total expected work is `O(T + E)`, rather than a full edge scan per component. Components are ordered by minimum face ID; faces remain ascending and component edges retain global first-seen order.
+
+Vertex-only contact does not connect face components. Two edge-connected components that reuse the same vertex ID form bow-tie topology and are rejected: a shared seam vertex is an invalid seam loop, while an off-plane shared vertex is an invalid source mesh. Separate components with separate vertex IDs may occupy the same position only when they do not violate exact-position collision or duplicate-triangle validation.
 
 Each component must be one of these forms:
 
@@ -19,7 +21,11 @@ Closed components touching the plane, open boundaries away from the plane, branc
 
 ## Seam tolerance and deterministic construction
 
-The seam tolerance is object-local and scale aware. It begins with `max(0.00001, localDiagonal × 0.000001)` millimeters, incorporates bounded Float coordinate precision, and is capped relative to the local diagonal so it cannot become a broad proximity weld. Only vertices classified as seam vertices are snapped, and their selected axis coordinate becomes exactly positive zero. If snapping would place distinct source positions at the same exact Float position, the operation is rejected. No epsilon weld is performed.
+The seam tolerance is object-local and scale aware. It uses a `0.00001 mm` minimum and a diagonal-relative `localDiagonal × 0.000001` candidate, then caps both diagonal and Float-precision growth by `max(0.00001, selectedAxisExtent × 0.0001)`. Computing extents in Double avoids overflow. The selected-axis cap prevents a very large extent on another axis, or a large local-origin offset, from pulling an unrelated region onto the plane. The same calculation is used by Preview and Apply. Only vertices classified within that tolerance are snapped, and their selected axis coordinate becomes exactly positive zero. Vertices outside the tolerance are not welded, and no other proximity weld is performed. A model smaller than the required minimum tolerance can be rejected as having no off-plane source rather than being mutated.
+
+Preview reports the total source boundary-edge count and the maximum seam snap distance, defined as `max(abs(originalAxisCoordinate))` across seam vertices. The maximum is finite, lies in `0...seamTolerance`, and is zero when every seam coordinate is already exact zero. Both values participate in the preview source identity and analysis fingerprint.
+
+Before reflected vertices or triangles are created, the snapped source is validated again. A triangle newly collapsed by snapping and a geometry-duplicate triangle newly created by snapping have dedicated errors. Exact-position collisions not already classified as collapse or duplicate are reported separately. These errors recommend adjusting the selected axis or source geometry; pre-existing degenerate or duplicate input continues to direct the user to Diagnostics/Cleanup.
 
 Construction is deterministic:
 
@@ -37,9 +43,21 @@ Before Workspace installation, Mirror Copy validates result counts, UInt32 indic
 
 Self-intersection and collision detection are not performed. Detached reflected shells can intersect the original or other components even when topology is valid. This is reported as a known limitation rather than silently repaired.
 
+## Error precedence
+
+Validation uses a stable precedence so fixtures and user guidance identify the earliest actionable cause:
+
+1. Empty/invalid structure, non-finite values, pre-existing degenerate triangles, pre-existing index- or geometry-duplicate triangles, non-manifold edges, winding conflicts, and isolated vertices.
+2. No off-plane vertices, a triangle crossing the plane, or disconnected positive/negative source sides.
+3. Snap-induced collapse, snap-induced geometry duplicate, then remaining exact-position snap collision.
+4. Component topology: seam triangle, bow-tie/invalid loop, closed-plane contact, off-plane open boundary, seam interior vertex, seam interior edge, and incomplete/branched loop.
+5. Count, index, working-memory, result topology, component-count, symmetry, bounds, stale-preview, and prepared-runtime failures.
+
+No Workspace mutation occurs at any validation stage.
+
 ## Preview, commit, Undo, and Autosave
 
-Preview is mandatory. Its source key binds topology ID/revision, vertex revision, non-rewinding mesh and Transform versions, sanitized Transform, axis, source side, component classification, seam counts and tolerance, and an analysis fingerprint. Sculpt, Transform, topology, axis, load, recovery, or exact-state restoration after an intervening edit makes the preview stale. Camera, brush, symmetry, Gizmo visibility/mode, and Face Selection content do not affect the geometric plan.
+Preview is mandatory. Its source key binds topology ID/revision, vertex revision, non-rewinding mesh and Transform versions, sanitized Transform, axis, source side, component classification, seam loop/vertex/boundary counts, tolerance, maximum snap distance, and an analysis fingerprint. Sculpt, Transform, topology, axis, load, recovery, or exact-state restoration after an intervening edit makes the preview stale. Camera, brush, symmetry, Gizmo visibility/mode, Face Selection content/operation, and Diagnostics visibility do not affect the geometric plan.
 
 Apply recalculates the plan and requires identical estimate and fingerprint. The result mesh, normals, adjacency, bounds, symmetry checks, before snapshot, and Picking BVH are completed in the fallible prepared phase. Only then does a nonthrowing commit install the mesh, update profiler counts, install Picking and Sculpt indexes, clear topology-bound Face Selection and topology previews, invalidate Diagnostics/Cleanup, and record one `ReplaceMeshCommand`.
 

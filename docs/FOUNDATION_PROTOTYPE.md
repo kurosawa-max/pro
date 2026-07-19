@@ -165,7 +165,7 @@ preview source identity、prepared／nonthrowing commit、fresh topology、norma
 
 ## Mirror Copy foundation
 
-通常toolbarの`Mirror`は、現在meshをobject-local `X/Y/Z = 0`面で破壊的に複製する。planeを跨ぐmeshは切断せず拒否する。shared-edge componentごとに、plane非接触のclosed shellはdetached copy、boundary全体がplane上のclosed degree-2 loopであるopen half meshはseam vertex共有のwelded copyとして扱う。seamはscale-aware tolerance内だけexact zeroへsnapし、別vertexが同一点になる場合やnearby-only weldは拒否する。
+通常toolbarの`Mirror`は、現在meshをobject-local `X/Y/Z = 0`面で破壊的に複製する。planeを跨ぐmeshは切断せず拒否する。Union-Find後のedge列を1回だけcomponent別へgroup化する。plane非接触のclosed shellはdetached copy、boundary全体がplane上のclosed degree-2 loopであるopen half meshはseam vertex共有のwelded copyとして扱い、bow-tie vertex ID共有は拒否する。seamはscale-aware tolerance内だけexact zeroへsnapし、boundary edge数とmaximum snap距離をPreview表示する。snap後のcollapse／geometry duplicate、別vertexが同一点になる衝突、nearby-only weldはmutation前に拒否する。
 
 source vertex/triangle順を保持し、mirror vertexはsource index順、mirror triangleは`(a,c,b)`で追加する。結果はboundary 0、expected component count、finite/normalized normal、degenerate/duplicate/non-manifold/winding、symmetry、local/world bounds、adjacency、Picking BVHをinstall前に検証する。previewはmesh/Transformの非巻戻しidentity、axis、分類、fingerprintへ結合する。
 

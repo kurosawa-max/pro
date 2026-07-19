@@ -40,8 +40,10 @@ struct MeshMirrorEstimate: Equatable {
     let closedComponentCount: Int
     let openComponentCount: Int
     let seamLoopCount: Int
+    let boundaryEdgeCount: Int
     let seamVertexCount: Int
     let snappedVertexCount: Int
+    let maximumSeamSnapDistance: Float
     let mirroredVertexCount: Int
     let resultingVertexCount: Int
     let resultingTriangleCount: Int
@@ -66,7 +68,9 @@ struct MeshMirrorSourceKey: Equatable {
     let closedComponentCount: Int
     let openComponentCount: Int
     let seamLoopCount: Int
+    let boundaryEdgeCount: Int
     let seamVertexCount: Int
+    let maximumSeamSnapDistance: Float
     let seamTolerance: Float
     let analysisFingerprint: UInt64
 
@@ -117,6 +121,8 @@ enum MeshMirrorError: Error, Equatable, LocalizedError {
     case seamTriangle
     case invalidSeamLoop
     case seamSnapCollision
+    case seamSnapWouldCollapseTriangle
+    case seamSnapWouldCreateDuplicateTriangle
     case vertexLimitExceeded
     case triangleLimitExceeded
     case indexOverflow
@@ -132,8 +138,8 @@ enum MeshMirrorError: Error, Equatable, LocalizedError {
         switch self {
         case .invalidMesh: "Mirror Copy requires a nonempty, valid triangle mesh."
         case .nonFiniteValue: "Mirror Copy requires finite vertex positions and normals."
-        case .degenerateTriangle: "Mirror Copy requires a mesh without degenerate triangles."
-        case .duplicateTriangle: "Mirror Copy requires a mesh without duplicate triangles."
+        case .degenerateTriangle: "The source already contains degenerate triangles. Review Mesh Diagnostics or run Mesh Cleanup before retrying."
+        case .duplicateTriangle: "The source already contains duplicate triangles. Review Mesh Diagnostics or run Mesh Cleanup before retrying."
         case .nonManifoldEdge: "Mirror Copy requires manifold source edges."
         case .windingConflict: "Mirror Copy requires consistent triangle winding."
         case .isolatedVertex: "Mirror Copy requires every vertex to be referenced by a triangle."
@@ -146,7 +152,9 @@ enum MeshMirrorError: Error, Equatable, LocalizedError {
         case .seamInteriorVertex: "Every mirror-plane vertex of an open component must belong to its boundary."
         case .seamTriangle: "A triangle lying on the mirror plane cannot be mirrored safely."
         case .invalidSeamLoop: "The mirror-plane boundary must consist of closed, unbranched degree-two loops."
-        case .seamSnapCollision: "Snapping the seam would merge distinct source vertices."
+        case .seamSnapCollision: "Snapping the seam would merge distinct source vertices. Adjust the axis or geometry before retrying."
+        case .seamSnapWouldCollapseTriangle: "Snapping the accepted seam to the plane would collapse a triangle. Adjust the axis or geometry before retrying."
+        case .seamSnapWouldCreateDuplicateTriangle: "Snapping the accepted seam to the plane would create duplicate triangles. Adjust the axis or geometry before retrying."
         case .vertexLimitExceeded: "The result exceeds the 2,000,000 vertex limit."
         case .triangleLimitExceeded: "The result exceeds the 4,000,000 triangle limit."
         case .indexOverflow: "The result exceeds the supported UInt32 index range."
@@ -190,7 +198,9 @@ enum MeshMirror {
                 closedComponentCount: plan.estimate.closedComponentCount,
                 openComponentCount: plan.estimate.openComponentCount,
                 seamLoopCount: plan.estimate.seamLoopCount,
+                boundaryEdgeCount: plan.estimate.boundaryEdgeCount,
                 seamVertexCount: plan.estimate.seamVertexCount,
+                maximumSeamSnapDistance: plan.estimate.maximumSeamSnapDistance,
                 seamTolerance: plan.estimate.seamTolerance,
                 analysisFingerprint: plan.fingerprint))
     }
@@ -201,6 +211,14 @@ enum MeshMirror {
         options: MeshMirrorOptions
     ) throws -> MeshMirrorEstimate {
         try makePlan(mesh: mesh, transform: transform, options: options).estimate
+    }
+
+    static func analysisStatistics(
+        mesh: EditableMesh,
+        transform: ObjectTransform,
+        options: MeshMirrorOptions
+    ) throws -> MeshMirrorAnalysisStatistics {
+        try makePlan(mesh: mesh, transform: transform, options: options).statistics
     }
 
     static func mirror(
@@ -255,6 +273,13 @@ enum MeshMirror {
         let isSeam: [Bool]
         let estimate: MeshMirrorEstimate
         let fingerprint: UInt64
+        let statistics: MeshMirrorAnalysisStatistics
+    }
+
+    struct MeshMirrorAnalysisStatistics: Equatable {
+        let uniqueEdgeCount: Int
+        let edgeGroupingVisitCount: Int
+        let componentEdgeVisitCount: Int
     }
 
     private struct EdgeUse {
@@ -265,13 +290,21 @@ enum MeshMirror {
 
     private struct ComponentPlan {
         let faceIDs: [Int]
+        let edgeKeys: [DiagnosticEdgeKey]
         let boundaryEdges: [DiagnosticEdgeKey]
         let seamVertexIDs: [Int]
         let seamLoopCount: Int
         let isClosed: Bool
     }
 
-    private struct PositionKey: Hashable {
+    private struct ComponentAnalysis {
+        let edges: [DiagnosticEdgeKey: [EdgeUse]]
+        let edgeOrder: [DiagnosticEdgeKey]
+        let components: [ComponentPlan]
+        let statistics: MeshMirrorAnalysisStatistics
+    }
+
+    private struct PositionKey: Hashable, Comparable {
         let x: UInt32
         let y: UInt32
         let z: UInt32
@@ -280,6 +313,25 @@ enum MeshMirror {
             x = position.x == 0 ? 0 : position.x.bitPattern
             y = position.y == 0 ? 0 : position.y.bitPattern
             z = position.z == 0 ? 0 : position.z.bitPattern
+        }
+
+        static func < (lhs: Self, rhs: Self) -> Bool {
+            if lhs.x != rhs.x { return lhs.x < rhs.x }
+            if lhs.y != rhs.y { return lhs.y < rhs.y }
+            return lhs.z < rhs.z
+        }
+    }
+
+    private struct PositionTriangleKey: Hashable {
+        let first: PositionKey
+        let second: PositionKey
+        let third: PositionKey
+
+        init(_ first: SIMD3<Float>, _ second: SIMD3<Float>, _ third: SIMD3<Float>) {
+            let sorted = [PositionKey(first), PositionKey(second), PositionKey(third)].sorted()
+            self.first = sorted[0]
+            self.second = sorted[1]
+            self.third = sorted[2]
         }
     }
 
@@ -303,6 +355,9 @@ enum MeshMirror {
         guard topology.nonFiniteVertexCount == 0 else { throw MeshMirrorError.nonFiniteValue }
         guard topology.degenerateTriangleCount == 0 else { throw MeshMirrorError.degenerateTriangle }
         guard topology.duplicateTriangleCount == 0 else { throw MeshMirrorError.duplicateTriangle }
+        guard try hasGeometricDuplicateTriangles(
+            vertices: mesh.vertices, indices: mesh.indices
+        ) == false else { throw MeshMirrorError.duplicateTriangle }
         guard topology.nonManifoldEdgeCount == 0 else { throw MeshMirrorError.nonManifoldEdge }
         guard topology.inconsistentWindingEdgeCount == 0 else { throw MeshMirrorError.windingConflict }
         guard topology.isolatedVertexCount == 0 else { throw MeshMirrorError.isolatedVertex }
@@ -337,34 +392,28 @@ enum MeshMirror {
         }
         let sourceSide: MeshMirrorSourceSide = hasPositive ? .positive : .negative
 
-        if topology.isClosed, sides.contains(.seam) {
-            throw MeshMirrorError.closedComponentTouchesPlane
-        }
-        if topology.boundaryEdgeCount > 0 {
-            var seamEdgeUseCount: [DiagnosticEdgeKey: Int] = [:]
-            seamEdgeUseCount.reserveCapacity(mesh.indices.count)
-            for offset in stride(from: 0, to: mesh.indices.count, by: 3) {
-                let ids = [mesh.indices[offset], mesh.indices[offset + 1], mesh.indices[offset + 2]]
-                for (first, second) in [(ids[0], ids[1]), (ids[1], ids[2]), (ids[2], ids[0])]
-                    where sides[Int(first)] == .seam && sides[Int(second)] == .seam {
-                    seamEdgeUseCount[DiagnosticEdgeKey(first, second), default: 0] += 1
-                }
-            }
-            if seamEdgeUseCount.values.contains(where: { $0 == 2 }) {
-                throw MeshMirrorError.seamInteriorEdge
-            }
-        }
-
         var snappedVertices = mesh.vertices
         var snappedCount = 0
+        var maximumSeamSnapDistance: Float = 0
         var snappedPositions: [PositionKey: Int] = [:]
         snappedPositions.reserveCapacity(mesh.vertices.count)
         for vertexID in snappedVertices.indices {
             let original = mesh.vertices[vertexID].position
             if sides[vertexID] == .seam {
-                if snappedVertices[vertexID].position[options.axis.componentIndex] != 0 { snappedCount += 1 }
+                let distance = abs(original[options.axis.componentIndex])
+                guard distance.isFinite, distance <= tolerance else {
+                    throw MeshMirrorError.validationFailed
+                }
+                maximumSeamSnapDistance = max(maximumSeamSnapDistance, distance)
+                if distance != 0 { snappedCount += 1 }
                 snappedVertices[vertexID].position[options.axis.componentIndex] = 0
             }
+        }
+        try validateSnappedSource(
+            source: mesh,
+            snappedVertices: snappedVertices)
+        for vertexID in snappedVertices.indices {
+            let original = mesh.vertices[vertexID].position
             let key = PositionKey(snappedVertices[vertexID].position)
             if let previous = snappedPositions[key],
                PositionKey(mesh.vertices[previous].position) != PositionKey(original),
@@ -374,16 +423,20 @@ enum MeshMirror {
             snappedPositions[key] = vertexID
         }
 
-        let (edges, edgeOrder, components) = try analyzeComponents(
-            mesh: mesh, sides: sides)
+        let analysis = try analyzeComponents(mesh: mesh, sides: sides)
+        let edges = analysis.edges
+        let edgeOrder = analysis.edgeOrder
+        let components = analysis.components
         var closedCount = 0
         var openCount = 0
         var seamLoopCount = 0
+        var boundaryEdgeCount = 0
         var seamVertexIDs = Set<Int>()
         for component in components {
             if component.isClosed { closedCount += 1 }
             else { openCount += 1 }
             seamLoopCount += component.seamLoopCount
+            boundaryEdgeCount += component.boundaryEdges.count
             seamVertexIDs.formUnion(component.seamVertexIDs)
         }
 
@@ -423,8 +476,10 @@ enum MeshMirror {
             closedComponentCount: closedCount,
             openComponentCount: openCount,
             seamLoopCount: seamLoopCount,
+            boundaryEdgeCount: boundaryEdgeCount,
             seamVertexCount: seamVertexIDs.count,
             snappedVertexCount: snappedCount,
+            maximumSeamSnapDistance: maximumSeamSnapDistance,
             mirroredVertexCount: offPlaneCount,
             resultingVertexCount: resultingVertices,
             resultingTriangleCount: resultingTriangles,
@@ -441,13 +496,14 @@ enum MeshMirror {
             snappedVertices: snappedVertices,
             isSeam: sides.map { $0 == .seam },
             estimate: estimate,
-            fingerprint: fingerprint)
+            fingerprint: fingerprint,
+            statistics: analysis.statistics)
     }
 
     private static func analyzeComponents(
         mesh: EditableMesh,
         sides: [Side]
-    ) throws -> ([DiagnosticEdgeKey: [EdgeUse]], [DiagnosticEdgeKey], [ComponentPlan]) {
+    ) throws -> ComponentAnalysis {
         let triangleCount = mesh.indices.count / 3
         var edges: [DiagnosticEdgeKey: [EdgeUse]] = [:]
         edges.reserveCapacity(mesh.indices.count)
@@ -467,32 +523,68 @@ enum MeshMirror {
         }
 
         var facesByRoot: [Int: [Int]] = [:]
+        var rootByFace = Array(repeating: 0, count: triangleCount)
         var roots: [Int] = []
         for faceID in 0..<triangleCount {
             let root = union.find(faceID)
+            rootByFace[faceID] = root
             if facesByRoot[root] == nil { roots.append(root) }
             facesByRoot[root, default: []].append(faceID)
         }
         roots.sort { (facesByRoot[$0]?.first ?? .max) < (facesByRoot[$1]?.first ?? .max) }
 
+        var edgesByRoot: [Int: [DiagnosticEdgeKey]] = [:]
+        var boundaryEdgesByRoot: [Int: [DiagnosticEdgeKey]] = [:]
+        edgesByRoot.reserveCapacity(roots.count)
+        boundaryEdgesByRoot.reserveCapacity(roots.count)
+        var edgeGroupingVisitCount = 0
+        for key in edgeOrder {
+            edgeGroupingVisitCount += 1
+            guard let uses = edges[key], let first = uses.first else {
+                throw MeshMirrorError.invalidMesh
+            }
+            let root = rootByFace[first.faceID]
+            guard uses.allSatisfy({ rootByFace[$0.faceID] == root }) else {
+                throw MeshMirrorError.invalidMesh
+            }
+            edgesByRoot[root, default: []].append(key)
+            if uses.count == 1 { boundaryEdgesByRoot[root, default: []].append(key) }
+        }
+
+        var verticesByRoot: [Int: Set<Int>] = [:]
+        verticesByRoot.reserveCapacity(roots.count)
+        var vertexOwnerRoot = Array<Int?>(repeating: nil, count: mesh.vertices.count)
+        for faceID in 0..<triangleCount {
+            let root = rootByFace[faceID]
+            let offset = faceID * 3
+            for rawID in mesh.indices[offset..<(offset + 3)] {
+                let vertexID = Int(rawID)
+                if let owner = vertexOwnerRoot[vertexID], owner != root {
+                    if sides[vertexID] == .seam {
+                        throw MeshMirrorError.invalidSeamLoop
+                    }
+                    throw MeshMirrorError.invalidMesh
+                }
+                vertexOwnerRoot[vertexID] = root
+                verticesByRoot[root, default: []].insert(vertexID)
+            }
+        }
+
         var plans: [ComponentPlan] = []
         plans.reserveCapacity(roots.count)
+        var componentEdgeVisitCount = 0
         for root in roots {
             let faceIDs = facesByRoot[root] ?? []
-            let faceSet = Set(faceIDs)
-            let componentEdges = edgeOrder.filter { key in
-                edges[key]?.contains(where: { faceSet.contains($0.faceID) }) == true
-            }
-            let boundary = componentEdges.filter { edges[$0]?.count == 1 }
-            let vertexIDs = Set(faceIDs.flatMap { faceID -> [Int] in
-                let offset = faceID * 3
-                return [Int(mesh.indices[offset]), Int(mesh.indices[offset + 1]), Int(mesh.indices[offset + 2])]
-            })
+            let componentEdges = edgesByRoot[root] ?? []
+            componentEdgeVisitCount += componentEdges.count
+            let boundary = boundaryEdgesByRoot[root] ?? []
+            let vertexIDs = verticesByRoot[root] ?? Set<Int>()
             let seamVertices = vertexIDs.filter { sides[$0] == .seam }.sorted()
             if boundary.isEmpty {
                 guard seamVertices.isEmpty else { throw MeshMirrorError.closedComponentTouchesPlane }
                 plans.append(ComponentPlan(
-                    faceIDs: faceIDs, boundaryEdges: [], seamVertexIDs: [],
+                    faceIDs: faceIDs, edgeKeys: componentEdges,
+                    boundaryEdges: [], seamVertexIDs: [],
                     seamLoopCount: 0, isClosed: true))
                 continue
             }
@@ -508,10 +600,17 @@ enum MeshMirror {
             }
             let loops = try validateSeamLoops(boundary)
             plans.append(ComponentPlan(
-                faceIDs: faceIDs, boundaryEdges: boundary,
+                faceIDs: faceIDs, edgeKeys: componentEdges, boundaryEdges: boundary,
                 seamVertexIDs: seamVertices, seamLoopCount: loops, isClosed: false))
         }
-        return (edges, edgeOrder, plans)
+        return ComponentAnalysis(
+            edges: edges,
+            edgeOrder: edgeOrder,
+            components: plans,
+            statistics: MeshMirrorAnalysisStatistics(
+                uniqueEdgeCount: edgeOrder.count,
+                edgeGroupingVisitCount: edgeGroupingVisitCount,
+                componentEdgeVisitCount: componentEdgeVisitCount))
     }
 
     private static func validateSeamLoops(_ boundary: [DiagnosticEdgeKey]) throws -> Int {
@@ -554,6 +653,56 @@ enum MeshMirror {
         return loopCount
     }
 
+    private static func validateSnappedSource(
+        source: EditableMesh,
+        snappedVertices: [MeshVertex]
+    ) throws {
+        guard snappedVertices.count == source.vertices.count,
+              snappedVertices.allSatisfy({ $0.position.allFinite && $0.normal.allFinite }) else {
+            throw MeshMirrorError.validationFailed
+        }
+        let snapped = EditableMesh(vertices: snappedVertices, indices: source.indices)
+        let report = MeshTopologyDiagnostics.analyze(snapped)
+        guard !report.hasInvalidStructure,
+              report.invalidIndexTriangleCount == 0,
+              report.nonFiniteVertexCount == 0 else {
+            throw MeshMirrorError.validationFailed
+        }
+        guard report.degenerateTriangleCount == 0 else {
+            throw MeshMirrorError.seamSnapWouldCollapseTriangle
+        }
+        guard try hasGeometricDuplicateTriangles(
+            vertices: snappedVertices,
+            indices: source.indices
+        ) == false else {
+            throw MeshMirrorError.seamSnapWouldCreateDuplicateTriangle
+        }
+    }
+
+    private static func hasGeometricDuplicateTriangles(
+        vertices: [MeshVertex],
+        indices: [UInt32]
+    ) throws -> Bool {
+        guard !vertices.isEmpty, !indices.isEmpty, indices.count.isMultiple(of: 3) else {
+            throw MeshMirrorError.invalidMesh
+        }
+        var seen = Set<PositionTriangleKey>()
+        seen.reserveCapacity(indices.count / 3)
+        for offset in stride(from: 0, to: indices.count, by: 3) {
+            let raw = [indices[offset], indices[offset + 1], indices[offset + 2]]
+            guard raw.allSatisfy({ Int($0) < vertices.count }) else {
+                throw MeshMirrorError.invalidMesh
+            }
+            let positions = raw.map { vertices[Int($0)].position }
+            guard positions.allSatisfy({ $0.allFinite }) else {
+                throw MeshMirrorError.nonFiniteValue
+            }
+            let key = PositionTriangleKey(positions[0], positions[1], positions[2])
+            if !seen.insert(key).inserted { return true }
+        }
+        return false
+    }
+
     private static func validateResult(
         _ result: EditableMesh,
         source: EditableMesh,
@@ -569,7 +718,12 @@ enum MeshMirror {
               result.vertices.allSatisfy({ vertex in
                   vertex.position.allFinite && vertex.normal.allFinite
                       && abs(simd_length(vertex.normal) - 1) <= 0.001
-              }) else { throw MeshMirrorError.validationFailed }
+              }),
+              plan.estimate.maximumSeamSnapDistance.isFinite,
+              plan.estimate.maximumSeamSnapDistance >= 0,
+              plan.estimate.maximumSeamSnapDistance <= plan.estimate.seamTolerance else {
+            throw MeshMirrorError.validationFailed
+        }
         let report = MeshTopologyDiagnostics.analyze(result)
         guard !report.hasInvalidStructure,
               report.invalidIndexTriangleCount == 0,
@@ -632,14 +786,33 @@ enum MeshMirror {
     }
 
     private static func seamTolerance(mesh: EditableMesh, axis: MirrorAxis) -> Float {
-        let diagonal = max(simd_length(mesh.bounds.extent), Float.leastNonzeroMagnitude)
-        let maximumCoordinate = mesh.vertices.reduce(Float.zero) { partial, vertex in
-            max(partial, abs(vertex.position[axis.componentIndex]))
+        var minimum = SIMD3<Double>(repeating: .infinity)
+        var maximum = SIMD3<Double>(repeating: -.infinity)
+        var maximumAxisCoordinate = Double.zero
+        for vertex in mesh.vertices {
+            let position = SIMD3<Double>(
+                Double(vertex.position.x),
+                Double(vertex.position.y),
+                Double(vertex.position.z))
+            minimum = simd_min(minimum, position)
+            maximum = simd_max(maximum, position)
+            maximumAxisCoordinate = max(
+                maximumAxisCoordinate,
+                abs(position[axis.componentIndex]))
         }
-        let base = max(1.0e-5, diagonal * 1.0e-6)
-        let precision = maximumCoordinate * Float.ulpOfOne * 4
-        let cap = max(base, diagonal * 1.0e-4)
-        return max(base, min(precision, cap))
+        let extent = maximum - minimum
+        let diagonal = max(simd_length(extent), Double.leastNonzeroMagnitude)
+        let axisExtent = max(extent[axis.componentIndex], 0)
+        let minimumTolerance = 1.0e-5
+        let axisRelativeCap = max(minimumTolerance, axisExtent * 1.0e-4)
+        let diagonalRelative = min(diagonal * 1.0e-6, axisRelativeCap)
+        let base = max(minimumTolerance, diagonalRelative)
+        let precision = maximumAxisCoordinate * Double(Float.ulpOfOne) * 4
+        let tolerance = max(base, min(precision, axisRelativeCap))
+        guard tolerance.isFinite, tolerance <= Double(Float.greatestFiniteMagnitude) else {
+            return .infinity
+        }
+        return Float(tolerance)
     }
 
     static func estimatedWorkingBytes(
@@ -688,10 +861,14 @@ enum MeshMirror {
             mix(component.isClosed ? 1 : 0)
             mix(UInt64(component.seamLoopCount))
             for faceID in component.faceIDs { mix(UInt64(faceID)) }
+            for edge in component.edgeKeys { mix(UInt64(edge.low)); mix(UInt64(edge.high)) }
+            for edge in component.boundaryEdges { mix(UInt64(edge.low)); mix(UInt64(edge.high)) }
             for vertexID in component.seamVertexIDs { mix(UInt64(vertexID)) }
         }
         mix(UInt64(estimate.resultingVertexCount))
         mix(UInt64(estimate.resultingTriangleCount))
+        mix(UInt64(estimate.boundaryEdgeCount))
+        mix(UInt64(estimate.maximumSeamSnapDistance.bitPattern))
         return hash
     }
 

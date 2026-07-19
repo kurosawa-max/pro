@@ -32,12 +32,16 @@ struct MeshMirrorView: View {
                     countRow("Closed components", estimate?.closedComponentCount)
                     countRow("Open half components", estimate?.openComponentCount)
                     countRow("Seam loops", estimate?.seamLoopCount)
+                    countRow("Boundary edges", estimate?.boundaryEdgeCount)
                     countRow("Seam vertices", estimate?.seamVertexCount)
                     if let estimate {
                         LabeledContent("Source side", value: estimate.sourceSide.rawValue)
                         LabeledContent(
                             "Seam tolerance",
                             value: "\(estimate.seamTolerance.formatted(.number.precision(.fractionLength(0...8)))) mm")
+                        LabeledContent(
+                            "Maximum seam snap",
+                            value: "\(estimate.maximumSeamSnapDistance.formatted(.number.precision(.fractionLength(0...8)))) mm")
                     }
                 }
 
@@ -65,10 +69,12 @@ struct MeshMirrorView: View {
 
                 Section("Safety") {
                     Label("Apply creates one Undo command.", systemImage: "arrow.uturn.backward.circle")
-                    Label("Open half meshes weld only exact plane seams.", systemImage: "point.3.filled.connected.trianglepath.dotted")
+                    Label("Accepted seam vertices snap to the exact zero plane.", systemImage: "point.3.filled.connected.trianglepath.dotted")
                     Text("Closed components are copied as detached mirrored shells. Open components are accepted only when every boundary edge forms an unbranched loop on the selected zero plane.")
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Mirror Copy does not cut crossing geometry, weld nearby vertices, repair topology, or change Object Transform.")
+                    Text("Only vertices within the displayed tolerance are seam candidates. Vertices outside it are not welded, and no other proximity weld is performed. A snap that collapses geometry is rejected.")
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Mirror Copy does not cut crossing geometry, repair topology, or change Object Transform.")
                         .fixedSize(horizontal: false, vertical: true)
                 }
 

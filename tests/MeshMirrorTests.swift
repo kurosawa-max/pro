@@ -16,7 +16,9 @@ final class MeshMirrorTests: XCTestCase {
         XCTAssertEqual(result.estimate.openComponentCount, 1)
         XCTAssertEqual(result.estimate.closedComponentCount, 0)
         XCTAssertEqual(result.estimate.seamLoopCount, 1)
+        XCTAssertEqual(result.estimate.boundaryEdgeCount, 4)
         XCTAssertEqual(result.estimate.seamVertexCount, 4)
+        XCTAssertEqual(result.estimate.maximumSeamSnapDistance, 0)
         XCTAssertEqual(result.estimate.resultingVertexCount, 12)
         XCTAssertEqual(result.estimate.resultingTriangleCount, 20)
         XCTAssertEqual(result.estimate.resultingComponentCount, 1)
@@ -29,6 +31,7 @@ final class MeshMirrorTests: XCTestCase {
             mesh: source, transform: .identity, options: MeshMirrorOptions(axis: .x))
         XCTAssertEqual(result.estimate.closedComponentCount, 1)
         XCTAssertEqual(result.estimate.openComponentCount, 0)
+        XCTAssertEqual(result.estimate.boundaryEdgeCount, 0)
         XCTAssertEqual(result.estimate.seamVertexCount, 0)
         XCTAssertEqual(result.mesh.vertices.count, source.vertices.count * 2)
         XCTAssertEqual(result.mesh.indices.count, source.indices.count * 2)
@@ -101,6 +104,10 @@ final class MeshMirrorTests: XCTestCase {
         let result = try MeshMirror.mirror(
             mesh: source, transform: .identity, options: MeshMirrorOptions(axis: .x))
         XCTAssertGreaterThan(result.estimate.snappedVertexCount, 0)
+        XCTAssertEqual(result.estimate.maximumSeamSnapDistance, 0.000_005, accuracy: 0.000_000_1)
+        XCTAssertLessThanOrEqual(
+            result.estimate.maximumSeamSnapDistance,
+            result.estimate.seamTolerance)
         XCTAssertEqual(result.mesh.vertices.filter { $0.position.x == 0 }.count, 4)
         assertHealthyClosed(result.mesh, components: 1)
     }
@@ -137,10 +144,12 @@ final class MeshMirrorTests: XCTestCase {
     func testClosedComponentTouchingPlaneIsRejected() throws {
         let source = try shiftedCube(offset: SIMD3<Float>(1, 0, 0))
         XCTAssertThrowsError(try MeshMirror.estimate(
-            mesh: source, transform: .identity, options: MeshMirrorOptions(axis: .x)))
+            mesh: source, transform: .identity, options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .closedComponentTouchesPlane)
+        }
     }
 
-    func testPlaneOnlyMeshAndInteriorSeamEdgeAreRejected() throws {
+    func testPlaneOnlyMeshIsClassifiedPrecisely() throws {
         var plane = EditableMesh(
             vertices: [
                 MeshVertex(position: SIMD3<Float>(0, 0, 0), normal: SIMD3<Float>(1, 0, 0)),
@@ -150,18 +159,17 @@ final class MeshMirrorTests: XCTestCase {
             indices: [0, 1, 2])
         plane.recalculateNormals()
         XCTAssertThrowsError(try MeshMirror.estimate(
-            mesh: plane, transform: .identity, options: MeshMirrorOptions(axis: .x)))
+            mesh: plane, transform: .identity, options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .noOffPlaneVertices)
+        }
+    }
 
-        let half = try openHalfBox()
-        var vertices = half.vertices
-        vertices.append(MeshVertex(
-            position: SIMD3<Float>(0, 0, 0), normal: SIMD3<Float>(1, 0, 0)))
-        var indices = half.indices
-        indices.append(contentsOf: [3, 0, UInt32(vertices.count - 1)])
-        var interiorSeam = EditableMesh(vertices: vertices, indices: indices)
-        interiorSeam.recalculateNormals()
+    func testInteriorSeamEdgeIsClassifiedPrecisely() throws {
+        let interiorSeam = interiorSeamEdgeMesh()
         XCTAssertThrowsError(try MeshMirror.estimate(
-            mesh: interiorSeam, transform: .identity, options: MeshMirrorOptions(axis: .x)))
+            mesh: interiorSeam, transform: .identity, options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .seamInteriorEdge)
+        }
     }
 
     func testOpenBoundaryAwayFromPlaneIsRejected() throws {
@@ -190,11 +198,11 @@ final class MeshMirrorTests: XCTestCase {
             XCTAssertEqual($0 as? MeshMirrorError, .duplicateTriangle)
         }
 
-        let nonManifold = EditableMesh(
-            vertices: healthy.vertices,
-            indices: healthy.indices + [0, 3, 1])
+        let nonManifold = nonManifoldMesh()
         XCTAssertThrowsError(try MeshMirror.estimate(
-            mesh: nonManifold, transform: .identity, options: MeshMirrorOptions(axis: .x)))
+            mesh: nonManifold, transform: .identity, options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .nonManifoldEdge)
+        }
 
         var invalidVertices = healthy.vertices
         invalidVertices[0].position.x = .nan
@@ -213,6 +221,164 @@ final class MeshMirrorTests: XCTestCase {
         }
     }
 
+    func testInvalidEmptyAndIsolatedSourcesHaveExactErrors() throws {
+        let empty = EditableMesh(vertices: [], indices: [])
+        XCTAssertThrowsError(try MeshMirror.estimate(
+            mesh: empty, transform: .identity, options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .invalidMesh)
+        }
+
+        let healthy = try openHalfBox()
+        let isolated = EditableMesh(
+            vertices: healthy.vertices + [
+                MeshVertex(position: SIMD3<Float>(5, 5, 5), normal: SIMD3<Float>(1, 0, 0)),
+            ],
+            indices: healthy.indices)
+        XCTAssertThrowsError(try MeshMirror.estimate(
+            mesh: isolated, transform: .identity, options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .isolatedVertex)
+        }
+    }
+
+    func testSeamTriangleInteriorVertexAndInvalidLoopHaveExactErrors() throws {
+        let seamTriangle = try seamTriangleMesh()
+        let invalidLoop = try seamBowTieMesh()
+        XCTAssertThrowsError(try MeshMirror.estimate(
+            mesh: seamTriangle, transform: .identity,
+            options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .seamTriangle)
+        }
+        XCTAssertThrowsError(try MeshMirror.estimate(
+            mesh: seamInteriorVertexMesh(), transform: .identity,
+            options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .seamInteriorVertex)
+        }
+        XCTAssertThrowsError(try MeshMirror.estimate(
+            mesh: invalidLoop, transform: .identity,
+            options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .invalidSeamLoop)
+        }
+    }
+
+    func testSnapInducedCollapseAndDuplicateHaveDedicatedErrors() throws {
+        XCTAssertThrowsError(try MeshMirror.estimate(
+            mesh: snapCollapseMesh(), transform: .identity,
+            options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .seamSnapWouldCollapseTriangle)
+        }
+        XCTAssertThrowsError(try MeshMirror.estimate(
+            mesh: snapDuplicateMesh(), transform: .identity,
+            options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .seamSnapWouldCreateDuplicateTriangle)
+        }
+    }
+
+    func testComponentAnalysisVisitsEachUniqueEdgeOncePerLinearPass() throws {
+        let closed = try (0..<24).map { index in
+            try shiftedCube(offset: SIMD3<Float>(4, Float(index * 5), 0))
+        }
+        let open = try (0..<24).map { index in
+            try openHalfBox(yOffset: Float(index * 5 + 200))
+        }
+        for source in [combine(closed), combine(open), combine(closed + open)] {
+            let statistics = try MeshMirror.analysisStatistics(
+                mesh: source, transform: .identity,
+                options: MeshMirrorOptions(axis: .x))
+            XCTAssertEqual(statistics.edgeGroupingVisitCount, statistics.uniqueEdgeCount)
+            XCTAssertEqual(statistics.componentEdgeVisitCount, statistics.uniqueEdgeCount)
+        }
+    }
+
+    func testManyComponentsKeepCountsOrderingAndFingerprintDeterministic() throws {
+        let closed = try (0..<16).map { index in
+            try shiftedCube(offset: SIMD3<Float>(4, Float(index * 5), 0))
+        }
+        let open = try (0..<16).map { index in
+            try openHalfBox(yOffset: Float(index * 5 + 200))
+        }
+        let source = combine(closed + open)
+        let first = try MeshMirror.mirror(
+            mesh: source, transform: .identity, options: MeshMirrorOptions(axis: .x))
+        let second = try MeshMirror.mirror(
+            mesh: source, transform: .identity, options: MeshMirrorOptions(axis: .x))
+        XCTAssertEqual(first.estimate.closedComponentCount, 16)
+        XCTAssertEqual(first.estimate.openComponentCount, 16)
+        XCTAssertEqual(first.estimate.resultingComponentCount, 48)
+        XCTAssertEqual(first.estimate.boundaryEdgeCount, 16 * 4)
+        XCTAssertEqual(first.analysisFingerprint, second.analysisFingerprint)
+        XCTAssertEqual(first.mesh.indices, second.mesh.indices)
+        XCTAssertEqual(Array(first.mesh.indices.prefix(source.indices.count)), source.indices)
+    }
+
+    func testPreviewSourceKeyIncludesBoundaryAndMaximumSnapMetrics() throws {
+        let source = try openHalfBox(seamCoordinate: 0.000_005)
+        let preview = try MeshMirror.makePreview(
+            mesh: source,
+            transform: .identity,
+            options: MeshMirrorOptions(axis: .x),
+            meshChangeVersion: TopologyEditChangeVersion(),
+            transformChangeVersion: TopologyEditChangeVersion())
+        XCTAssertEqual(preview.estimate.boundaryEdgeCount, 4)
+        XCTAssertEqual(preview.source.boundaryEdgeCount, preview.estimate.boundaryEdgeCount)
+        XCTAssertEqual(
+            preview.source.maximumSeamSnapDistance,
+            preview.estimate.maximumSeamSnapDistance)
+        XCTAssertGreaterThan(preview.source.maximumSeamSnapDistance, 0)
+    }
+
+    func testSeamToleranceAndMaximumSnapAreSafeAcrossAxesAndScales() throws {
+        for axis in MirrorAxis.allCases {
+            for sign: Float in [1, -1] {
+                let source = try orientedOpenHalfBox(
+                    axis: axis, sign: sign, seamCoordinate: 0.000_005)
+                let estimate = try MeshMirror.estimate(
+                    mesh: source, transform: .identity,
+                    options: MeshMirrorOptions(axis: axis))
+                XCTAssertTrue(estimate.seamTolerance.isFinite)
+                XCTAssertGreaterThanOrEqual(estimate.seamTolerance, 0.000_01)
+                XCTAssertEqual(
+                    estimate.maximumSeamSnapDistance,
+                    0.000_005,
+                    accuracy: 0.000_000_1)
+                XCTAssertLessThanOrEqual(
+                    estimate.maximumSeamSnapDistance,
+                    estimate.seamTolerance)
+            }
+        }
+
+        var crossAxisHuge = try openHalfBox()
+        var hugeVertices = crossAxisHuge.vertices
+        for vertexID in hugeVertices.indices {
+            hugeVertices[vertexID].position.y *= 100_000_000
+            hugeVertices[vertexID].position.z *= 100_000_000
+        }
+        crossAxisHuge = mesh(
+            positions: hugeVertices.map(\.position),
+            indices: crossAxisHuge.indices)
+        let crossAxisEstimate = try MeshMirror.estimate(
+            mesh: crossAxisHuge, transform: .identity,
+            options: MeshMirrorOptions(axis: .x))
+        XCTAssertLessThanOrEqual(crossAxisEstimate.seamTolerance, 0.000_201)
+
+        let farFromOrigin = try shiftedCube(offset: SIMD3<Float>(1_000_000, 0, 0))
+        let farEstimate = try MeshMirror.estimate(
+            mesh: farFromOrigin, transform: .identity,
+            options: MeshMirrorOptions(axis: .x))
+        XCTAssertTrue(farEstimate.seamTolerance.isFinite)
+        XCTAssertLessThanOrEqual(farEstimate.seamTolerance, 0.000_201)
+        XCTAssertEqual(farEstimate.maximumSeamSnapDistance, 0)
+
+        var tiny = try openHalfBox()
+        tiny = mesh(
+            positions: tiny.vertices.map { $0.position * 0.000_001 },
+            indices: tiny.indices)
+        XCTAssertThrowsError(try MeshMirror.estimate(
+            mesh: tiny, transform: .identity,
+            options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .noOffPlaneVertices)
+        }
+    }
+
     func testResultAndFingerprintAreDeterministic() throws {
         let source = try openHalfBox()
         let first = try MeshMirror.mirror(
@@ -224,6 +390,27 @@ final class MeshMirrorTests: XCTestCase {
         XCTAssertEqual(first.estimate, second.estimate)
         XCTAssertEqual(first.analysisFingerprint, second.analysisFingerprint)
         XCTAssertNotEqual(first.mesh.runtime.topologyID, second.mesh.runtime.topologyID)
+    }
+
+    func testSourceFaceReorderingPreservesDefinedSourceAndMirrorOrdering() throws {
+        let source = try openHalfBox()
+        let faces = stride(from: 0, to: source.indices.count, by: 3).map {
+            Array(source.indices[$0..<($0 + 3)])
+        }
+        var reordered = EditableMesh(
+            vertices: source.vertices,
+            indices: faces.reversed().flatMap { $0 })
+        reordered.recalculateNormals()
+        _ = reordered.adjacency()
+        let first = try MeshMirror.mirror(
+            mesh: reordered, transform: .identity,
+            options: MeshMirrorOptions(axis: .x))
+        let second = try MeshMirror.mirror(
+            mesh: reordered, transform: .identity,
+            options: MeshMirrorOptions(axis: .x))
+        XCTAssertEqual(Array(first.mesh.indices.prefix(reordered.indices.count)), reordered.indices)
+        XCTAssertEqual(first.mesh.indices, second.mesh.indices)
+        XCTAssertEqual(first.analysisFingerprint, second.analysisFingerprint)
     }
 
     func testPreviewWorldBoundsUseCurrentTransformWithoutBakingIt() throws {
@@ -358,6 +545,23 @@ final class MeshMirrorTests: XCTestCase {
     }
 
     @MainActor
+    func testCameraToolsAndFaceSelectionDoNotStaleMirrorPreview() throws {
+        let model = WorkspaceModel()
+        model.mesh = try openHalfBox()
+        model.setInteractionMode(.faceSelect)
+        try model.prepareForMeshMirror()
+        let preview = try model.previewMeshMirror(options: MeshMirrorOptions(axis: .x))
+        model.camera = CameraState(
+            yaw: 0.7, pitch: -0.2, distance: 40,
+            target: SIMD3<Float>(1, 2, 3))
+        model.brush = .crease
+        model.symmetry = SculptSymmetry(x: true, y: true, z: false)
+        model.setFaceSelectionOperation(.add)
+        XCTAssertTrue(model.applyFaceSelectionHit(0))
+        XCTAssertTrue(model.isMeshMirrorPreviewCurrent(preview))
+    }
+
+    @MainActor
     func testFailedRecalculationAndCancelDoNotLeaveApplicablePreview() throws {
         let model = WorkspaceModel()
         model.mesh = try openHalfBox()
@@ -388,6 +592,38 @@ final class MeshMirrorTests: XCTestCase {
         XCTAssertEqual(model.redoCount, history.1)
         XCTAssertEqual(model.projectMutationGeneration, generation)
         XCTAssertEqual(try model.projectData(), bytes)
+    }
+
+    @MainActor
+    func testSnapValidationFailuresLeaveWorkspaceHistoryAndProjectBytesUnchanged() throws {
+        for (source, expected) in [
+            (snapCollapseMesh(), MeshMirrorError.seamSnapWouldCollapseTriangle),
+            (snapDuplicateMesh(), MeshMirrorError.seamSnapWouldCreateDuplicateTriangle),
+        ] {
+            let model = WorkspaceModel()
+            model.mesh = source
+            let transform = model.objectTransform
+            let camera = model.camera
+            let selection = model.faceSelection
+            let history = (model.undoCount, model.redoCount)
+            let generation = model.projectMutationGeneration
+            let bytes = try model.projectData()
+            try model.prepareForMeshMirror()
+            XCTAssertThrowsError(try model.previewMeshMirror(
+                options: MeshMirrorOptions(axis: .x))) {
+                XCTAssertEqual($0 as? MeshMirrorError, expected)
+            }
+            XCTAssertEqual(model.mesh, source)
+            XCTAssertEqual(model.objectTransform, transform)
+            XCTAssertEqual(model.camera, camera)
+            XCTAssertEqual(model.faceSelection, selection)
+            XCTAssertEqual(model.undoCount, history.0)
+            XCTAssertEqual(model.redoCount, history.1)
+            XCTAssertEqual(model.projectMutationGeneration, generation)
+            XCTAssertEqual(try model.projectData(), bytes)
+            XCTAssertNil(model.meshMirrorPreview)
+            XCTAssertFalse(model.isMeshMirrorSnapshotSafeForTesting)
+        }
     }
 
     @MainActor
@@ -464,6 +700,20 @@ final class MeshMirrorTests: XCTestCase {
         }
     }
 
+    func testMirrorSheetExplainsToleranceAndDisplaysBoundaryAndSnapMetrics() throws {
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repository.appendingPathComponent("src/UI/MeshMirrorView.swift"),
+            encoding: .utf8)
+        XCTAssertTrue(source.contains("Boundary edges"))
+        XCTAssertTrue(source.contains("Maximum seam snap"))
+        XCTAssertTrue(source.contains("Accepted seam vertices snap to the exact zero plane."))
+        XCTAssertTrue(source.contains("Vertices outside it are not welded"))
+        XCTAssertFalse(source.contains("weld only exact plane seams"))
+    }
+
     @MainActor
     func testSuccessfulInstallUploadsFreshTopologyOnceThenSkipsUnchangedFrame() throws {
         #if targetEnvironment(simulator)
@@ -507,6 +757,103 @@ final class MeshMirrorTests: XCTestCase {
         return result
     }
 
+    private func interiorSeamEdgeMesh() -> EditableMesh {
+        mesh(positions: [
+            SIMD3<Float>(0, -1, -1), SIMD3<Float>(0, -1, 1),
+            SIMD3<Float>(0, 1, 1), SIMD3<Float>(0, 1, -1),
+            SIMD3<Float>(1, 0, 0.5), SIMD3<Float>(1, 0, -0.5),
+        ], indices: [
+            0, 1, 4, 1, 2, 4, 2, 0, 4,
+            0, 2, 5, 2, 3, 5, 3, 0, 5,
+        ])
+    }
+
+    private func seamInteriorVertexMesh() -> EditableMesh {
+        mesh(positions: [
+            SIMD3<Float>(0, -2, -2), SIMD3<Float>(0, -2, 2),
+            SIMD3<Float>(0, 2, 2), SIMD3<Float>(0, 2, -2),
+            SIMD3<Float>(1, -1, -1), SIMD3<Float>(1, -1, 1),
+            SIMD3<Float>(1, 1, 1), SIMD3<Float>(1, 1, -1),
+            SIMD3<Float>(0, 0, 0),
+        ], indices: [
+            0, 1, 5, 0, 5, 4,
+            1, 2, 6, 1, 6, 5,
+            2, 3, 7, 2, 7, 6,
+            3, 0, 4, 3, 4, 7,
+            4, 5, 8, 5, 6, 8, 6, 7, 8, 7, 4, 8,
+        ])
+    }
+
+    private func seamTriangleMesh() throws -> EditableMesh {
+        let closed = try shiftedCube(offset: SIMD3<Float>(4, -10, 0))
+        let plane = mesh(positions: [
+            SIMD3<Float>(0, 10, 0),
+            SIMD3<Float>(0, 12, 0),
+            SIMD3<Float>(0, 10, 2),
+        ], indices: [0, 1, 2])
+        return combine([closed, plane])
+    }
+
+    private func seamBowTieMesh() throws -> EditableMesh {
+        let first = try openHalfBox(yOffset: 0)
+        let second = try openHalfBox(yOffset: 6)
+        let firstSeam = try XCTUnwrap(first.vertices.firstIndex { $0.position.x == 0 })
+        let secondSeam = try XCTUnwrap(second.vertices.firstIndex { $0.position.x == 0 })
+        var vertices = first.vertices
+        var remap = Array(repeating: UInt32.zero, count: second.vertices.count)
+        for vertexID in second.vertices.indices {
+            if vertexID == secondSeam {
+                remap[vertexID] = UInt32(firstSeam)
+            } else {
+                remap[vertexID] = UInt32(vertices.count)
+                vertices.append(second.vertices[vertexID])
+            }
+        }
+        let indices = first.indices + second.indices.map { remap[Int($0)] }
+        var result = EditableMesh(vertices: vertices, indices: indices)
+        result.recalculateNormals()
+        _ = result.adjacency()
+        return result
+    }
+
+    private func snapCollapseMesh() -> EditableMesh {
+        mesh(positions: [
+            SIMD3<Float>(0.000_005, -1, 0),
+            SIMD3<Float>(1, 0, 0),
+            SIMD3<Float>(2, 1, 0),
+        ], indices: [0, 1, 2])
+    }
+
+    private func snapDuplicateMesh() -> EditableMesh {
+        mesh(positions: [
+            SIMD3<Float>(0.000_005, 0, 0),
+            SIMD3<Float>(1, 0, 0),
+            SIMD3<Float>(1, 1, 0),
+            SIMD3<Float>(-0.000_005, 0, 0),
+            SIMD3<Float>(1, 0, 0),
+            SIMD3<Float>(1, 1, 0),
+        ], indices: [0, 1, 2, 3, 4, 5])
+    }
+
+    private func nonManifoldMesh() -> EditableMesh {
+        mesh(positions: [
+            SIMD3<Float>(1, -1, 0), SIMD3<Float>(1, 1, 0),
+            SIMD3<Float>(2, 0, 1), SIMD3<Float>(2, 0, -1),
+            SIMD3<Float>(2, 2, 0),
+        ], indices: [0, 1, 2, 1, 0, 3, 0, 1, 4])
+    }
+
+    private func mesh(positions: [SIMD3<Float>], indices: [UInt32]) -> EditableMesh {
+        var result = EditableMesh(
+            vertices: positions.map {
+                MeshVertex(position: $0, normal: SIMD3<Float>(1, 0, 0))
+            },
+            indices: indices)
+        result.recalculateNormals()
+        _ = result.adjacency()
+        return result
+    }
+
     private func openCube(offset: SIMD3<Float>) throws -> EditableMesh {
         let cube = try PrimitiveMeshBuilder.cube(size: 2)
         var vertices = cube.vertices
@@ -529,8 +876,12 @@ final class MeshMirrorTests: XCTestCase {
         return result
     }
 
-    private func orientedOpenHalfBox(axis: MirrorAxis, sign: Float) throws -> EditableMesh {
-        let source = try openHalfBox()
+    private func orientedOpenHalfBox(
+        axis: MirrorAxis,
+        sign: Float,
+        seamCoordinate: Float = 0
+    ) throws -> EditableMesh {
+        let source = try openHalfBox(seamCoordinate: seamCoordinate)
         var vertices = source.vertices
         for index in vertices.indices {
             let p = vertices[index].position
