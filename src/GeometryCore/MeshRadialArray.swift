@@ -769,8 +769,7 @@ enum MeshRadialArray {
             tolerance: plan.estimate.validationToleranceMillimeters)
         var worldBounds = AxisAlignedBoundingBox()
         for vertex in result.vertices {
-            let world = try matrix.position(DiagnosticMath.double(vertex.position), using: matrix.model)
-            worldBounds.include(DiagnosticMath.float(world))
+            worldBounds.include(transform.worldPosition(fromLocal: vertex.position))
         }
         guard worldBounds == plan.estimate.resultWorldBounds else {
             throw MeshRadialArrayError.boundsFailure
