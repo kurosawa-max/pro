@@ -551,3 +551,11 @@ axis分類はvertexごとのFloat ULPとprojection noiseによる専用tolerance
 vertex/triangleはcopy-majorで、copy 0を完全保持し、copy間でindexを共有しない。component／boundary countはCount倍である。PreviewはUUID request identity、runtime source identity、options、estimate、analysis fingerprintへ結合し、parameter変更／dismissalでUIとmodelのcandidateを同時に無効化する。Applyはcomplete planとfingerprintを再照合し、result mesh／normal／adjacency／bounds／Picking BVHをprepared phaseで完成してからnonthrowing commitを行う。
 
 成功は`ReplaceMeshCommand` 1件、record-only Autosave snapshot scope、selection／topology Preview／Diagnostics/Cleanup clear、Picking/Spatial Index再構築、通常Renderer upload経路を使う。Transform、camera、tool/modeは維持し、formatVersion 1には普通のmeshだけを保存する。上限は2,000,000 vertices、4,000,000 triangles、Count 256、768 MiBでMainActor同期である。一般collision/self-intersection、weld／Boolean、Grid／Spiral／Helix、custom pivot、live modifier、multiple objectは含まない。詳細は`RADIAL_ARRAY.md`を参照する。
+
+### 17.22 Exact Seam Merge / Split
+
+`MeshExactSeamEdit`はSwiftUI／Workspace／Rendererから独立したGeometryCore境界である。Split Regionは単一host component内のselected patchとconnected remainderを要求し、1本のsimple internal boundary loopについてselected側vertexだけをsource ID順で複製する。triangle順、face ID、position、bounds、windingを維持し、componentを1増加、boundary edgeを`2 × seam edge`増加させる。
+
+Merge Exact Seamは選択がdetached component全体であることを要求する。selected boundary loopを別componentの1本のboundary loopへbit-exact local Float positionで一意対応させる。`+0`／`-0`は同一keyだがepsilonは使わない。counterpart vertexをsurvivorにし、selected seam duplicateだけを除去してold vertex ID順にcompactする。paired edge directionが反対であり、結果がmanifold、consistent winding、nondegenerate、nonduplicateである場合だけ成功する。
+
+Previewは`TopologyPreviewRequestCoordinator`のUUID、topology／vertex revision、非巻戻しmesh／Transform version、Transform、Face Selection version／fingerprint、operation、counts、seam metrics、analysis fingerprintへ結合する。Applyはresult mesh、normal、adjacency、Diagnostics invariants、before snapshot、Picking BVHをfallible prepared phaseで完成し、nonthrowing commitでfresh topologyを1回installする。`ReplaceMeshCommand` 1件、record-only Autosave snapshot scope、selection／Preview／Diagnostics/Cleanup clear、Picking／Spatial Index再構築、通常Renderer upload経路を使用する。formatVersion 1には通常meshだけを保存する。詳細は`EXACT_SEAM_MERGE_SPLIT.md`を参照する。

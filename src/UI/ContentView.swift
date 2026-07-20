@@ -20,6 +20,7 @@ struct ContentView: View {
     @State private var showMeshMirror = false
     @State private var showMeshLinearArray = false
     @State private var showMeshRadialArray = false
+    @State private var showMeshSeamEdit = false
     @State private var projectExport = ForgeFile(data: Data())
     @State private var stlExport = STLFile(data: Data())
     @State private var stlImportResult: STLImportResult?
@@ -63,7 +64,8 @@ struct ContentView: View {
                         model: model,
                         onExtrude: beginFaceExtrude,
                         onInset: beginFaceInset,
-                        onBevel: beginFaceBevel)
+                        onBevel: beginFaceBevel,
+                        onMergeSplit: beginMeshSeamEdit)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding(.horizontal, 8)
                         .padding(.bottom, 4)
@@ -192,6 +194,9 @@ struct ContentView: View {
         .sheet(isPresented: $showMeshRadialArray, onDismiss: { model.discardMeshRadialArrayPreview() }) {
             MeshRadialArrayView(model: model)
         }
+        .sheet(isPresented: $showMeshSeamEdit, onDismiss: { model.discardMeshSeamEditPreview() }) {
+            MeshExactSeamEditView(model: model)
+        }
         .sheet(isPresented: $showSTLImportConfirmation, onDismiss: { stlImportResult = nil }) {
             if let stlImportResult {
                 STLImportView(model: model, result: stlImportResult, fileName: stlImportFileName)
@@ -238,7 +243,7 @@ struct ContentView: View {
             || showProjectExporter || showSTLExporter || showSTLOptions
             || showPrimitiveCreator || showSubdivision || showMeshDiagnostics
             || showFaceExtrude || showFaceInset || showFaceBevel || showMeshMirror
-            || showMeshLinearArray || showMeshRadialArray
+            || showMeshLinearArray || showMeshRadialArray || showMeshSeamEdit
             || confirmsOpeningWithUnsavedChanges || model.isRecoveryPromptPresented
     }
 
@@ -369,6 +374,15 @@ struct ContentView: View {
             showMeshRadialArray = true
         } catch {
             model.status = "Radial Array unavailable: \(error.localizedDescription)"
+        }
+    }
+
+    private func beginMeshSeamEdit() {
+        do {
+            try model.prepareForMeshSeamEdit()
+            showMeshSeamEdit = true
+        } catch {
+            model.status = "Merge / Split unavailable: \(error.localizedDescription)"
         }
     }
 

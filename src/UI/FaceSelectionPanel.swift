@@ -5,6 +5,7 @@ struct FaceSelectionPanel: View {
     var onExtrude: () -> Void = {}
     var onInset: () -> Void = {}
     var onBevel: () -> Void = {}
+    var onMergeSplit: () -> Void = {}
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -117,6 +118,10 @@ struct FaceSelectionPanel: View {
             Button("Bevel…", systemImage: "square.on.square.badge.person.crop") { onBevel() }
                 .disabled(!model.canBeginFaceBevel)
                 .accessibilityHint("Preview a constant-width and signed-height bevel of the selected planar face region")
+                .frame(maxWidth: .infinity)
+            Button("Merge / Split…", systemImage: "arrow.left.and.right.square") { onMergeSplit() }
+                .disabled(!model.canBeginMeshSeamEdit)
+                .accessibilityHint("Preview a safe region split or bit-exact seam merge")
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)

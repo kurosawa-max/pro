@@ -74,6 +74,9 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var isMeshRadialArrayRunning = false
     @Published private(set) var meshRadialArrayPreview: MeshRadialArrayPreview? = nil
     @Published private(set) var meshRadialArrayError: String? = nil
+    @Published private(set) var meshSeamEditPreview: MeshSeamEditPreview? = nil
+    @Published private(set) var meshSeamEditError: String? = nil
+    @Published private(set) var isMeshSeamEditRunning = false
     @Published private(set) var saveState = ProjectSaveState.saved
     @Published private(set) var recoveryDescriptor: RecoveryDescriptor?
     @Published private(set) var recoveryInspectionError: String?
@@ -116,6 +119,7 @@ final class WorkspaceModel: ObservableObject {
     private var faceSelectionTaskID: UUID?
     private var meshLinearArrayPreviewRequestID: UUID?
     private var meshRadialArrayPreviewRequestID: UUID?
+    private var meshSeamEditPreviewRequestID: UUID?
 
     private var isFaceTopologyEditRunning: Bool {
         isFaceExtrudeRunning || isFaceInsetRunning || isFaceBevelRunning
@@ -124,6 +128,7 @@ final class WorkspaceModel: ObservableObject {
     private var isTopologyEditRunning: Bool {
         isFaceTopologyEditRunning || isMeshMirrorRunning
             || isMeshLinearArrayRunning || isMeshRadialArrayRunning
+            || isMeshSeamEditRunning
     }
 
     private struct PreparedFaceExtrudeCommit {
@@ -158,6 +163,12 @@ final class WorkspaceModel: ObservableObject {
 
     private struct PreparedMeshRadialArrayCommit {
         let result: MeshRadialArrayResult
+        let before: WorkspaceMeshSnapshot
+        let pickingIndex: MeshBVH
+    }
+
+    private struct PreparedMeshSeamEditCommit {
+        let result: MeshSeamEditResult
         let before: WorkspaceMeshSnapshot
         let pickingIndex: MeshBVH
     }
@@ -648,6 +659,7 @@ final class WorkspaceModel: ObservableObject {
         discardMeshMirrorPreview()
         discardMeshLinearArrayPreview()
         discardMeshRadialArrayPreview()
+        discardMeshSeamEditPreview()
         hoverLocation = nil
         interactionMode = mode
         faceSelectionError = nil
@@ -2022,6 +2034,200 @@ final class WorkspaceModel: ObservableObject {
         status = "Radial Array failed: \(message)"
     }
 
+    var canBeginMeshSeamEdit: Bool {
+        interactionMode == .faceSelect && faceSelection.matches(mesh)
+            && faceSelection.selectedCount > 0 && !isTopologyEditRunning
+    }
+
+    func prepareForMeshSeamEdit() throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isTopologyEditRunning else { throw MeshSeamEditError.operationInProgress }
+        guard interactionMode == .faceSelect, faceSelection.matches(mesh),
+              faceSelection.selectedCount > 0, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw MeshSeamEditError.unavailable
+        }
+        cancelStroke()
+        cancelAllGizmoDrags()
+        commitTransformPanelTransaction()
+        cancelFaceSelectionProcessing()
+        hoverLocation = nil
+        discardMeshSeamEditPreview()
+    }
+
+    func beginMeshSeamEditPreviewRequest(_ requestID: UUID) throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isTopologyEditRunning else { throw MeshSeamEditError.operationInProgress }
+        guard interactionMode == .faceSelect, faceSelection.matches(mesh),
+              faceSelection.selectedCount > 0, !isStrokeActive, !isGizmoDragging,
+              !isTransformPanelEditing, !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw MeshSeamEditError.activeEdit
+        }
+        meshSeamEditPreview = nil
+        meshSeamEditError = nil
+        meshSeamEditPreviewRequestID = requestID
+        isMeshSeamEditRunning = true
+    }
+
+    func makeMeshSeamEditPreviewCandidate(
+        operation: MeshSeamOperation,
+        requestID: UUID
+    ) throws -> MeshSeamEditPreview {
+        guard isMeshSeamEditRunning,
+              meshSeamEditPreviewRequestID == requestID else {
+            throw MeshSeamEditError.stalePreview
+        }
+        return try MeshExactSeamEdit.makePreview(
+            mesh: mesh, transform: objectTransform, selection: faceSelection,
+            operation: operation, meshChangeVersion: topologyEditMeshChangeVersion,
+            transformChangeVersion: topologyEditTransformChangeVersion)
+    }
+
+    @discardableResult
+    func completeMeshSeamEditPreviewRequest(
+        requestID: UUID,
+        candidate: MeshSeamEditPreview
+    ) -> Bool {
+        guard isMeshSeamEditRunning,
+              meshSeamEditPreviewRequestID == requestID else { return false }
+        meshSeamEditPreviewRequestID = nil
+        isMeshSeamEditRunning = false
+        guard candidate.source.matchesRuntimeIdentity(
+            mesh: mesh, transform: objectTransform, selection: faceSelection,
+            meshChangeVersion: topologyEditMeshChangeVersion,
+            transformChangeVersion: topologyEditTransformChangeVersion,
+            operation: candidate.operation) else {
+            meshSeamEditPreview = nil
+            reportMeshSeamEditError(MeshSeamEditError.stalePreview)
+            return false
+        }
+        meshSeamEditPreview = candidate
+        meshSeamEditError = nil
+        return true
+    }
+
+    @discardableResult
+    func failMeshSeamEditPreviewRequest(requestID: UUID, error: Error) -> Bool {
+        guard meshSeamEditPreviewRequestID == requestID else { return false }
+        meshSeamEditPreviewRequestID = nil
+        isMeshSeamEditRunning = false
+        meshSeamEditPreview = nil
+        reportMeshSeamEditError(error)
+        return true
+    }
+
+    func isMeshSeamEditPreviewCurrent(_ preview: MeshSeamEditPreview) -> Bool {
+        meshSeamEditPreview == preview && preview.source.matchesRuntimeIdentity(
+            mesh: mesh, transform: objectTransform, selection: faceSelection,
+            meshChangeVersion: topologyEditMeshChangeVersion,
+            transformChangeVersion: topologyEditTransformChangeVersion,
+            operation: preview.operation)
+    }
+
+    @discardableResult
+    func applyMeshSeamEdit(preview: MeshSeamEditPreview) throws -> MeshSeamEditResult {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isTopologyEditRunning else { throw MeshSeamEditError.operationInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw MeshSeamEditError.activeEdit
+        }
+        guard isMeshSeamEditPreviewCurrent(preview) else {
+            if meshSeamEditPreview == preview { meshSeamEditPreview = nil }
+            throw MeshSeamEditError.stalePreview
+        }
+        isMeshSeamEditRunning = true
+        defer { isMeshSeamEditRunning = false }
+        do {
+            let prepared = try prepareMeshSeamEditCommit(preview: preview)
+            return commitMeshSeamEdit(prepared)
+        } catch {
+            if error as? MeshSeamEditError == .stalePreview { meshSeamEditPreview = nil }
+            reportMeshSeamEditError(error)
+            throw error
+        }
+    }
+
+    private func prepareMeshSeamEditCommit(
+        preview: MeshSeamEditPreview
+    ) throws -> PreparedMeshSeamEditCommit {
+        let result = try MeshExactSeamEdit.edit(
+            mesh: mesh, transform: objectTransform, selection: faceSelection,
+            operation: preview.operation)
+        guard MeshExactSeamEdit.preparedResultMatchesPreview(result, preview: preview) else {
+            throw MeshSeamEditError.stalePreview
+        }
+        return PreparedMeshSeamEditCommit(
+            result: result, before: workspaceSnapshot,
+            pickingIndex: try pickingCache.makeIndex(for: result.mesh))
+    }
+
+    private func commitMeshSeamEdit(
+        _ prepared: PreparedMeshSeamEditCommit
+    ) -> MeshSeamEditResult {
+        // All fallible geometry, validation, snapshots, and runtime preparation
+        // must remain before this nonthrowing installation boundary.
+        let result = prepared.result
+        mesh = result.mesh
+        hoverLocation = nil
+        #if DEBUG
+        benchmarkPreset = nil
+        #endif
+        profiler?.updateMeshCounts(
+            vertexCount: mesh.vertices.count,
+            triangleCount: mesh.indices.count / 3)
+        pickingCache.install(prepared.pickingIndex, for: mesh)
+        sculptSpatialIndex.prepare(for: mesh)
+        let command = ReplaceMeshCommand(before: prepared.before, after: workspaceSnapshot)
+        recordMeshSeamEditReplacement(command)
+        clearMeshDiagnostics()
+        faceExtrudePreview = nil; faceExtrudeError = nil
+        faceInsetPreview = nil; faceInsetError = nil
+        faceBevelPreview = nil; faceBevelError = nil
+        meshMirrorPreview = nil; meshMirrorError = nil
+        meshLinearArrayPreview = nil; meshLinearArrayError = nil
+        meshRadialArrayPreview = nil; meshRadialArrayError = nil
+        meshSeamEditPreview = nil; meshSeamEditError = nil
+        status = result.estimate.operation == .splitRegion
+            ? "Split Region: opened \(result.estimate.seamEdgeCount) seam edges"
+            : "Merge Exact Seam: welded \(result.estimate.seamVertexCount) vertices"
+        return result
+    }
+
+    private func recordMeshSeamEditReplacement(_ command: ReplaceMeshCommand) {
+        precondition(isMeshSeamEditRunning)
+        isTopologyEditSnapshotSafe = true
+        defer { isTopologyEditSnapshotSafe = false }
+        record(.replaceMesh(command))
+    }
+
+    func discardMeshSeamEditPreview(requestID: UUID? = nil) {
+        if let requestID, meshSeamEditPreviewRequestID != requestID { return }
+        if meshSeamEditPreviewRequestID != nil {
+            meshSeamEditPreviewRequestID = nil
+            isMeshSeamEditRunning = false
+        }
+        meshSeamEditPreview = nil
+        meshSeamEditError = nil
+    }
+
+    private func reportMeshSeamEditError(_ error: Error) {
+        let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        meshSeamEditError = message
+        status = "Merge / Split failed: \(message)"
+    }
+
     func previewMeshCleanup(options: MeshCleanupOptions) throws -> MeshCleanupPreview {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
@@ -2500,6 +2706,8 @@ final class WorkspaceModel: ObservableObject {
             meshLinearArrayError = nil
             meshRadialArrayPreview = nil
             meshRadialArrayError = nil
+            meshSeamEditPreview = nil
+            meshSeamEditError = nil
             mesh = snapshot.mesh
             objectTransform = snapshot.transform.sanitized()
             camera = snapshot.camera
@@ -2543,6 +2751,8 @@ final class WorkspaceModel: ObservableObject {
         meshLinearArrayError = nil
         meshRadialArrayPreview = nil
         meshRadialArrayError = nil
+        meshSeamEditPreview = nil
+        meshSeamEditError = nil
         let triangleCount = mesh.indices.count.isMultiple(of: 3) ? mesh.indices.count / 3 : -1
         do {
             faceSelection = try FaceSelection(
@@ -2575,6 +2785,7 @@ final class WorkspaceModel: ObservableObject {
 
     private func commitFaceSelection(_ updated: FaceSelection) {
         faceSelection = updated
+        discardMeshSeamEditPreview()
         faceSelectionError = nil
         status = "Selected \(updated.selectedCount) of \(updated.triangleCount) faces"
     }
@@ -2605,6 +2816,7 @@ final class WorkspaceModel: ObservableObject {
     var isMeshMirrorSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var isMeshLinearArraySnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var isMeshRadialArraySnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
+    var isMeshSeamEditSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var pickingCacheHasIndexForTesting: Bool { pickingCache.bvh != nil }
     var pickingCacheTopologyIDForTesting: UUID? { pickingCache.topologyID }
     #endif

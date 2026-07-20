@@ -48,6 +48,8 @@ Face Insetのplanar region安全境界を共有するFace Bevel foundationとし
 
 単一objectのlocal-axis Radial Array foundationとして、Full Circle／signed Open Arc、sourceを含むCount、local-origin pivot、表示済みFloat sourceを入力にしたDouble ideal rotation、Renderer同一Float経路によるactual radius／axis／angle／adjacent chord／edge／area／winding検証、tiny off-axis分類、minimum feature chord、canonical options、copy-major detached topology、race-safe必須preview、prepared commit、ReplaceMeshCommand 1件を追加する。render-space exact rotational duplicateは拒否し、一般collision/self-intersection、weld/Boolean、Grid/Spiral/Helix、custom pivot、live modifier、multiple objectは後続範囲とする。
 
+Face Selectionを境界とするSplit RegionとMerge Exact Seam foundationとして、selected側だけのsimple-loop seam vertex複製、bit-exact local Float pairing、counterpart survivor、決定論的compaction、triangle／bounds不変、component／boundary公式、race-safe Preview、prepared commit、ReplaceMeshCommand 1件を追加する。Splitはopen coincident seamを作り、MergeはSplit由来の一意なsingle-loop seamだけを再接続する。proximity weld、Boolean、cap／wall、multiple loop、repair、multiple objectは後続範囲とする。
+
 ## Milestone 0 — Repository Foundation
 
 - Xcode workspace作成

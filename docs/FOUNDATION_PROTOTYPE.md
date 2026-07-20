@@ -194,3 +194,9 @@ mandatory PreviewはLinear Arrayと共通のUUID request coordinatorを使い、
 3. Pencil hover のブラシ円、筆圧、Draw/Smooth/Grab を確認する。
 4. Undo/Redo、Files 経由の保存・再読込、STL のスライサー読込を確認する。
 5. Instruments でフレーム時間、入力遅延、メモリを測定する。
+
+## Exact Seam Merge / Split foundation
+
+Face Selectの単一edge-connected regionを、selected側の境界vertexだけ複製して2つのdetached componentへ分離する。source vertex／triangle順、face ID、position、bounds、winding、triangle countを維持し、cap／wall／gapは生成しない。
+
+Split由来のselected component全体と別componentのsingle boundary loopを、`+0`／`-0`だけ正規化したbit-exact local Float positionで一対一対応させて再接続する。counterpart側をsurvivorとしてselected seam duplicateだけを決定論的にcompactする。曖昧pair、同方向winding、non-manifold／duplicate結果はrepairせず拒否する。PreviewはUUID identityと完全plan fingerprintへ結合し、Applyはprepared BVH後の1 install、1 ReplaceMeshCommand、1 Autosaveを使う。詳細は`EXACT_SEAM_MERGE_SPLIT.md`を参照する。
