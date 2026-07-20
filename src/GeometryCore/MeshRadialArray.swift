@@ -499,7 +499,8 @@ enum MeshRadialArray {
             }
         }
         guard positions.count == resultingVertices,
-              sourceWorldBounds.isFinite, resultLocalBounds.isFinite, resultWorldBounds.isFinite else {
+              sourceAnalysis.worldBounds.isFinite,
+              resultLocalBounds.isFinite, resultWorldBounds.isFinite else {
             throw MeshRadialArrayError.boundsFailure
         }
         try validatePlannedGeometry(positions: positions, source: mesh, count: options.count)
@@ -724,7 +725,7 @@ enum MeshRadialArray {
                 analysis.radii[index] * Double(Float.ulpOfOne) * 2)
         }
         let angularByVertex = analysis.radii.indices.map { index in
-            guard !analysis.isAxisVertex[index] else { return 0 }
+            guard !analysis.isAxisVertex[index] else { return 0.0 }
             return min(
                 0.01,
                 max(1.0e-8, positionByVertex[index]
