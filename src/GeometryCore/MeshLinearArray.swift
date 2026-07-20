@@ -67,7 +67,7 @@ struct MeshLinearArraySourceKey: Equatable {
     let totalSpanMillimeters: Double
     let analysisFingerprint: UInt64
 
-    func matches(
+    func matchesRuntimeIdentity(
         mesh: EditableMesh,
         transform: ObjectTransform,
         meshChangeVersion: TopologyEditChangeVersion,

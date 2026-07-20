@@ -111,6 +111,7 @@ final class WorkspaceModel: ObservableObject {
     private var panelTransformBefore: ObjectTransform?
     private var faceSelectionTask: Task<Void, Never>?
     private var faceSelectionTaskID: UUID?
+    private var meshLinearArrayPreviewRequestID: UUID?
 
     private var isFaceTopologyEditRunning: Bool {
         isFaceExtrudeRunning || isFaceInsetRunning || isFaceBevelRunning
@@ -1537,6 +1538,25 @@ final class WorkspaceModel: ObservableObject {
     func previewMeshLinearArray(
         options: MeshLinearArrayOptions
     ) throws -> MeshLinearArrayPreview {
+        let requestID = UUID()
+        try beginMeshLinearArrayPreviewRequest(requestID)
+        do {
+            let candidate = try makeMeshLinearArrayPreviewCandidate(
+                options: options,
+                requestID: requestID)
+            guard completeMeshLinearArrayPreviewRequest(
+                requestID: requestID,
+                candidate: candidate) else {
+                throw MeshLinearArrayError.stalePreview
+            }
+            return candidate
+        } catch {
+            _ = failMeshLinearArrayPreviewRequest(requestID: requestID, error: error)
+            throw error
+        }
+    }
+
+    func beginMeshLinearArrayPreviewRequest(_ requestID: UUID) throws {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
         #endif
@@ -1549,21 +1569,61 @@ final class WorkspaceModel: ObservableObject {
         }
         meshLinearArrayPreview = nil
         meshLinearArrayError = nil
+        meshLinearArrayPreviewRequestID = requestID
         isMeshLinearArrayRunning = true
-        defer { isMeshLinearArrayRunning = false }
-        do {
-            let preview = try MeshLinearArray.makePreview(
-                mesh: mesh,
-                transform: objectTransform,
-                options: options,
-                meshChangeVersion: topologyEditMeshChangeVersion,
-                transformChangeVersion: topologyEditTransformChangeVersion)
-            meshLinearArrayPreview = preview
-            return preview
-        } catch {
-            reportMeshLinearArrayError(error)
-            throw error
+    }
+
+    func makeMeshLinearArrayPreviewCandidate(
+        options: MeshLinearArrayOptions,
+        requestID: UUID
+    ) throws -> MeshLinearArrayPreview {
+        guard isMeshLinearArrayRunning,
+              meshLinearArrayPreviewRequestID == requestID else {
+            throw MeshLinearArrayError.stalePreview
         }
+        return try MeshLinearArray.makePreview(
+            mesh: mesh,
+            transform: objectTransform,
+            options: options,
+            meshChangeVersion: topologyEditMeshChangeVersion,
+            transformChangeVersion: topologyEditTransformChangeVersion)
+    }
+
+    @discardableResult
+    func completeMeshLinearArrayPreviewRequest(
+        requestID: UUID,
+        candidate: MeshLinearArrayPreview
+    ) -> Bool {
+        guard isMeshLinearArrayRunning,
+              meshLinearArrayPreviewRequestID == requestID else { return false }
+        meshLinearArrayPreviewRequestID = nil
+        isMeshLinearArrayRunning = false
+        guard candidate.source.matchesRuntimeIdentity(
+            mesh: mesh,
+            transform: objectTransform,
+            meshChangeVersion: topologyEditMeshChangeVersion,
+            transformChangeVersion: topologyEditTransformChangeVersion,
+            options: candidate.options) else {
+            meshLinearArrayPreview = nil
+            reportMeshLinearArrayError(MeshLinearArrayError.stalePreview)
+            return false
+        }
+        meshLinearArrayPreview = candidate
+        meshLinearArrayError = nil
+        return true
+    }
+
+    @discardableResult
+    func failMeshLinearArrayPreviewRequest(
+        requestID: UUID,
+        error: Error
+    ) -> Bool {
+        guard meshLinearArrayPreviewRequestID == requestID else { return false }
+        meshLinearArrayPreviewRequestID = nil
+        isMeshLinearArrayRunning = false
+        meshLinearArrayPreview = nil
+        reportMeshLinearArrayError(error)
+        return true
     }
 
     var isMeshLinearArrayPreviewStale: Bool {
@@ -1572,7 +1632,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func isMeshLinearArrayPreviewCurrent(_ preview: MeshLinearArrayPreview) -> Bool {
-        meshLinearArrayPreview == preview && preview.source.matches(
+        meshLinearArrayPreview == preview && preview.source.matchesRuntimeIdentity(
             mesh: mesh,
             transform: objectTransform,
             meshChangeVersion: topologyEditMeshChangeVersion,
@@ -1595,12 +1655,13 @@ final class WorkspaceModel: ObservableObject {
             throw MeshLinearArrayError.activeEdit
         }
         guard meshLinearArrayPreview == preview,
-              preview.source.matches(
+              preview.source.matchesRuntimeIdentity(
                 mesh: mesh,
                 transform: objectTransform,
                 meshChangeVersion: topologyEditMeshChangeVersion,
                 transformChangeVersion: topologyEditTransformChangeVersion,
                 options: preview.options) else {
+            if meshLinearArrayPreview == preview { meshLinearArrayPreview = nil }
             throw MeshLinearArrayError.stalePreview
         }
 
@@ -1610,6 +1671,9 @@ final class WorkspaceModel: ObservableObject {
             let prepared = try prepareMeshLinearArrayCommit(preview: preview)
             return commitMeshLinearArray(prepared, options: preview.options)
         } catch {
+            if error as? MeshLinearArrayError == .stalePreview {
+                meshLinearArrayPreview = nil
+            }
             reportMeshLinearArrayError(error)
             throw error
         }
@@ -1673,8 +1737,12 @@ final class WorkspaceModel: ObservableObject {
         record(.replaceMesh(command))
     }
 
-    func discardMeshLinearArrayPreview() {
-        guard !isMeshLinearArrayRunning else { return }
+    func discardMeshLinearArrayPreview(requestID: UUID? = nil) {
+        if let requestID, meshLinearArrayPreviewRequestID != requestID { return }
+        if meshLinearArrayPreviewRequestID != nil {
+            meshLinearArrayPreviewRequestID = nil
+            isMeshLinearArrayRunning = false
+        }
         meshLinearArrayPreview = nil
         meshLinearArrayError = nil
     }

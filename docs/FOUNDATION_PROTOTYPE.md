@@ -177,7 +177,7 @@ Applyはprepared／nonthrowing commit境界を使い、`ReplaceMeshCommand` 1件
 
 vertex/triangleはcopy-majorで決定論的に並び、copy 0のsource position/indexを保持する。各copyはdetachedで、component数とboundary edge数はCount倍になる。normal、adjacency、bounds、Diagnostics topology、exact geometry duplicateをApply前に検証するが、一般collision、self-intersection、proximity weld、Boolean unionは行わない。
 
-mandatory Preview、non-rewinding stale identity、fallible prepared／nonthrowing commit、`ReplaceMeshCommand` 1件、record-only Autosave snapshot scope、selection／他topology Preview／Diagnostics clear、BVH／Spatial Index再構築、通常Renderer upload経路を使用する。Transform、camera、tool/mode設定は維持し、formatVersion 1には通常のresult meshだけを保存する。2,000,000 vertices、4,000,000 triangles、Count 256、768 MiB estimateが上限で、初版はMainActor同期である。Radial/Grid Array、per-copy transform、selected-face Array、non-destructive modifier、multiple objectは未実装である。詳細は`LINEAR_ARRAY.md`を参照する。
+mandatory PreviewはUUID request identityを使い、最新requestだけがUI／model Preview、error、busy状態を更新する。parameter変更とsheet dismissalはrequestを無効化してghost Previewを防ぐ。軽量runtime identity判定はUI描画でDiagnosticsやfingerprintを再計算せず、Apply prepared phaseがestimateとanalysis fingerprintを完全照合する。`ReplaceMeshCommand` 1件、record-only Autosave snapshot scope、selection／他topology Preview／Diagnostics clear、BVH／Spatial Index再構築、通常Renderer upload経路を使用する。Transform、camera、tool/mode設定は維持し、formatVersion 1には通常のresult meshだけを保存する。2,000,000 vertices、4,000,000 triangles、Count 256、768 MiB estimateが上限で、初版はMainActor同期である。Radial/Grid Array、per-copy transform、selected-face Array、non-destructive modifier、multiple objectは未実装である。詳細は`LINEAR_ARRAY.md`を参照する。
 
 1. iPadOS 17+ の iPad で起動し、球体が表示される。
 2. 指操作と Pencil ストロークが競合しない。

@@ -1,6 +1,35 @@
 import Foundation
 import SwiftUI
 
+struct MeshLinearArrayPreviewRequestCoordinator: Equatable {
+    private(set) var activeRequestID: UUID?
+
+    var isCalculating: Bool { activeRequestID != nil }
+
+    @discardableResult
+    mutating func begin(requestID: UUID = UUID()) -> UUID {
+        activeRequestID = requestID
+        return requestID
+    }
+
+    func isCurrent(_ requestID: UUID) -> Bool {
+        activeRequestID == requestID
+    }
+
+    @discardableResult
+    mutating func finish(_ requestID: UUID) -> Bool {
+        guard activeRequestID == requestID else { return false }
+        activeRequestID = nil
+        return true
+    }
+
+    @discardableResult
+    mutating func invalidate() -> UUID? {
+        defer { activeRequestID = nil }
+        return activeRequestID
+    }
+}
+
 struct MeshLinearArrayView: View {
     @ObservedObject var model: WorkspaceModel
     @Environment(\.dismiss) private var dismiss
@@ -9,7 +38,7 @@ struct MeshLinearArrayView: View {
     @State private var spacingText = "10.0"
     @State private var preview: MeshLinearArrayPreview?
     @State private var errorMessage: String?
-    @State private var isCalculating = false
+    @State private var previewRequestCoordinator = MeshLinearArrayPreviewRequestCoordinator()
     @State private var isApplying = false
 
     var body: some View {
@@ -22,6 +51,7 @@ struct MeshLinearArrayView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .disabled(isBusy)
                     .accessibilityHint("Chooses the object-local direction of the Array")
 
                     HStack {
@@ -32,6 +62,7 @@ struct MeshLinearArrayView: View {
                             .labelsHidden()
                             .accessibilityLabel("Adjust Array copy count")
                     }
+                    .disabled(isBusy)
                     Text("Count includes the unchanged source mesh as copy 0.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -42,6 +73,7 @@ struct MeshLinearArrayView: View {
                             .accessibilityLabel("Array spacing in millimeters")
                         Text("mm").foregroundStyle(.secondary)
                     }
+                    .disabled(isBusy)
                     Text("Positive and negative values choose opposite directions. Spacing is measured in world-space millimeters along the selected local axis.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -132,10 +164,11 @@ struct MeshLinearArrayView: View {
         .onChange(of: axis) { _, _ in invalidateLocalPreview() }
         .onChange(of: countText) { _, _ in invalidateLocalPreview() }
         .onChange(of: spacingText) { _, _ in invalidateLocalPreview() }
-        .onDisappear { model.discardMeshLinearArrayPreview() }
+        .onDisappear { invalidatePreviewRequest() }
     }
 
     private var estimate: MeshLinearArrayEstimate? { preview?.estimate }
+    private var isCalculating: Bool { previewRequestCoordinator.isCalculating }
     private var isBusy: Bool { isCalculating || isApplying || model.isMeshLinearArrayRunning }
     private var requestedOptions: MeshLinearArrayOptions? {
         guard let count = Int(countText.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -168,24 +201,59 @@ struct MeshLinearArrayView: View {
     }
 
     private func invalidateLocalPreview() {
+        invalidatePreviewRequest()
+    }
+
+    private func invalidatePreviewRequest() {
+        let requestID = previewRequestCoordinator.invalidate()
         preview = nil
         errorMessage = nil
-        model.discardMeshLinearArrayPreview()
+        model.discardMeshLinearArrayPreview(requestID: requestID)
     }
 
     private func recalculatePreview() {
         guard !isBusy, let requestedOptions, parameterError == nil else { return }
+        let requestID = previewRequestCoordinator.begin()
         preview = nil
         errorMessage = nil
-        isCalculating = true
+        do {
+            try model.beginMeshLinearArrayPreviewRequest(requestID)
+        } catch {
+            _ = previewRequestCoordinator.finish(requestID)
+            errorMessage = error.localizedDescription
+            return
+        }
         Task { @MainActor in
             await Task.yield()
-            defer { if self.requestedOptions == requestedOptions { isCalculating = false } }
+            guard previewRequestCoordinator.isCurrent(requestID) else {
+                model.discardMeshLinearArrayPreview(requestID: requestID)
+                return
+            }
             do {
-                let candidate = try model.previewMeshLinearArray(options: requestedOptions)
-                if self.requestedOptions == requestedOptions { preview = candidate }
+                let candidate = try model.makeMeshLinearArrayPreviewCandidate(
+                    options: requestedOptions,
+                    requestID: requestID)
+                guard previewRequestCoordinator.isCurrent(requestID) else {
+                    model.discardMeshLinearArrayPreview(requestID: requestID)
+                    return
+                }
+                let accepted = model.completeMeshLinearArrayPreviewRequest(
+                    requestID: requestID,
+                    candidate: candidate)
+                guard previewRequestCoordinator.finish(requestID) else { return }
+                if accepted {
+                    preview = candidate
+                    errorMessage = nil
+                } else {
+                    preview = nil
+                }
             } catch {
-                if self.requestedOptions == requestedOptions { errorMessage = error.localizedDescription }
+                let accepted = model.failMeshLinearArrayPreviewRequest(
+                    requestID: requestID,
+                    error: error)
+                guard previewRequestCoordinator.finish(requestID) else { return }
+                preview = nil
+                if accepted { errorMessage = error.localizedDescription }
             }
         }
     }
@@ -207,7 +275,7 @@ struct MeshLinearArrayView: View {
     }
 
     private func cancel() {
-        model.discardMeshLinearArrayPreview()
+        invalidatePreviewRequest()
         dismiss()
     }
 

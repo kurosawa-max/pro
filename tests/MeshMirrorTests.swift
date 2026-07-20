@@ -221,6 +221,23 @@ final class MeshMirrorTests: XCTestCase {
         }
     }
 
+    func testGeometricDuplicateWithDistinctIndicesKeepsDuplicateErrorClassification() throws {
+        let healthy = try openHalfBox()
+        let firstTriangle = healthy.indices.prefix(3).map(Int.init)
+        let duplicateBase = UInt32(healthy.vertices.count)
+        let duplicateVertices = firstTriangle.map { healthy.vertices[$0] }
+        let duplicateIndices = [duplicateBase, duplicateBase + 1, duplicateBase + 2]
+        let duplicate = EditableMesh(
+            vertices: healthy.vertices + duplicateVertices,
+            indices: healthy.indices + duplicateIndices)
+        XCTAssertThrowsError(try MeshMirror.estimate(
+            mesh: duplicate,
+            transform: .identity,
+            options: MeshMirrorOptions(axis: .x))) {
+            XCTAssertEqual($0 as? MeshMirrorError, .duplicateTriangle)
+        }
+    }
+
     func testInvalidEmptyAndIsolatedSourcesHaveExactErrors() throws {
         let empty = EditableMesh(vertices: [], indices: [])
         XCTAssertThrowsError(try MeshMirror.estimate(

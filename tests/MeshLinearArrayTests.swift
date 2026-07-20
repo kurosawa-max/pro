@@ -5,6 +5,142 @@ import simd
 @testable import Forge3D
 
 final class MeshLinearArrayTests: XCTestCase {
+    func testPreviewRequestCoordinatorKeepsOnlyLatestRequestBusy() {
+        var coordinator = MeshLinearArrayPreviewRequestCoordinator()
+        let requestA = UUID()
+        let requestB = UUID()
+
+        XCTAssertEqual(coordinator.begin(requestID: requestA), requestA)
+        XCTAssertTrue(coordinator.isCalculating)
+        XCTAssertTrue(coordinator.isCurrent(requestA))
+
+        XCTAssertEqual(coordinator.invalidate(), requestA)
+        XCTAssertFalse(coordinator.isCalculating)
+        XCTAssertFalse(coordinator.isCurrent(requestA))
+
+        XCTAssertEqual(coordinator.begin(requestID: requestB), requestB)
+        XCTAssertFalse(coordinator.finish(requestA))
+        XCTAssertTrue(coordinator.isCalculating)
+        XCTAssertTrue(coordinator.isCurrent(requestB))
+        XCTAssertTrue(coordinator.finish(requestB))
+        XCTAssertFalse(coordinator.isCalculating)
+    }
+
+    @MainActor
+    func testOptionsChangeRejectsRequestAAndAllowsRecalculation() throws {
+        let model = WorkspaceModel()
+        model.mesh = try PrimitiveMeshBuilder.cube(size: 2)
+        try model.prepareForMeshLinearArray()
+        var coordinator = MeshLinearArrayPreviewRequestCoordinator()
+        let requestA = coordinator.begin()
+        try model.beginMeshLinearArrayPreviewRequest(requestA)
+        let candidateA = try model.makeMeshLinearArrayPreviewCandidate(
+            options: options(axis: .x, count: 2, spacing: 10),
+            requestID: requestA)
+
+        XCTAssertEqual(coordinator.invalidate(), requestA)
+        model.discardMeshLinearArrayPreview(requestID: requestA)
+        XCTAssertFalse(model.completeMeshLinearArrayPreviewRequest(
+            requestID: requestA,
+            candidate: candidateA))
+        XCTAssertNil(model.meshLinearArrayPreview)
+        XCTAssertFalse(model.isMeshLinearArrayRunning)
+        XCTAssertFalse(coordinator.isCalculating)
+
+        let requestB = coordinator.begin()
+        XCTAssertNoThrow(try model.beginMeshLinearArrayPreviewRequest(requestB))
+        model.discardMeshLinearArrayPreview(requestID: requestB)
+        XCTAssertTrue(coordinator.finish(requestB))
+        XCTAssertFalse(model.isMeshLinearArrayRunning)
+    }
+
+    @MainActor
+    func testRequestACompletionAndFailureCannotClearOrPublishOverRequestB() throws {
+        let model = WorkspaceModel()
+        model.mesh = try PrimitiveMeshBuilder.cube(size: 2)
+        try model.prepareForMeshLinearArray()
+        var coordinator = MeshLinearArrayPreviewRequestCoordinator()
+
+        let requestA = coordinator.begin()
+        try model.beginMeshLinearArrayPreviewRequest(requestA)
+        let candidateA = try model.makeMeshLinearArrayPreviewCandidate(
+            options: options(axis: .x, count: 2, spacing: 10),
+            requestID: requestA)
+        _ = coordinator.invalidate()
+        model.discardMeshLinearArrayPreview(requestID: requestA)
+
+        let requestB = coordinator.begin()
+        let optionsB = options(axis: .y, count: 3, spacing: -5)
+        try model.beginMeshLinearArrayPreviewRequest(requestB)
+        XCTAssertFalse(model.completeMeshLinearArrayPreviewRequest(
+            requestID: requestA,
+            candidate: candidateA))
+        XCTAssertFalse(model.failMeshLinearArrayPreviewRequest(
+            requestID: requestA,
+            error: MeshLinearArrayError.invalidSpacing))
+        XCTAssertFalse(coordinator.finish(requestA))
+        XCTAssertTrue(model.isMeshLinearArrayRunning)
+        XCTAssertTrue(coordinator.isCalculating)
+        XCTAssertNil(model.meshLinearArrayPreview)
+        XCTAssertNil(model.meshLinearArrayError)
+
+        let candidateB = try model.makeMeshLinearArrayPreviewCandidate(
+            options: optionsB,
+            requestID: requestB)
+        XCTAssertTrue(model.completeMeshLinearArrayPreviewRequest(
+            requestID: requestB,
+            candidate: candidateB))
+        XCTAssertTrue(coordinator.finish(requestB))
+        XCTAssertEqual(model.meshLinearArrayPreview, candidateB)
+        XCTAssertFalse(model.isMeshLinearArrayRunning)
+        XCTAssertFalse(coordinator.isCalculating)
+    }
+
+    @MainActor
+    func testDismissalInvalidatesRequestAndPreventsGhostPreview() throws {
+        let model = WorkspaceModel()
+        model.mesh = try PrimitiveMeshBuilder.cube(size: 2)
+        try model.prepareForMeshLinearArray()
+        var coordinator = MeshLinearArrayPreviewRequestCoordinator()
+        let request = coordinator.begin()
+        try model.beginMeshLinearArrayPreviewRequest(request)
+        let candidate = try model.makeMeshLinearArrayPreviewCandidate(
+            options: options(),
+            requestID: request)
+
+        XCTAssertEqual(coordinator.invalidate(), request)
+        model.discardMeshLinearArrayPreview(requestID: request)
+        XCTAssertFalse(model.completeMeshLinearArrayPreviewRequest(
+            requestID: request,
+            candidate: candidate))
+        XCTAssertNil(model.meshLinearArrayPreview)
+        XCTAssertFalse(model.isMeshLinearArrayRunning)
+        XCTAssertFalse(coordinator.isCalculating)
+        XCTAssertThrowsError(try model.applyMeshLinearArray(preview: candidate)) {
+            XCTAssertEqual($0 as? MeshLinearArrayError, .stalePreview)
+        }
+    }
+
+    @MainActor
+    func testInvalidatedRequestFailureDoesNotPublishErrorOrRemainBusy() throws {
+        let model = WorkspaceModel()
+        model.mesh = try PrimitiveMeshBuilder.cube(size: 2)
+        try model.prepareForMeshLinearArray()
+        var coordinator = MeshLinearArrayPreviewRequestCoordinator()
+        let request = coordinator.begin()
+        try model.beginMeshLinearArrayPreviewRequest(request)
+
+        _ = coordinator.invalidate()
+        model.discardMeshLinearArrayPreview(requestID: request)
+        XCTAssertFalse(model.failMeshLinearArrayPreviewRequest(
+            requestID: request,
+            error: MeshLinearArrayError.invalidSpacing))
+        XCTAssertNil(model.meshLinearArrayPreview)
+        XCTAssertNil(model.meshLinearArrayError)
+        XCTAssertFalse(model.isMeshLinearArrayRunning)
+        XCTAssertFalse(coordinator.isCalculating)
+    }
+
     func testDefaultOptionsAndDocumentedLimits() {
         let options = MeshLinearArrayOptions()
         XCTAssertEqual(options.axis, .x)
@@ -178,18 +314,47 @@ final class MeshLinearArrayTests: XCTestCase {
             options: requested,
             meshChangeVersion: meshVersion,
             transformChangeVersion: transformVersion)
-        XCTAssertTrue(preview.source.matches(
+        XCTAssertTrue(preview.source.matchesRuntimeIdentity(
             mesh: source,
             transform: .identity,
             meshChangeVersion: meshVersion,
             transformChangeVersion: transformVersion,
             options: requested))
-        XCTAssertFalse(preview.source.matches(
+        XCTAssertFalse(preview.source.matchesRuntimeIdentity(
             mesh: source,
             transform: .identity,
             meshChangeVersion: meshVersion,
             transformChangeVersion: transformVersion,
             options: options(axis: .y, count: 5, spacing: 5)))
+        var vertexEdited = source
+        _ = vertexEdited.updatePositions([
+            0: vertexEdited.vertices[0].position + SIMD3<Float>(0.01, 0, 0),
+        ])
+        XCTAssertFalse(preview.source.matchesRuntimeIdentity(
+            mesh: vertexEdited,
+            transform: .identity,
+            meshChangeVersion: meshVersion,
+            transformChangeVersion: transformVersion,
+            options: requested))
+        let newTopologyIdentity = EditableMesh(vertices: source.vertices, indices: source.indices)
+        XCTAssertFalse(preview.source.matchesRuntimeIdentity(
+            mesh: newTopologyIdentity,
+            transform: .identity,
+            meshChangeVersion: meshVersion,
+            transformChangeVersion: transformVersion,
+            options: requested))
+        XCTAssertFalse(preview.source.matchesRuntimeIdentity(
+            mesh: source,
+            transform: .identity,
+            meshChangeVersion: meshVersion,
+            transformChangeVersion: TopologyEditChangeVersion(identity: UUID(), value: 9),
+            options: requested))
+        XCTAssertFalse(preview.source.matchesRuntimeIdentity(
+            mesh: source,
+            transform: ObjectTransform(translation: SIMD3<Float>(1, 2, 3)),
+            meshChangeVersion: meshVersion,
+            transformChangeVersion: transformVersion,
+            options: requested))
         XCTAssertEqual(preview.source.sourceComponentCount, 1)
         XCTAssertEqual(preview.source.resultingTriangleCount, source.indices.count / 3 * 4)
     }
@@ -248,6 +413,35 @@ final class MeshLinearArrayTests: XCTestCase {
         }
     }
 
+    func testSharedGeometricDuplicateHelperHandlesInvalidWindingAndSignedZero() {
+        XCTAssertNil(MeshTopologyDiagnostics.hasGeometricDuplicateTriangles(
+            EditableMesh(vertices: [], indices: [])))
+        XCTAssertNil(MeshTopologyDiagnostics.hasGeometricDuplicateTriangles(
+            mesh([.zero, SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 1, 0)], [0, 1, 9])))
+        XCTAssertEqual(
+            MeshTopologyDiagnostics.hasGeometricDuplicateTriangles(singleTriangle()),
+            false)
+
+        let sameIndices = mesh([
+            .zero, SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 1, 0),
+        ], [0, 1, 2, 0, 1, 2])
+        XCTAssertEqual(MeshTopologyDiagnostics.hasGeometricDuplicateTriangles(sameIndices), true)
+
+        let oppositeWinding = mesh([
+            .zero, SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 1, 0),
+            .zero, SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 1, 0),
+        ], [0, 1, 2, 5, 4, 3])
+        XCTAssertEqual(MeshTopologyDiagnostics.hasGeometricDuplicateTriangles(oppositeWinding), true)
+
+        let negativeZero = Float(bitPattern: 0x8000_0000)
+        let signedZero = mesh([
+            SIMD3<Float>(0, 0, 0), SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 1, 0),
+            SIMD3<Float>(negativeZero, 0, 0), SIMD3<Float>(1, negativeZero, 0),
+            SIMD3<Float>(negativeZero, 1, 0),
+        ], [0, 1, 2, 3, 4, 5])
+        XCTAssertEqual(MeshTopologyDiagnostics.hasGeometricDuplicateTriangles(signedZero), true)
+    }
+
     func testMinimumSpacingWorksAtNormalCoordinatesAndFailsAtHugeTranslation() throws {
         XCTAssertNoThrow(try MeshLinearArray.array(
             mesh: singleTriangle(), transform: .identity,
@@ -293,6 +487,37 @@ final class MeshLinearArrayTests: XCTestCase {
             options: options(count: Int.max, spacing: 1))) {
             XCTAssertEqual($0 as? MeshLinearArrayError, .invalidCount)
         }
+    }
+
+    @MainActor
+    func testRepresentativePreviewValidationFailuresAreAtomic() throws {
+        let invalidCount = WorkspaceModel()
+        invalidCount.mesh = try PrimitiveMeshBuilder.cube(size: 2)
+        try invalidCount.prepareForMeshLinearArray()
+        try assertPreviewFailureAtomic(
+            invalidCount, options: options(count: 1, spacing: 10), expected: .invalidCount)
+
+        let invalidSpacing = WorkspaceModel()
+        invalidSpacing.mesh = try PrimitiveMeshBuilder.cube(size: 2)
+        try invalidSpacing.prepareForMeshLinearArray()
+        try assertPreviewFailureAtomic(
+            invalidSpacing, options: options(count: 2, spacing: 0), expected: .invalidSpacing)
+
+        let precision = WorkspaceModel()
+        precision.mesh = singleTriangle()
+        precision.updateTransform(ObjectTransform(translation: SIMD3<Float>(100_000_000, 0, 0)))
+        try precision.prepareForMeshLinearArray()
+        try assertPreviewFailureAtomic(
+            precision, options: options(count: 2, spacing: 0.001), expected: .spacingRoundTripFailure)
+
+        let duplicate = WorkspaceModel()
+        let cube = try PrimitiveMeshBuilder.cube(size: 2)
+        duplicate.mesh = combine([cube, shifted(cube, by: SIMD3<Float>(10, 0, 0))])
+        try duplicate.prepareForMeshLinearArray()
+        try assertPreviewFailureAtomic(
+            duplicate,
+            options: options(axis: .x, count: 2, spacing: 10),
+            expected: .copyWouldCreateDuplicateGeometry)
     }
 
     @MainActor
@@ -394,7 +619,7 @@ final class MeshLinearArrayTests: XCTestCase {
             options(axis: .x, count: 4, spacing: 5),
             options(axis: .x, count: 3, spacing: -5),
         ] {
-            XCTAssertFalse(current.source.matches(
+            XCTAssertFalse(current.source.matchesRuntimeIdentity(
                 mesh: model.mesh,
                 transform: model.objectTransform,
                 meshChangeVersion: current.source.meshChangeVersion,
@@ -403,6 +628,47 @@ final class MeshLinearArrayTests: XCTestCase {
         }
         _ = model.mesh.updatePositions([0: model.mesh.vertices[0].position + SIMD3<Float>(0.01, 0, 0)])
         XCTAssertTrue(model.isMeshLinearArrayPreviewStale)
+    }
+
+    @MainActor
+    func testPreparedPhaseRejectsEstimateAndFingerprintMismatchAtomically() throws {
+        for mismatch in [PreviewMismatch.estimate, .fingerprint] {
+            let model = WorkspaceModel()
+            model.mesh = try PrimitiveMeshBuilder.cube(size: 2)
+            try model.prepareForMeshLinearArray()
+            let requestID = UUID()
+            try model.beginMeshLinearArrayPreviewRequest(requestID)
+            let candidate = try model.makeMeshLinearArrayPreviewCandidate(
+                options: options(axis: .z, count: 3, spacing: 7),
+                requestID: requestID)
+            let mismatched = mismatch == .estimate
+                ? replacingEstimate(candidate)
+                : replacingFingerprint(candidate)
+            XCTAssertTrue(model.completeMeshLinearArrayPreviewRequest(
+                requestID: requestID,
+                candidate: mismatched))
+
+            let source = model.mesh
+            let transform = model.objectTransform
+            let camera = model.camera
+            let selection = model.faceSelection
+            let history = (model.undoCount, model.redoCount)
+            let generation = model.projectMutationGeneration
+            let bytes = try model.projectData()
+            XCTAssertThrowsError(try model.applyMeshLinearArray(preview: mismatched)) {
+                XCTAssertEqual($0 as? MeshLinearArrayError, .stalePreview)
+            }
+            XCTAssertEqual(model.mesh, source)
+            XCTAssertEqual(model.objectTransform, transform)
+            XCTAssertEqual(model.camera, camera)
+            XCTAssertEqual(model.faceSelection, selection)
+            XCTAssertEqual(model.undoCount, history.0)
+            XCTAssertEqual(model.redoCount, history.1)
+            XCTAssertEqual(model.projectMutationGeneration, generation)
+            XCTAssertEqual(try model.projectData(), bytes)
+            XCTAssertNil(model.meshLinearArrayPreview)
+            XCTAssertFalse(model.isMeshLinearArrayRunning)
+        }
     }
 
     @MainActor
@@ -442,6 +708,46 @@ final class MeshLinearArrayTests: XCTestCase {
     }
 
     @MainActor
+    func testApplyAfterOptionsChangeAndDoubleApplyAreAtomic() throws {
+        let model = WorkspaceModel()
+        model.mesh = try PrimitiveMeshBuilder.cube(size: 2)
+        try model.prepareForMeshLinearArray()
+        let previewA = try model.previewMeshLinearArray(
+            options: options(axis: .x, count: 2, spacing: 10))
+        let previewB = try model.previewMeshLinearArray(
+            options: options(axis: .y, count: 3, spacing: 5))
+        let source = model.mesh
+        let history = (model.undoCount, model.redoCount)
+        let generation = model.projectMutationGeneration
+        let bytes = try model.projectData()
+        XCTAssertThrowsError(try model.applyMeshLinearArray(preview: previewA)) {
+            XCTAssertEqual($0 as? MeshLinearArrayError, .stalePreview)
+        }
+        XCTAssertEqual(model.mesh, source)
+        XCTAssertEqual(model.undoCount, history.0)
+        XCTAssertEqual(model.redoCount, history.1)
+        XCTAssertEqual(model.projectMutationGeneration, generation)
+        XCTAssertEqual(try model.projectData(), bytes)
+        XCTAssertEqual(model.meshLinearArrayPreview, previewB)
+        XCTAssertFalse(model.isMeshLinearArrayRunning)
+
+        _ = try model.applyMeshLinearArray(preview: previewB)
+        let appliedMesh = model.mesh
+        let appliedHistory = (model.undoCount, model.redoCount)
+        let appliedGeneration = model.projectMutationGeneration
+        let appliedBytes = try model.projectData()
+        XCTAssertThrowsError(try model.applyMeshLinearArray(preview: previewB)) {
+            XCTAssertEqual($0 as? MeshLinearArrayError, .stalePreview)
+        }
+        XCTAssertEqual(model.mesh, appliedMesh)
+        XCTAssertEqual(model.undoCount, appliedHistory.0)
+        XCTAssertEqual(model.redoCount, appliedHistory.1)
+        XCTAssertEqual(model.projectMutationGeneration, appliedGeneration)
+        XCTAssertEqual(try model.projectData(), appliedBytes)
+        XCTAssertFalse(model.isMeshLinearArrayRunning)
+    }
+
+    @MainActor
     func testApplyUndoRedoAutosaveOrderingUsesOnlyCompletedMeshes() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("MeshLinearArrayAutosave-\(UUID().uuidString)", isDirectory: true)
@@ -456,11 +762,13 @@ final class MeshLinearArrayTests: XCTestCase {
         let before = model.mesh
         var generation = model.projectMutationGeneration
         try model.prepareForMeshLinearArray()
-        _ = try model.previewMeshLinearArray(options: options())
-        model.discardMeshLinearArrayPreview()
+        let stalePreview = try model.previewMeshLinearArray(options: options(axis: .x))
+        let preview = try model.previewMeshLinearArray(options: options(axis: .y))
+        XCTAssertThrowsError(try model.applyMeshLinearArray(preview: stalePreview)) {
+            XCTAssertEqual($0 as? MeshLinearArrayError, .stalePreview)
+        }
         let previewWriteCount = await coordinator.successfulWriteCount
         XCTAssertEqual(previewWriteCount, 0)
-        let preview = try model.previewMeshLinearArray(options: options())
         let after = try model.applyMeshLinearArray(preview: preview).mesh
         generation.advance()
         XCTAssertEqual(model.projectMutationGeneration, generation)
@@ -555,6 +863,94 @@ final class MeshLinearArrayTests: XCTestCase {
         XCTAssertTrue(source.contains("collision detection"))
         XCTAssertTrue(source.contains("one Undo command"))
         XCTAssertTrue(source.contains("accessibilityLabel"))
+        XCTAssertTrue(source.contains("MeshLinearArrayPreviewRequestCoordinator"))
+        XCTAssertTrue(source.contains("beginMeshLinearArrayPreviewRequest"))
+        XCTAssertTrue(source.contains("onDisappear { invalidatePreviewRequest() }"))
+        XCTAssertTrue(source.contains("defer { isApplying = false }"))
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: ".disabled(isBusy)").count - 1,
+            4)
+    }
+
+    private enum PreviewMismatch: Equatable { case estimate, fingerprint }
+
+    @MainActor
+    private func assertPreviewFailureAtomic(
+        _ model: WorkspaceModel,
+        options: MeshLinearArrayOptions,
+        expected: MeshLinearArrayError,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let mesh = model.mesh
+        let transform = model.objectTransform
+        let camera = model.camera
+        let selection = model.faceSelection
+        let history = (model.undoCount, model.redoCount)
+        let generation = model.projectMutationGeneration
+        let bytes = try model.projectData()
+        XCTAssertThrowsError(try model.previewMeshLinearArray(options: options), file: file, line: line) {
+            XCTAssertEqual($0 as? MeshLinearArrayError, expected, file: file, line: line)
+        }
+        XCTAssertEqual(model.mesh, mesh, file: file, line: line)
+        XCTAssertEqual(model.objectTransform, transform, file: file, line: line)
+        XCTAssertEqual(model.camera, camera, file: file, line: line)
+        XCTAssertEqual(model.faceSelection, selection, file: file, line: line)
+        XCTAssertEqual(model.undoCount, history.0, file: file, line: line)
+        XCTAssertEqual(model.redoCount, history.1, file: file, line: line)
+        XCTAssertEqual(model.projectMutationGeneration, generation, file: file, line: line)
+        XCTAssertEqual(try model.projectData(), bytes, file: file, line: line)
+        XCTAssertNil(model.meshLinearArrayPreview, file: file, line: line)
+        XCTAssertFalse(model.isMeshLinearArrayRunning, file: file, line: line)
+    }
+
+    private func replacingEstimate(_ preview: MeshLinearArrayPreview) -> MeshLinearArrayPreview {
+        let estimate = preview.estimate
+        return MeshLinearArrayPreview(
+            options: preview.options,
+            estimate: MeshLinearArrayEstimate(
+                axis: estimate.axis,
+                count: estimate.count,
+                spacingMillimeters: estimate.spacingMillimeters,
+                totalSpanMillimeters: estimate.totalSpanMillimeters,
+                originalVertexCount: estimate.originalVertexCount,
+                resultingVertexCount: estimate.resultingVertexCount,
+                originalTriangleCount: estimate.originalTriangleCount,
+                resultingTriangleCount: estimate.resultingTriangleCount,
+                sourceComponentCount: estimate.sourceComponentCount,
+                resultingComponentCount: estimate.resultingComponentCount,
+                sourceBoundaryEdgeCount: estimate.sourceBoundaryEdgeCount,
+                resultingBoundaryEdgeCount: estimate.resultingBoundaryEdgeCount,
+                sourceLocalBounds: estimate.sourceLocalBounds,
+                resultLocalBounds: estimate.resultLocalBounds,
+                sourceWorldBounds: estimate.sourceWorldBounds,
+                resultWorldBounds: estimate.resultWorldBounds,
+                actualSpacingToleranceMillimeters: estimate.actualSpacingToleranceMillimeters,
+                estimatedWorkingByteCount: estimate.estimatedWorkingByteCount + 1),
+            source: preview.source)
+    }
+
+    private func replacingFingerprint(_ preview: MeshLinearArrayPreview) -> MeshLinearArrayPreview {
+        let source = preview.source
+        return MeshLinearArrayPreview(
+            options: preview.options,
+            estimate: preview.estimate,
+            source: MeshLinearArraySourceKey(
+                topologyID: source.topologyID,
+                topologyRevision: source.topologyRevision,
+                vertexRevision: source.vertexRevision,
+                meshChangeVersion: source.meshChangeVersion,
+                transformChangeVersion: source.transformChangeVersion,
+                transform: source.transform,
+                options: source.options,
+                sourceVertexCount: source.sourceVertexCount,
+                sourceTriangleCount: source.sourceTriangleCount,
+                sourceComponentCount: source.sourceComponentCount,
+                sourceBoundaryEdgeCount: source.sourceBoundaryEdgeCount,
+                resultingVertexCount: source.resultingVertexCount,
+                resultingTriangleCount: source.resultingTriangleCount,
+                totalSpanMillimeters: source.totalSpanMillimeters,
+                analysisFingerprint: source.analysisFingerprint ^ 1))
     }
 
     private func options(
