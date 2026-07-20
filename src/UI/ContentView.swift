@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var showFaceBevel = false
     @State private var showMeshMirror = false
     @State private var showMeshLinearArray = false
+    @State private var showMeshRadialArray = false
     @State private var projectExport = ForgeFile(data: Data())
     @State private var stlExport = STLFile(data: Data())
     @State private var stlImportResult: STLImportResult?
@@ -94,6 +95,13 @@ struct ContentView: View {
                         beginMeshLinearArray()
                     }
                     .accessibilityHint("Create detached copies along an object-local axis using world-space millimeter spacing")
+                    #if DEBUG
+                    .disabled(model.isBenchmarkRunning)
+                    #endif
+                    Button("Radial Array", systemImage: "circle.grid.3x3") {
+                        beginMeshRadialArray()
+                    }
+                    .accessibilityHint("Create detached copies around an object-local axis using world-space angles")
                     #if DEBUG
                     .disabled(model.isBenchmarkRunning)
                     #endif
@@ -181,6 +189,9 @@ struct ContentView: View {
         .sheet(isPresented: $showMeshLinearArray, onDismiss: { model.discardMeshLinearArrayPreview() }) {
             MeshLinearArrayView(model: model)
         }
+        .sheet(isPresented: $showMeshRadialArray, onDismiss: { model.discardMeshRadialArrayPreview() }) {
+            MeshRadialArrayView(model: model)
+        }
         .sheet(isPresented: $showSTLImportConfirmation, onDismiss: { stlImportResult = nil }) {
             if let stlImportResult {
                 STLImportView(model: model, result: stlImportResult, fileName: stlImportFileName)
@@ -227,7 +238,7 @@ struct ContentView: View {
             || showProjectExporter || showSTLExporter || showSTLOptions
             || showPrimitiveCreator || showSubdivision || showMeshDiagnostics
             || showFaceExtrude || showFaceInset || showFaceBevel || showMeshMirror
-            || showMeshLinearArray
+            || showMeshLinearArray || showMeshRadialArray
             || confirmsOpeningWithUnsavedChanges || model.isRecoveryPromptPresented
     }
 
@@ -349,6 +360,15 @@ struct ContentView: View {
             showMeshLinearArray = true
         } catch {
             model.status = "Linear Array unavailable: \(error.localizedDescription)"
+        }
+    }
+
+    private func beginMeshRadialArray() {
+        do {
+            try model.prepareForMeshRadialArray()
+            showMeshRadialArray = true
+        } catch {
+            model.status = "Radial Array unavailable: \(error.localizedDescription)"
         }
     }
 

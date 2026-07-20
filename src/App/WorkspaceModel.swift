@@ -71,6 +71,9 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var isMeshLinearArrayRunning = false
     @Published private(set) var meshLinearArrayPreview: MeshLinearArrayPreview? = nil
     @Published private(set) var meshLinearArrayError: String? = nil
+    @Published private(set) var isMeshRadialArrayRunning = false
+    @Published private(set) var meshRadialArrayPreview: MeshRadialArrayPreview? = nil
+    @Published private(set) var meshRadialArrayError: String? = nil
     @Published private(set) var saveState = ProjectSaveState.saved
     @Published private(set) var recoveryDescriptor: RecoveryDescriptor?
     @Published private(set) var recoveryInspectionError: String?
@@ -112,13 +115,15 @@ final class WorkspaceModel: ObservableObject {
     private var faceSelectionTask: Task<Void, Never>?
     private var faceSelectionTaskID: UUID?
     private var meshLinearArrayPreviewRequestID: UUID?
+    private var meshRadialArrayPreviewRequestID: UUID?
 
     private var isFaceTopologyEditRunning: Bool {
         isFaceExtrudeRunning || isFaceInsetRunning || isFaceBevelRunning
     }
 
     private var isTopologyEditRunning: Bool {
-        isFaceTopologyEditRunning || isMeshMirrorRunning || isMeshLinearArrayRunning
+        isFaceTopologyEditRunning || isMeshMirrorRunning
+            || isMeshLinearArrayRunning || isMeshRadialArrayRunning
     }
 
     private struct PreparedFaceExtrudeCommit {
@@ -147,6 +152,12 @@ final class WorkspaceModel: ObservableObject {
 
     private struct PreparedMeshLinearArrayCommit {
         let result: MeshLinearArrayResult
+        let before: WorkspaceMeshSnapshot
+        let pickingIndex: MeshBVH
+    }
+
+    private struct PreparedMeshRadialArrayCommit {
+        let result: MeshRadialArrayResult
         let before: WorkspaceMeshSnapshot
         let pickingIndex: MeshBVH
     }
@@ -264,7 +275,8 @@ final class WorkspaceModel: ObservableObject {
         #endif
         guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
               (!isFaceExtrudeRunning && !isFaceInsetRunning && !isFaceBevelRunning
-                && !isMeshMirrorRunning && !isMeshLinearArrayRunning)
+                && !isMeshMirrorRunning && !isMeshLinearArrayRunning
+                && !isMeshRadialArrayRunning)
                 || isTopologyEditSnapshotSafe else {
             throw WorkspaceError.activeEditInProgress
         }
@@ -533,6 +545,7 @@ final class WorkspaceModel: ObservableObject {
               !isFaceBevelRunning,
               !isMeshMirrorRunning,
               !isMeshLinearArrayRunning,
+              !isMeshRadialArrayRunning,
               !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { return false }
         #if DEBUG
@@ -558,6 +571,7 @@ final class WorkspaceModel: ObservableObject {
               !isFaceBevelRunning,
               !isMeshMirrorRunning,
               !isMeshLinearArrayRunning,
+              !isMeshRadialArrayRunning,
               !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { return false }
         #if DEBUG
@@ -583,6 +597,7 @@ final class WorkspaceModel: ObservableObject {
               !isFaceBevelRunning,
               !isMeshMirrorRunning,
               !isMeshLinearArrayRunning,
+              !isMeshRadialArrayRunning,
               !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { return false }
         #if DEBUG
@@ -608,6 +623,7 @@ final class WorkspaceModel: ObservableObject {
               !isFaceBevelRunning,
               !isMeshMirrorRunning,
               !isMeshLinearArrayRunning,
+              !isMeshRadialArrayRunning,
               !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { return false }
         #if DEBUG
@@ -631,6 +647,7 @@ final class WorkspaceModel: ObservableObject {
         discardFaceBevelPreview()
         discardMeshMirrorPreview()
         discardMeshLinearArrayPreview()
+        discardMeshRadialArrayPreview()
         hoverLocation = nil
         interactionMode = mode
         faceSelectionError = nil
@@ -823,6 +840,7 @@ final class WorkspaceModel: ObservableObject {
         commitTransformPanelTransaction()
         discardMeshMirrorPreview()
         discardMeshLinearArrayPreview()
+        discardMeshRadialArrayPreview()
         hoverLocation = nil
     }
 
@@ -852,6 +870,8 @@ final class WorkspaceModel: ObservableObject {
         meshMirrorError = nil
         meshLinearArrayPreview = nil
         meshLinearArrayError = nil
+        meshRadialArrayPreview = nil
+        meshRadialArrayError = nil
     }
 
     @discardableResult
@@ -1024,6 +1044,8 @@ final class WorkspaceModel: ObservableObject {
         meshMirrorError = nil
         meshLinearArrayPreview = nil
         meshLinearArrayError = nil
+        meshRadialArrayPreview = nil
+        meshRadialArrayError = nil
     }
 
     @discardableResult
@@ -1181,6 +1203,8 @@ final class WorkspaceModel: ObservableObject {
         meshMirrorError = nil
         meshLinearArrayPreview = nil
         meshLinearArrayError = nil
+        meshRadialArrayPreview = nil
+        meshRadialArrayError = nil
     }
 
     @discardableResult
@@ -1357,6 +1381,8 @@ final class WorkspaceModel: ObservableObject {
         meshMirrorError = nil
         meshLinearArrayPreview = nil
         meshLinearArrayError = nil
+        meshRadialArrayPreview = nil
+        meshRadialArrayError = nil
     }
 
     @discardableResult
@@ -1485,6 +1511,8 @@ final class WorkspaceModel: ObservableObject {
         meshMirrorError = nil
         meshLinearArrayPreview = nil
         meshLinearArrayError = nil
+        meshRadialArrayPreview = nil
+        meshRadialArrayError = nil
         status = "Mirrored across local \(options.axis.rawValue) = 0"
         return result
     }
@@ -1532,6 +1560,8 @@ final class WorkspaceModel: ObservableObject {
         meshMirrorError = nil
         meshLinearArrayPreview = nil
         meshLinearArrayError = nil
+        meshRadialArrayPreview = nil
+        meshRadialArrayError = nil
     }
 
     @discardableResult
@@ -1726,6 +1756,8 @@ final class WorkspaceModel: ObservableObject {
         meshMirrorError = nil
         meshLinearArrayPreview = nil
         meshLinearArrayError = nil
+        meshRadialArrayPreview = nil
+        meshRadialArrayError = nil
         status = "Linear Array: \(options.count) copies along local \(options.axis.rawValue)"
         return result
     }
@@ -1751,6 +1783,243 @@ final class WorkspaceModel: ObservableObject {
         let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
         meshLinearArrayError = message
         status = "Linear Array failed: \(message)"
+    }
+
+    func prepareForMeshRadialArray() throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isTopologyEditRunning else { throw MeshRadialArrayError.operationInProgress }
+        guard !isSTLImporting, !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw MeshRadialArrayError.unavailable
+        }
+        cancelStroke()
+        cancelAllGizmoDrags()
+        commitTransformPanelTransaction()
+        cancelFaceSelectionProcessing()
+        hoverLocation = nil
+        faceExtrudePreview = nil
+        faceExtrudeError = nil
+        faceInsetPreview = nil
+        faceInsetError = nil
+        faceBevelPreview = nil
+        faceBevelError = nil
+        meshMirrorPreview = nil
+        meshMirrorError = nil
+        meshLinearArrayPreview = nil
+        meshLinearArrayError = nil
+        meshRadialArrayPreview = nil
+        meshRadialArrayError = nil
+    }
+
+    @discardableResult
+    func previewMeshRadialArray(options: MeshRadialArrayOptions) throws -> MeshRadialArrayPreview {
+        let requestID = UUID()
+        try beginMeshRadialArrayPreviewRequest(requestID)
+        do {
+            let candidate = try makeMeshRadialArrayPreviewCandidate(
+                options: options, requestID: requestID)
+            guard completeMeshRadialArrayPreviewRequest(
+                requestID: requestID, candidate: candidate) else {
+                throw MeshRadialArrayError.stalePreview
+            }
+            return candidate
+        } catch {
+            _ = failMeshRadialArrayPreviewRequest(requestID: requestID, error: error)
+            throw error
+        }
+    }
+
+    func beginMeshRadialArrayPreviewRequest(_ requestID: UUID) throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isTopologyEditRunning else { throw MeshRadialArrayError.operationInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw MeshRadialArrayError.activeEdit
+        }
+        meshRadialArrayPreview = nil
+        meshRadialArrayError = nil
+        meshRadialArrayPreviewRequestID = requestID
+        isMeshRadialArrayRunning = true
+    }
+
+    func makeMeshRadialArrayPreviewCandidate(
+        options: MeshRadialArrayOptions,
+        requestID: UUID
+    ) throws -> MeshRadialArrayPreview {
+        guard isMeshRadialArrayRunning,
+              meshRadialArrayPreviewRequestID == requestID else {
+            throw MeshRadialArrayError.stalePreview
+        }
+        return try MeshRadialArray.makePreview(
+            mesh: mesh,
+            transform: objectTransform,
+            options: options,
+            meshChangeVersion: topologyEditMeshChangeVersion,
+            transformChangeVersion: topologyEditTransformChangeVersion)
+    }
+
+    @discardableResult
+    func completeMeshRadialArrayPreviewRequest(
+        requestID: UUID,
+        candidate: MeshRadialArrayPreview
+    ) -> Bool {
+        guard isMeshRadialArrayRunning,
+              meshRadialArrayPreviewRequestID == requestID else { return false }
+        meshRadialArrayPreviewRequestID = nil
+        isMeshRadialArrayRunning = false
+        guard candidate.source.matchesRuntimeIdentity(
+            mesh: mesh,
+            transform: objectTransform,
+            meshChangeVersion: topologyEditMeshChangeVersion,
+            transformChangeVersion: topologyEditTransformChangeVersion,
+            options: candidate.options) else {
+            meshRadialArrayPreview = nil
+            reportMeshRadialArrayError(MeshRadialArrayError.stalePreview)
+            return false
+        }
+        meshRadialArrayPreview = candidate
+        meshRadialArrayError = nil
+        return true
+    }
+
+    @discardableResult
+    func failMeshRadialArrayPreviewRequest(requestID: UUID, error: Error) -> Bool {
+        guard meshRadialArrayPreviewRequestID == requestID else { return false }
+        meshRadialArrayPreviewRequestID = nil
+        isMeshRadialArrayRunning = false
+        meshRadialArrayPreview = nil
+        reportMeshRadialArrayError(error)
+        return true
+    }
+
+    var isMeshRadialArrayPreviewStale: Bool {
+        guard let preview = meshRadialArrayPreview else { return false }
+        return !isMeshRadialArrayPreviewCurrent(preview)
+    }
+
+    func isMeshRadialArrayPreviewCurrent(_ preview: MeshRadialArrayPreview) -> Bool {
+        meshRadialArrayPreview == preview && preview.source.matchesRuntimeIdentity(
+            mesh: mesh,
+            transform: objectTransform,
+            meshChangeVersion: topologyEditMeshChangeVersion,
+            transformChangeVersion: topologyEditTransformChangeVersion,
+            options: preview.options)
+    }
+
+    @discardableResult
+    func applyMeshRadialArray(preview: MeshRadialArrayPreview) throws -> MeshRadialArrayResult {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isTopologyEditRunning else { throw MeshRadialArrayError.operationInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw MeshRadialArrayError.activeEdit
+        }
+        guard meshRadialArrayPreview == preview,
+              preview.source.matchesRuntimeIdentity(
+                mesh: mesh,
+                transform: objectTransform,
+                meshChangeVersion: topologyEditMeshChangeVersion,
+                transformChangeVersion: topologyEditTransformChangeVersion,
+                options: preview.options) else {
+            if meshRadialArrayPreview == preview { meshRadialArrayPreview = nil }
+            throw MeshRadialArrayError.stalePreview
+        }
+
+        isMeshRadialArrayRunning = true
+        defer { isMeshRadialArrayRunning = false }
+        do {
+            let prepared = try prepareMeshRadialArrayCommit(preview: preview)
+            return commitMeshRadialArray(prepared, options: preview.options)
+        } catch {
+            if error as? MeshRadialArrayError == .stalePreview {
+                meshRadialArrayPreview = nil
+            }
+            reportMeshRadialArrayError(error)
+            throw error
+        }
+    }
+
+    private func prepareMeshRadialArrayCommit(
+        preview: MeshRadialArrayPreview
+    ) throws -> PreparedMeshRadialArrayCommit {
+        let result = try MeshRadialArray.array(
+            mesh: mesh, transform: objectTransform, options: preview.options)
+        guard MeshRadialArray.preparedResultMatchesPreview(result, preview: preview) else {
+            throw MeshRadialArrayError.stalePreview
+        }
+        return PreparedMeshRadialArrayCommit(
+            result: result,
+            before: workspaceSnapshot,
+            pickingIndex: try pickingCache.makeIndex(for: result.mesh))
+    }
+
+    private func commitMeshRadialArray(
+        _ prepared: PreparedMeshRadialArrayCommit,
+        options: MeshRadialArrayOptions
+    ) -> MeshRadialArrayResult {
+        // Geometry, validation, snapshots, and runtime preparation must remain
+        // before this nonthrowing installation boundary.
+        let result = prepared.result
+        mesh = result.mesh
+        hoverLocation = nil
+        #if DEBUG
+        benchmarkPreset = nil
+        #endif
+        profiler?.updateMeshCounts(
+            vertexCount: mesh.vertices.count,
+            triangleCount: mesh.indices.count / 3)
+        pickingCache.install(prepared.pickingIndex, for: mesh)
+        sculptSpatialIndex.prepare(for: mesh)
+        let command = ReplaceMeshCommand(before: prepared.before, after: workspaceSnapshot)
+        recordMeshRadialArrayReplacement(command)
+        clearMeshDiagnostics()
+        faceExtrudePreview = nil
+        faceExtrudeError = nil
+        faceInsetPreview = nil
+        faceInsetError = nil
+        faceBevelPreview = nil
+        faceBevelError = nil
+        meshMirrorPreview = nil
+        meshMirrorError = nil
+        meshLinearArrayPreview = nil
+        meshLinearArrayError = nil
+        meshRadialArrayPreview = nil
+        meshRadialArrayError = nil
+        status = "Radial Array: \(options.count) copies around local \(options.axis.rawValue)"
+        return result
+    }
+
+    private func recordMeshRadialArrayReplacement(_ command: ReplaceMeshCommand) {
+        precondition(isMeshRadialArrayRunning)
+        isTopologyEditSnapshotSafe = true
+        defer { isTopologyEditSnapshotSafe = false }
+        record(.replaceMesh(command))
+    }
+
+    func discardMeshRadialArrayPreview(requestID: UUID? = nil) {
+        if let requestID, meshRadialArrayPreviewRequestID != requestID { return }
+        if meshRadialArrayPreviewRequestID != nil {
+            meshRadialArrayPreviewRequestID = nil
+            isMeshRadialArrayRunning = false
+        }
+        meshRadialArrayPreview = nil
+        meshRadialArrayError = nil
+    }
+
+    private func reportMeshRadialArrayError(_ error: Error) {
+        let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        meshRadialArrayError = message
+        status = "Radial Array failed: \(message)"
     }
 
     func previewMeshCleanup(options: MeshCleanupOptions) throws -> MeshCleanupPreview {
@@ -2229,6 +2498,8 @@ final class WorkspaceModel: ObservableObject {
             meshMirrorError = nil
             meshLinearArrayPreview = nil
             meshLinearArrayError = nil
+            meshRadialArrayPreview = nil
+            meshRadialArrayError = nil
             mesh = snapshot.mesh
             objectTransform = snapshot.transform.sanitized()
             camera = snapshot.camera
@@ -2270,6 +2541,8 @@ final class WorkspaceModel: ObservableObject {
         meshMirrorError = nil
         meshLinearArrayPreview = nil
         meshLinearArrayError = nil
+        meshRadialArrayPreview = nil
+        meshRadialArrayError = nil
         let triangleCount = mesh.indices.count.isMultiple(of: 3) ? mesh.indices.count / 3 : -1
         do {
             faceSelection = try FaceSelection(
@@ -2331,6 +2604,7 @@ final class WorkspaceModel: ObservableObject {
     var isFaceBevelSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var isMeshMirrorSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var isMeshLinearArraySnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
+    var isMeshRadialArraySnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var pickingCacheHasIndexForTesting: Bool { pickingCache.bvh != nil }
     var pickingCacheTopologyIDForTesting: UUID? { pickingCache.topologyID }
     #endif

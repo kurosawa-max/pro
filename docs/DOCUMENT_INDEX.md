@@ -16,4 +16,5 @@
 - `FACE_BEVEL.md` — planar convex single-loop face patchのworld-mm chamfer、preview、atomic install
 - `MIRROR_COPY.md` — local zero-plane Mirror Copy、linear component分類、seam snap検証／統計、atomic install
 - `LINEAR_ARRAY.md` — local-axis Linear Array、world-mm spacing、copy-major構築、Float往復検証、atomic install
+- `RADIAL_ARRAY.md` — local-axis Radial Array、world rigid rotation、Full/Open angle規則、Float往復検証、atomic install
 - `adr/` — 重要な設計判断

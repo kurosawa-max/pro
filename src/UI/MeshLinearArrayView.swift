@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-struct MeshLinearArrayPreviewRequestCoordinator: Equatable {
+struct TopologyPreviewRequestCoordinator: Equatable {
     private(set) var activeRequestID: UUID?
 
     var isCalculating: Bool { activeRequestID != nil }
@@ -29,6 +29,8 @@ struct MeshLinearArrayPreviewRequestCoordinator: Equatable {
         return activeRequestID
     }
 }
+
+typealias MeshLinearArrayPreviewRequestCoordinator = TopologyPreviewRequestCoordinator
 
 struct MeshLinearArrayView: View {
     @ObservedObject var model: WorkspaceModel
