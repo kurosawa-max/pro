@@ -109,6 +109,217 @@ final class MeshRadialArrayTests: XCTestCase {
         }
     }
 
+    func testCanonicalOptionsIgnoreInactiveControlsAndRemainStableAcrossModeRoundTrip() throws {
+        let source = offAllAxesTriangle()
+        let fullA = options(count: 5, direction: .negative, sweep: 12)
+        let fullB = options(count: 5, direction: .negative, sweep: 321)
+        let fullResultA = try MeshRadialArray.array(
+            mesh: source, transform: .identity, options: fullA)
+        let fullResultB = try MeshRadialArray.array(
+            mesh: source, transform: .identity, options: fullB)
+        XCTAssertEqual(fullA.canonicalized, fullB.canonicalized)
+        XCTAssertEqual(fullResultA, fullResultB)
+        let meshVersion = TopologyEditChangeVersion(
+            identity: UUID(uuidString: "00000000-0000-0000-0000-0000000000A1")!,
+            value: 7)
+        let transformVersion = TopologyEditChangeVersion(
+            identity: UUID(uuidString: "00000000-0000-0000-0000-0000000000A2")!,
+            value: 9)
+        let fullPreviewA = try MeshRadialArray.makePreview(
+            mesh: source,
+            transform: .identity,
+            options: fullA,
+            meshChangeVersion: meshVersion,
+            transformChangeVersion: transformVersion)
+        let fullPreviewB = try MeshRadialArray.makePreview(
+            mesh: source,
+            transform: .identity,
+            options: fullB,
+            meshChangeVersion: meshVersion,
+            transformChangeVersion: transformVersion)
+        XCTAssertEqual(fullPreviewA, fullPreviewB)
+
+        let openA = options(
+            distribution: .openArc, count: 5, direction: .positive, sweep: -120)
+        let openB = options(
+            distribution: .openArc, count: 5, direction: .negative, sweep: -120)
+        let openResultA = try MeshRadialArray.array(
+            mesh: source, transform: .identity, options: openA)
+        let openResultB = try MeshRadialArray.array(
+            mesh: source, transform: .identity, options: openB)
+        XCTAssertEqual(openA.canonicalized, openB.canonicalized)
+        XCTAssertEqual(openResultA, openResultB)
+        XCTAssertEqual(
+            try MeshRadialArray.makePreview(
+                mesh: source,
+                transform: .identity,
+                options: openA,
+                meshChangeVersion: meshVersion,
+                transformChangeVersion: transformVersion),
+            try MeshRadialArray.makePreview(
+                mesh: source,
+                transform: .identity,
+                options: openB,
+                meshChangeVersion: meshVersion,
+                transformChangeVersion: transformVersion))
+        XCTAssertNotEqual(fullResultA.analysisFingerprint, openResultA.analysisFingerprint)
+        XCTAssertEqual(fullA.canonicalized, fullB.canonicalized.canonicalized)
+    }
+
+    func testEstimateReportsPivotAxisVertexClassesAndMixedRadiusRange() throws {
+        let source = mesh([
+            SIMD3<Float>(0, 0, 1),
+            SIMD3<Float>(0.000_1, 0, 0),
+            SIMD3<Float>(1_000, 10, 0),
+        ], [0, 1, 2])
+        let estimate = try MeshRadialArray.estimate(
+            mesh: source,
+            transform: .identity,
+            options: options(axis: .z, distribution: .openArc, count: 3, sweep: 90))
+        XCTAssertEqual(estimate.pivotWorld, .zero)
+        XCTAssertEqual(estimate.axisWorld, SIMD3<Float>(0, 0, 1))
+        XCTAssertEqual(estimate.axisVertexCount, 1)
+        XCTAssertEqual(estimate.offAxisVertexCount, 2)
+        XCTAssertEqual(
+            estimate.minimumPositiveSourceRadiusMillimeters,
+            0.000_1,
+            accuracy: 0.000_000_01)
+        XCTAssertEqual(
+            estimate.maximumSourceRadiusMillimeters,
+            hypot(1_000.0, 10.0),
+            accuracy: 0.001)
+        XCTAssertGreaterThan(estimate.minimumFeatureChordMillimeters, 0)
+        XCTAssertGreaterThan(estimate.axisClassificationToleranceMillimeters, 0)
+        XCTAssertGreaterThan(estimate.radialToleranceMillimeters, 0)
+        XCTAssertGreaterThan(estimate.axialToleranceMillimeters, 0)
+        XCTAssertGreaterThan(estimate.maximumAngularToleranceDegrees, 0)
+    }
+
+    func testRenderSpaceFloatPathAcceptsRepresentableAndRejectsCollapsedHugeTranslations() throws {
+        let source = offAllAxesTriangle()
+        for translation in [Float(100_000), Float(1_000_000)] {
+            let transform = ObjectTransform(
+                translation: SIMD3<Float>(repeating: translation))
+            XCTAssertNoThrow(try MeshRadialArray.array(
+                mesh: source,
+                transform: transform,
+                options: options(axis: .z, count: 3)))
+        }
+
+        for translation in [Float(16_777_216), Float(100_000_000)] {
+            let transform = ObjectTransform(
+                translation: SIMD3<Float>(repeating: translation))
+            let rendered = source.vertices.map {
+                transform.worldPosition(fromLocal: $0.position)
+            }
+            XCTAssertLessThan(Set(rendered).count, rendered.count)
+            XCTAssertThrowsError(try MeshRadialArray.estimate(
+                mesh: source,
+                transform: transform,
+                options: options(axis: .z, count: 3))) {
+                guard let error = $0 as? MeshRadialArrayError else {
+                    return XCTFail("Expected MeshRadialArrayError")
+                }
+                XCTAssertTrue([
+                    MeshRadialArrayError.renderSpacePrecisionFailure,
+                    .copyWouldCollapseTriangle,
+                ].contains(error))
+            }
+        }
+    }
+
+    func testTinyOffAxisFeaturesAreNeverClassifiedAsAxisByLargeOuterRadius() throws {
+        for radius in [Float(0.000_1), Float(0.001), Float(0.01)] {
+            let source = mesh([
+                SIMD3<Float>(0, 0, 1),
+                SIMD3<Float>(radius, 0, 0),
+                SIMD3<Float>(1_000, 10, 0),
+            ], [0, 1, 2])
+            let result = try MeshRadialArray.array(
+                mesh: source,
+                transform: .identity,
+                options: options(axis: .z, count: 3))
+            XCTAssertEqual(result.estimate.axisVertexCount, 1)
+            XCTAssertEqual(result.estimate.offAxisVertexCount, 2)
+            XCTAssertEqual(
+                result.estimate.minimumPositiveSourceRadiusMillimeters,
+                Double(radius),
+                accuracy: max(Double(radius) * 0.000_1, 1.0e-9))
+            let firstCopy = result.mesh.meshPosition(
+                copy: 1, sourceID: 1, sourceCount: source.vertices.count)
+            XCTAssertNotEqual(firstCopy, source.vertices[1].position)
+        }
+    }
+
+    func testMinimumAndNearFullOpenSweepsRemainDistinctInRenderSpace() throws {
+        let source = offAllAxesTriangle()
+        for sweep in [0.01, -0.01, 359.99, -359.99] {
+            for count in [2, 256] {
+                let requested = options(
+                    axis: .z, distribution: .openArc, count: count, sweep: sweep)
+                let result = try MeshRadialArray.array(
+                    mesh: source, transform: .identity, options: requested)
+                XCTAssertGreaterThan(result.estimate.minimumFeatureChordMillimeters, 0)
+                let first = result.mesh.meshPosition(
+                    copy: 0, sourceID: 0, sourceCount: source.vertices.count)
+                let last = result.mesh.meshPosition(
+                    copy: count - 1, sourceID: 0, sourceCount: source.vertices.count)
+                XCTAssertNotEqual(first, last)
+            }
+        }
+        for direction in RadialArrayDirection.allCases {
+            XCTAssertNoThrow(try MeshRadialArray.array(
+                mesh: source,
+                transform: .identity,
+                options: options(axis: .z, count: 256, direction: direction)))
+        }
+    }
+
+    func testRenderSpaceValidationSupportsScaleExtremesAndEveryLocalAxis() throws {
+        let source = offAllAxesTriangle()
+        let transforms = [
+            ObjectTransform(
+                rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(20, -30, 40)),
+                scale: SIMD3<Float>(0.001, 0.004, 0.02)),
+            ObjectTransform(
+                translation: SIMD3<Float>(100_000, -50_000, 25_000),
+                rotation: ObjectTransform.rotation(degrees: SIMD3<Float>(-15, 35, 70)),
+                scale: SIMD3<Float>(1_000, 250, 700)),
+        ]
+        for transform in transforms {
+            for axis in LinearArrayAxis.allCases {
+                let requested = options(
+                    axis: axis, distribution: .openArc, count: 4, sweep: -220)
+                let result = try MeshRadialArray.array(
+                    mesh: source, transform: transform, options: requested)
+                assertWorldRigidRotation(
+                    result.mesh,
+                    source: source,
+                    transform: transform,
+                    options: requested,
+                    accuracy: max(
+                        Float(0.005),
+                        Float(result.estimate.validationToleranceMillimeters * 4)))
+            }
+        }
+    }
+
+    @MainActor
+    func testRenderSpacePrecisionFailureLeavesWorkspaceAtomic() throws {
+        let model = WorkspaceModel()
+        model.mesh = offAllAxesTriangle()
+        model.updateTranslation(SIMD3<Float>(repeating: 100_000_000))
+        let before = WorkspaceState(model)
+        try model.prepareForMeshRadialArray()
+        XCTAssertThrowsError(try model.previewMeshRadialArray(
+            options: options(axis: .z, count: 3))) {
+            XCTAssertEqual($0 as? MeshRadialArrayError, .renderSpacePrecisionFailure)
+        }
+        before.assertUnchanged(model)
+        XCTAssertNil(model.meshRadialArrayPreview)
+        XCTAssertFalse(model.isMeshRadialArrayRunning)
+    }
+
     func testCopyZeroOrderingAndDirectSourceConstructionAreDeterministic() throws {
         let source = offAllAxesTriangle()
         let requested = options(axis: .x, distribution: .openArc, count: 7, sweep: -270)

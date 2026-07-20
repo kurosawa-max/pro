@@ -183,7 +183,9 @@ mandatory PreviewはUUID request identityを使い、最新requestだけがUI／
 
 通常toolbarの`Radial Array`はlocal X/Y/Z軸とlocal originを現在Transformでworld axis/pivotへ写し、Full Circleまたはsigned Open Arcへmesh全体を破壊的に複製する。Full Circleは`±360° / Count`で終点を重複させず、Open Arcは`Sweep / (Count - 1)`で両端を含む。Countはsource copy 0を含む`2...256`である。
 
-各copyはsourceから直接Double world座標で剛体回転し、inverse Transformでlocal Floatへ格納する。実格納値をworldへ戻してradius、axis projection、signed angle、chord、triangle edge length、world areaを検証するため、translation、rotation、uniform／non-uniform scaleに対応する。copy 0とsource index順を保持し、copy間はdetachedである。axis上vertexは許可するが全vertexがaxis上のsource、Float精度で表現不能な角度、collapse、exact rotational duplicateは拒否する。
+Rendererと同じFloat `worldPosition`／`worldDirection`で現在表示中のsource、local-origin pivot、local axisを確定し、その値をDoubleへ変換してideal rotationを計算する。Double inverseからlocal Floatへ格納後、再びFloat `worldPosition`へ通したactual render-space位置でradius、axis projection、signed angle、source／adjacent chord、edge length、world area／windingを検証する。axis専用ULP分類、minimum positive radius、minimum feature chordによりtiny off-axisをglobal toleranceでaxis扱いしない。表示済みsource collapse、表現不能なangle、local exact collinearity、render-space collapse／exact duplicateを拒否する。non-uniform scale下でlocal area一致は要求しない。
+
+Full Circleはhidden Sweep、Open Arcはhidden Directionをcanonical化し、同一geometryのPreview source identityとfingerprintを安定させる。Previewにはworld pivot／axis、axis/off-axis数、radial range、minimum chord、分離したradius／axis／angle toleranceと実測最大errorを表示する。
 
 mandatory PreviewはLinear Arrayと共通のUUID request coordinatorを使い、最新requestだけがUI／model状態を更新する。parameter変更とdismissalはghost Previewを防ぎ、Applyは軽量runtime identityに加えてcomplete estimate／fingerprintを再検証する。prepared/nonthrowing commit、`ReplaceMeshCommand` 1件、record-only Autosave、selection／preview／Diagnostics clear、BVH／Spatial Index再構築、通常Renderer upload、formatVersion 1維持もLinear Arrayと同じである。2,000,000 vertices、4,000,000 triangles、Count 256、768 MiBが上限である。Grid／Spiral／Helix、custom pivot、weld／Boolean、general collision、live modifier、multiple objectは未実装である。詳細は`RADIAL_ARRAY.md`を参照する。
 

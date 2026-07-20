@@ -46,7 +46,7 @@ Face Insetのplanar region安全境界を共有するFace Bevel foundationとし
 
 単一objectのlocal-axis Linear Array foundationとして、sourceを含むCount、signed world-mm Spacing、X/Y/Z axis、source基準Double placement、stored Float spacing再検証、copy-major vertex/triangle ordering、detached component/boundary倍増、必須preview、prepared commit、ReplaceMeshCommand 1件を追加する。Transformを維持し、normal/adjacency/BVH/Spatial Indexを再構築する。collision/self-intersection、weld/Boolean、Grid、per-copy transform、live modifier、multiple objectは後続範囲とする。
 
-単一objectのlocal-axis Radial Array foundationとして、Full Circle／signed Open Arc、sourceを含むCount、local-origin pivot、world-space rigid rotation、non-uniform scale対応Double placement、stored Floatの半径／軸投影／角度／chord／edge／area再検証、copy-major detached topology、race-safe必須preview、prepared commit、ReplaceMeshCommand 1件を追加する。exact rotational duplicateは拒否し、一般collision/self-intersection、weld/Boolean、Grid/Spiral/Helix、custom pivot、live modifier、multiple objectは後続範囲とする。
+単一objectのlocal-axis Radial Array foundationとして、Full Circle／signed Open Arc、sourceを含むCount、local-origin pivot、表示済みFloat sourceを入力にしたDouble ideal rotation、Renderer同一Float経路によるactual radius／axis／angle／adjacent chord／edge／area／winding検証、tiny off-axis分類、minimum feature chord、canonical options、copy-major detached topology、race-safe必須preview、prepared commit、ReplaceMeshCommand 1件を追加する。render-space exact rotational duplicateは拒否し、一般collision/self-intersection、weld/Boolean、Grid/Spiral/Helix、custom pivot、live modifier、multiple objectは後続範囲とする。
 
 ## Milestone 0 — Repository Foundation
 

@@ -80,6 +80,15 @@ struct MeshRadialArrayView: View {
                         LabeledContent("Count", value: localizedCount(estimate.count))
                         LabeledContent("Signed sweep", value: degrees(estimate.effectiveSweepDegrees))
                         LabeledContent("Angular step", value: degrees(estimate.stepDegrees))
+                        LabeledContent("Pivot", value: "Local Origin")
+                        LabeledContent("World pivot", value: vector(estimate.pivotWorld))
+                        LabeledContent("World axis", value: vector(estimate.axisWorld))
+                        LabeledContent("Axis vertices", value: localizedCount(estimate.axisVertexCount))
+                        LabeledContent("Off-axis vertices", value: localizedCount(estimate.offAxisVertexCount))
+                        LabeledContent(
+                            "Source radial range",
+                            value: "\(millimeters(estimate.minimumPositiveSourceRadiusMillimeters)) – \(millimeters(estimate.maximumSourceRadiusMillimeters))")
+                        LabeledContent("Minimum feature chord", value: millimeters(estimate.minimumFeatureChordMillimeters))
                         transitionRow("Vertices", from: estimate.originalVertexCount, to: estimate.resultingVertexCount)
                         transitionRow("Triangles", from: estimate.originalTriangleCount, to: estimate.resultingTriangleCount)
                         transitionRow("Components", from: estimate.sourceComponentCount, to: estimate.resultingComponentCount)
@@ -92,7 +101,11 @@ struct MeshRadialArrayView: View {
                         LabeledContent("Maximum axial error", value: millimeters(estimate.maximumAxialErrorMillimeters))
                         LabeledContent("Maximum angle error", value: degrees(estimate.maximumAngularErrorDegrees))
                         LabeledContent("Maximum chord error", value: millimeters(estimate.maximumChordErrorMillimeters))
-                        LabeledContent("Validation tolerance", value: millimeters(estimate.validationToleranceMillimeters))
+                        LabeledContent("Axis classification tolerance", value: millimeters(estimate.axisClassificationToleranceMillimeters))
+                        LabeledContent("Position tolerance", value: millimeters(estimate.validationToleranceMillimeters))
+                        LabeledContent("Radius tolerance", value: millimeters(estimate.radialToleranceMillimeters))
+                        LabeledContent("Axial tolerance", value: millimeters(estimate.axialToleranceMillimeters))
+                        LabeledContent("Angular tolerance", value: degrees(estimate.maximumAngularToleranceDegrees))
                         LabeledContent(
                             "Estimated working memory",
                             value: ByteCountFormatter.string(
@@ -168,16 +181,23 @@ struct MeshRadialArrayView: View {
         previewRequestCoordinator.isCalculating || isApplying || model.isMeshRadialArrayRunning
     }
     private var requestedOptions: MeshRadialArrayOptions? {
-        guard let count = Int(countText.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let sweep = Double(
+        guard let count = Int(
+            countText.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+        let sweep: Double
+        if distribution == .openArc {
+            guard let parsed = Double(
                 sweepText.trimmingCharacters(in: .whitespacesAndNewlines)
                     .replacingOccurrences(of: ",", with: ".")) else { return nil }
+            sweep = parsed
+        } else {
+            sweep = 0
+        }
         return MeshRadialArrayOptions(
             axis: axis,
             distribution: distribution,
             count: count,
             direction: direction,
-            sweepDegrees: sweep)
+            sweepDegrees: sweep).canonicalized
     }
     private var parameterError: String? {
         guard let options = requestedOptions else { return "Enter numeric Count and Sweep values." }
@@ -296,5 +316,11 @@ struct MeshRadialArrayView: View {
         return "\(LengthFormatter.string(extent.x, fractionDigits: 3)) × "
             + "\(LengthFormatter.string(extent.y, fractionDigits: 3)) × "
             + LengthFormatter.string(extent.z, fractionDigits: 3)
+    }
+
+    private func vector(_ value: SIMD3<Float>) -> String {
+        "(\(value.x.formatted(.number.precision(.fractionLength(0...4)))), "
+            + "\(value.y.formatted(.number.precision(.fractionLength(0...4)))), "
+            + "\(value.z.formatted(.number.precision(.fractionLength(0...4)))))"
     }
 }

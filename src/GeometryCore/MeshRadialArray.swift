@@ -23,6 +23,17 @@ struct MeshRadialArrayOptions: Equatable {
     var direction: RadialArrayDirection = .positive
     var sweepDegrees = 180.0
 
+    var canonicalized: Self {
+        var value = self
+        switch distribution {
+        case .fullCircle:
+            value.sweepDegrees = 0
+        case .openArc:
+            value.direction = .positive
+        }
+        return value
+    }
+
     var effectiveSweepDegrees: Double {
         switch distribution {
         case .fullCircle:
@@ -64,6 +75,17 @@ struct MeshRadialArrayEstimate: Equatable {
     let resultLocalBounds: AxisAlignedBoundingBox
     let sourceWorldBounds: AxisAlignedBoundingBox
     let resultWorldBounds: AxisAlignedBoundingBox
+    let pivotWorld: SIMD3<Float>
+    let axisWorld: SIMD3<Float>
+    let axisVertexCount: Int
+    let offAxisVertexCount: Int
+    let minimumPositiveSourceRadiusMillimeters: Double
+    let maximumSourceRadiusMillimeters: Double
+    let axisClassificationToleranceMillimeters: Double
+    let radialToleranceMillimeters: Double
+    let axialToleranceMillimeters: Double
+    let maximumAngularToleranceDegrees: Double
+    let minimumFeatureChordMillimeters: Double
     let maximumRadiusErrorMillimeters: Double
     let maximumAxialErrorMillimeters: Double
     let maximumAngularErrorDegrees: Double
@@ -101,7 +123,7 @@ struct MeshRadialArraySourceKey: Equatable {
             && self.meshChangeVersion == meshChangeVersion
             && self.transformChangeVersion == transformChangeVersion
             && self.transform == transform.sanitized()
-            && self.options == options
+            && self.options == options.canonicalized
             && sourceVertexCount == mesh.vertices.count
             && sourceTriangleCount == mesh.indices.count / 3
     }
@@ -137,6 +159,7 @@ enum MeshRadialArrayError: Error, Equatable, LocalizedError {
     case worldAxisFailure
     case inverseTransformFailure
     case noRadialExtent
+    case renderSpacePrecisionFailure
     case rotationRoundTripFailure
     case copyWouldCollapseTriangle
     case copyWouldCreateDuplicateGeometry
@@ -168,6 +191,7 @@ enum MeshRadialArrayError: Error, Equatable, LocalizedError {
         case .worldAxisFailure: "The selected local axis cannot be converted to a finite world axis."
         case .inverseTransformFailure: "The current Object Transform cannot be inverted safely."
         case .noRadialExtent: "Every source vertex lies on the selected rotation axis. Choose another axis or source mesh."
+        case .renderSpacePrecisionFailure: "The requested Radial Array cannot preserve the displayed mesh in render-space Float precision."
         case .rotationRoundTripFailure: "The requested rotation cannot be represented accurately with the current Transform and coordinate magnitude."
         case .copyWouldCollapseTriangle: "Float conversion would collapse or distort a copied triangle."
         case .copyWouldCreateDuplicateGeometry: "The requested Radial Array would create exactly duplicate triangle geometry."
@@ -239,6 +263,35 @@ enum MeshRadialArray {
         var maximumChordError = 0.0
     }
 
+    private struct RenderTolerances {
+        let position: Double
+        let radial: Double
+        let axial: Double
+        let angularDegrees: Double
+        let axisClassification: Double
+        let positionByVertex: [Double]
+        let angularDegreesByVertex: [Double]
+    }
+
+    private struct SourceRenderAnalysis {
+        let worldFloat: [SIMD3<Float>]
+        let world: [SIMD3<Double>]
+        let pivotFloat: SIMD3<Float>
+        let pivot: SIMD3<Double>
+        let axisFloat: SIMD3<Float>
+        let axis: SIMD3<Double>
+        let radii: [Double]
+        let axisThresholds: [Double]
+        let isAxisVertex: [Bool]
+        let axisVertexCount: Int
+        let offAxisVertexCount: Int
+        let minimumPositiveRadius: Double
+        let maximumRadius: Double
+        let maximumCoordinateULP: Double
+        let coordinateULPs: [Double]
+        let worldBounds: AxisAlignedBoundingBox
+    }
+
     private struct DoubleTransform {
         let model: simd_double4x4
         let inverse: simd_double4x4
@@ -284,6 +337,7 @@ enum MeshRadialArray {
         meshChangeVersion: TopologyEditChangeVersion,
         transformChangeVersion: TopologyEditChangeVersion
     ) throws -> MeshRadialArrayPreview {
+        let options = options.canonicalized
         let plan = try makePlan(mesh: mesh, transform: transform, options: options)
         let estimate = plan.estimate
         return MeshRadialArrayPreview(
@@ -319,6 +373,7 @@ enum MeshRadialArray {
         transform: ObjectTransform,
         options: MeshRadialArrayOptions
     ) throws -> MeshRadialArrayResult {
+        let options = options.canonicalized
         let plan = try makePlan(mesh: mesh, transform: transform, options: options)
         var vertices: [MeshVertex] = []
         vertices.reserveCapacity(plan.estimate.resultingVertexCount)
@@ -353,6 +408,7 @@ enum MeshRadialArray {
     }
 
     static func anglesDegrees(for options: MeshRadialArrayOptions) throws -> [Double] {
+        let options = options.canonicalized
         try validateOptions(options)
         return (0..<options.count).map { options.angleDegrees(copyIndex: $0) }
     }
@@ -370,6 +426,7 @@ enum MeshRadialArray {
         transform: ObjectTransform,
         options: MeshRadialArrayOptions
     ) throws -> Plan {
+        let options = options.canonicalized
         guard transform.isFinite else { throw MeshRadialArrayError.nonFiniteValue }
         try validateOptions(options)
         let topology = try validateSource(mesh, axis: options.axis)
@@ -391,49 +448,33 @@ enum MeshRadialArray {
         }
 
         let matrix = try DoubleTransform(transform)
-        let worldPivot = try matrix.position(.zero, using: matrix.model)
-        let rawAxis4 = matrix.model * SIMD4<Double>(options.axis.localUnitVector, 0)
-        let rawAxis = SIMD3<Double>(rawAxis4.x, rawAxis4.y, rawAxis4.z)
-        let axisLength = simd_length(rawAxis)
-        guard axisLength.isFinite, axisLength > Double.leastNonzeroMagnitude else {
-            throw MeshRadialArrayError.worldAxisFailure
-        }
-        let worldAxis = rawAxis / axisLength
-        guard worldAxis.x.isFinite, worldAxis.y.isFinite, worldAxis.z.isFinite else {
-            throw MeshRadialArrayError.worldAxisFailure
-        }
+        let sourceAnalysis = try analyzeSourceRenderSpace(
+            mesh: mesh, transform: transform, axis: options.axis)
         let anglesRadians = try anglesDegrees(for: options).map { angle in
             let radians = angle * .pi / 180
             guard radians.isFinite else { throw MeshRadialArrayError.invalidSweep }
             return radians
         }
-
-        var sourceWorld: [SIMD3<Double>] = []
-        sourceWorld.reserveCapacity(mesh.vertices.count)
-        var sourceWorldBounds = AxisAlignedBoundingBox()
-        var maximumWorldMagnitude = max(abs(worldPivot.x), max(abs(worldPivot.y), abs(worldPivot.z)))
-        var maximumRadius = 0.0
-        for vertex in mesh.vertices {
-            let world = try matrix.position(DiagnosticMath.double(vertex.position), using: matrix.model)
-            sourceWorld.append(world)
-            sourceWorldBounds.include(transform.worldPosition(fromLocal: vertex.position))
-            maximumWorldMagnitude = max(maximumWorldMagnitude, max(abs(world.x), max(abs(world.y), abs(world.z))))
-            let offset = world - worldPivot
-            let axial = simd_dot(offset, worldAxis)
-            let radius = simd_length(offset - worldAxis * axial)
-            guard radius.isFinite else { throw MeshRadialArrayError.nonFiniteValue }
-            maximumRadius = max(maximumRadius, radius)
-        }
-        let axisTolerance = max(1.0e-9, maximumWorldMagnitude * Double.ulpOfOne * 64)
-        guard maximumRadius > axisTolerance else { throw MeshRadialArrayError.noRadialExtent }
-
         let minimumAngularStep = abs(options.stepDegrees) * .pi / 180
-        let minimumChord = 2 * maximumRadius * sin(minimumAngularStep / 2)
-        let tolerance = try rotationTolerance(
-            maximumWorldMagnitude: maximumWorldMagnitude,
-            maximumRadius: maximumRadius,
-            minimumChord: minimumChord,
-            transform: transform)
+        let minimumFeatureChord = 2 * sourceAnalysis.minimumPositiveRadius
+            * abs(sin(minimumAngularStep / 2))
+        let tolerances = try renderTolerances(
+            analysis: sourceAnalysis,
+            minimumFeatureChord: minimumFeatureChord)
+        guard minimumFeatureChord.isFinite else {
+            throw MeshRadialArrayError.renderSpacePrecisionFailure
+        }
+        for sourceVertexID in mesh.vertices.indices
+        where !sourceAnalysis.isAxisVertex[sourceVertexID] {
+            let featureChord = 2 * sourceAnalysis.radii[sourceVertexID]
+                * abs(sin(minimumAngularStep / 2))
+            guard featureChord.isFinite,
+                  featureChord > tolerances.positionByVertex[sourceVertexID] * 2 else {
+                throw MeshRadialArrayError.renderSpacePrecisionFailure
+            }
+        }
+        try validateSourceRenderGeometry(
+            mesh: mesh, analysis: sourceAnalysis, tolerances: tolerances)
 
         var positions: [SIMD3<Float>] = []
         positions.reserveCapacity(resultingVertices)
@@ -443,20 +484,18 @@ enum MeshRadialArray {
             let angle = anglesRadians[copyIndex]
             for sourceVertexID in mesh.vertices.indices {
                 let rotatedWorld = rotate(
-                    point: sourceWorld[sourceVertexID],
-                    around: worldAxis,
-                    pivot: worldPivot,
+                    point: sourceAnalysis.world[sourceVertexID],
+                    around: sourceAnalysis.axis,
+                    pivot: sourceAnalysis.pivot,
                     angle: angle)
                 let local = try matrix.position(rotatedWorld, using: matrix.inverse)
                 let stored = copyIndex == 0 ? mesh.vertices[sourceVertexID].position : DiagnosticMath.float(local)
                 guard stored.allFinite else { throw MeshRadialArrayError.rotationRoundTripFailure }
-                let actualWorld = try matrix.position(DiagnosticMath.double(stored), using: matrix.model)
-                guard actualWorld.x.isFinite, actualWorld.y.isFinite, actualWorld.z.isFinite else {
-                    throw MeshRadialArrayError.rotationRoundTripFailure
-                }
+                let actualWorldFloat = transform.worldPosition(fromLocal: stored)
+                guard actualWorldFloat.allFinite else { throw MeshRadialArrayError.renderSpacePrecisionFailure }
                 positions.append(stored)
                 resultLocalBounds.include(stored)
-                resultWorldBounds.include(transform.worldPosition(fromLocal: stored))
+                resultWorldBounds.include(actualWorldFloat)
             }
         }
         guard positions.count == resultingVertices,
@@ -466,15 +505,13 @@ enum MeshRadialArray {
         try validatePlannedGeometry(positions: positions, source: mesh, count: options.count)
         let statistics = try validateStoredRotation(
             positions: positions,
-            sourceWorld: sourceWorld,
             source: mesh,
+            transform: transform,
+            analysis: sourceAnalysis,
             count: options.count,
             angles: anglesRadians,
-            worldAxis: worldAxis,
-            worldPivot: worldPivot,
-            matrix: matrix,
-            axisTolerance: axisTolerance,
-            tolerance: tolerance)
+            distribution: options.distribution,
+            tolerances: tolerances)
 
         let estimate = MeshRadialArrayEstimate(
             axis: options.axis,
@@ -492,21 +529,37 @@ enum MeshRadialArray {
             resultingBoundaryEdgeCount: resultingBoundaryEdges,
             sourceLocalBounds: mesh.bounds,
             resultLocalBounds: resultLocalBounds,
-            sourceWorldBounds: sourceWorldBounds,
+            sourceWorldBounds: sourceAnalysis.worldBounds,
             resultWorldBounds: resultWorldBounds,
+            pivotWorld: sourceAnalysis.pivotFloat,
+            axisWorld: sourceAnalysis.axisFloat,
+            axisVertexCount: sourceAnalysis.axisVertexCount,
+            offAxisVertexCount: sourceAnalysis.offAxisVertexCount,
+            minimumPositiveSourceRadiusMillimeters: sourceAnalysis.minimumPositiveRadius,
+            maximumSourceRadiusMillimeters: sourceAnalysis.maximumRadius,
+            axisClassificationToleranceMillimeters: tolerances.axisClassification,
+            radialToleranceMillimeters: tolerances.radial,
+            axialToleranceMillimeters: tolerances.axial,
+            maximumAngularToleranceDegrees: tolerances.angularDegrees,
+            minimumFeatureChordMillimeters: minimumFeatureChord,
             maximumRadiusErrorMillimeters: statistics.maximumRadiusError,
             maximumAxialErrorMillimeters: statistics.maximumAxialError,
             maximumAngularErrorDegrees: statistics.maximumAngularErrorDegrees,
             maximumChordErrorMillimeters: statistics.maximumChordError,
-            validationToleranceMillimeters: tolerance,
+            validationToleranceMillimeters: tolerances.position,
             estimatedWorkingByteCount: workingBytes)
         return Plan(
             positions: positions,
-            worldPivot: worldPivot,
-            worldAxis: worldAxis,
+            worldPivot: sourceAnalysis.pivot,
+            worldAxis: sourceAnalysis.axis,
             anglesRadians: anglesRadians,
             estimate: estimate,
-            fingerprint: fingerprint(mesh: mesh, options: options, estimate: estimate, positions: positions))
+            fingerprint: fingerprint(
+                mesh: mesh,
+                options: options,
+                estimate: estimate,
+                sourceWorld: sourceAnalysis.worldFloat,
+                positions: positions))
     }
 
     private static func validateOptions(_ options: MeshRadialArrayOptions) throws {
@@ -564,6 +617,177 @@ enum MeshRadialArray {
         return topology
     }
 
+    private static func analyzeSourceRenderSpace(
+        mesh: EditableMesh,
+        transform: ObjectTransform,
+        axis: LinearArrayAxis
+    ) throws -> SourceRenderAnalysis {
+        let localAxis = SIMD3<Float>(
+            Float(axis.localUnitVector.x),
+            Float(axis.localUnitVector.y),
+            Float(axis.localUnitVector.z))
+        let pivotFloat = transform.worldPosition(fromLocal: .zero)
+        let axisFloat = transform.worldDirection(fromLocal: localAxis)
+        guard pivotFloat.allFinite, axisFloat.allFinite else {
+            throw MeshRadialArrayError.worldAxisFailure
+        }
+        let axisLength = simd_length(axisFloat)
+        guard axisLength.isFinite, abs(axisLength - 1) <= 0.000_01 else {
+            throw MeshRadialArrayError.worldAxisFailure
+        }
+        let pivot = DiagnosticMath.double(pivotFloat)
+        let worldAxis = DiagnosticMath.double(axisFloat)
+        let worldAxisLength = simd_length(worldAxis)
+        guard worldAxisLength.isFinite, worldAxisLength > Double.leastNonzeroMagnitude else {
+            throw MeshRadialArrayError.worldAxisFailure
+        }
+        let normalizedAxis = worldAxis / worldAxisLength
+
+        var worldFloat: [SIMD3<Float>] = []
+        var world: [SIMD3<Double>] = []
+        var radii: [Double] = []
+        var axisThresholds: [Double] = []
+        var coordinateULPs: [Double] = []
+        var isAxisVertex: [Bool] = []
+        var bounds = AxisAlignedBoundingBox()
+        worldFloat.reserveCapacity(mesh.vertices.count)
+        world.reserveCapacity(mesh.vertices.count)
+        radii.reserveCapacity(mesh.vertices.count)
+        axisThresholds.reserveCapacity(mesh.vertices.count)
+        coordinateULPs.reserveCapacity(mesh.vertices.count)
+        isAxisVertex.reserveCapacity(mesh.vertices.count)
+        var maximumCoordinateULP = maximumComponentULP(pivotFloat)
+        var minimumPositiveRadius = Double.greatestFiniteMagnitude
+        var maximumRadius = 0.0
+        var axisVertexCount = 0
+
+        for vertex in mesh.vertices {
+            let rendered = transform.worldPosition(fromLocal: vertex.position)
+            guard rendered.allFinite else { throw MeshRadialArrayError.renderSpacePrecisionFailure }
+            let renderedDouble = DiagnosticMath.double(rendered)
+            let offset = renderedDouble - pivot
+            let axial = simd_dot(offset, normalizedAxis)
+            let radius = simd_length(offset - normalizedAxis * axial)
+            guard radius.isFinite else { throw MeshRadialArrayError.renderSpacePrecisionFailure }
+            let coordinateULP = max(maximumComponentULP(rendered), maximumComponentULP(pivotFloat))
+            let projectionNoise = simd_length(offset) * Double(Float.ulpOfOne) * 2
+            let axisThreshold = max(1.0e-12, coordinateULP * 0.5, projectionNoise)
+            let onAxis = radius <= axisThreshold
+            if onAxis {
+                axisVertexCount += 1
+            } else {
+                minimumPositiveRadius = min(minimumPositiveRadius, radius)
+                maximumRadius = max(maximumRadius, radius)
+            }
+            maximumCoordinateULP = max(maximumCoordinateULP, coordinateULP)
+            worldFloat.append(rendered)
+            world.append(renderedDouble)
+            radii.append(radius)
+            axisThresholds.append(axisThreshold)
+            coordinateULPs.append(coordinateULP)
+            isAxisVertex.append(onAxis)
+            bounds.include(rendered)
+        }
+        let offAxisVertexCount = mesh.vertices.count - axisVertexCount
+        guard offAxisVertexCount > 0, minimumPositiveRadius.isFinite,
+              maximumRadius.isFinite, maximumRadius > 0 else {
+            throw MeshRadialArrayError.renderSpacePrecisionFailure
+        }
+        guard bounds.isFinite else { throw MeshRadialArrayError.boundsFailure }
+        return SourceRenderAnalysis(
+            worldFloat: worldFloat,
+            world: world,
+            pivotFloat: pivotFloat,
+            pivot: pivot,
+            axisFloat: axisFloat,
+            axis: normalizedAxis,
+            radii: radii,
+            axisThresholds: axisThresholds,
+            isAxisVertex: isAxisVertex,
+            axisVertexCount: axisVertexCount,
+            offAxisVertexCount: offAxisVertexCount,
+            minimumPositiveRadius: minimumPositiveRadius,
+            maximumRadius: maximumRadius,
+            maximumCoordinateULP: maximumCoordinateULP,
+            coordinateULPs: coordinateULPs,
+            worldBounds: bounds)
+    }
+
+    private static func renderTolerances(
+        analysis: SourceRenderAnalysis,
+        minimumFeatureChord: Double
+    ) throws -> RenderTolerances {
+        let positionByVertex = analysis.radii.indices.map { index in
+            max(
+                1.0e-9,
+                analysis.coordinateULPs[index] * 2,
+                analysis.radii[index] * Double(Float.ulpOfOne) * 2)
+        }
+        let angularByVertex = analysis.radii.indices.map { index in
+            guard !analysis.isAxisVertex[index] else { return 0 }
+            return min(
+                0.01,
+                max(1.0e-8, positionByVertex[index]
+                    / analysis.radii[index] * 180 / .pi))
+        }
+        let position = positionByVertex.max() ?? 1.0e-9
+        let radial = position
+        let axial = position
+        let angular = angularByVertex.max() ?? 1.0e-8
+        let axisClassification = analysis.axisThresholds.max() ?? 1.0e-12
+        guard position.isFinite, radial.isFinite, axial.isFinite,
+              angular.isFinite, axisClassification.isFinite,
+              minimumFeatureChord.isFinite else {
+            throw MeshRadialArrayError.renderSpacePrecisionFailure
+        }
+        return RenderTolerances(
+            position: position,
+            radial: radial,
+            axial: axial,
+            angularDegrees: min(0.01, angular),
+            axisClassification: axisClassification,
+            positionByVertex: positionByVertex,
+            angularDegreesByVertex: angularByVertex)
+    }
+
+    private static func validateSourceRenderGeometry(
+        mesh: EditableMesh,
+        analysis: SourceRenderAnalysis,
+        tolerances: RenderTolerances
+    ) throws {
+        var renderedTriangles = Set<PositionTriangleKey>()
+        renderedTriangles.reserveCapacity(mesh.indices.count / 3)
+        for faceID in 0..<(mesh.indices.count / 3) {
+            let ids = try triangleVertexIDs(mesh: mesh, faceID: faceID)
+            let points = ids.map { analysis.world[$0] }
+            let pointFloats = ids.map { analysis.worldFloat[$0] }
+            let edges = [
+                simd_length(points[1] - points[0]),
+                simd_length(points[2] - points[1]),
+                simd_length(points[0] - points[2]),
+            ]
+            let vertexTolerance = ids.map { tolerances.positionByVertex[$0] }.max() ?? 1.0e-9
+            guard edges.allSatisfy({ $0.isFinite && $0 > vertexTolerance }) else {
+                throw MeshRadialArrayError.renderSpacePrecisionFailure
+            }
+            let twiceArea = simd_length(simd_cross(
+                points[1] - points[0], points[2] - points[0]))
+            let maximumEdge = edges.max() ?? 0
+            let areaFloor = vertexTolerance * maximumEdge * 2
+            guard twiceArea.isFinite, twiceArea > areaFloor else {
+                throw MeshRadialArrayError.renderSpacePrecisionFailure
+            }
+            guard renderedTriangles.insert(PositionTriangleKey(
+                pointFloats[0], pointFloats[1], pointFloats[2])).inserted else {
+                throw MeshRadialArrayError.copyWouldCreateDuplicateGeometry
+            }
+        }
+    }
+
+    private static func maximumComponentULP(_ value: SIMD3<Float>) -> Double {
+        Double(max(value.x.ulp, max(value.y.ulp, value.z.ulp)))
+    }
+
     private static func validatePlannedGeometry(
         positions: [SIMD3<Float>],
         source: EditableMesh,
@@ -590,7 +814,7 @@ enum MeshRadialArray {
                 let ids = try triangleVertexIDs(mesh: source, faceID: faceID)
                 let points = ids.map { positions[base + $0] }
                 let resultArea = DiagnosticMath.twiceArea(points[0], points[1], points[2])
-                guard resultArea.isFinite, resultArea > MeshDiagnosticTriangleRules.twiceAreaEpsilon(for: source) else {
+                guard resultArea.isFinite, resultArea > 0 else {
                     throw MeshRadialArrayError.copyWouldCollapseTriangle
                 }
                 guard triangles.insert(PositionTriangleKey(points[0], points[1], points[2])).inserted else {
@@ -602,96 +826,163 @@ enum MeshRadialArray {
 
     private static func validateStoredRotation(
         positions: [SIMD3<Float>],
-        sourceWorld: [SIMD3<Double>],
         source: EditableMesh,
+        transform: ObjectTransform,
+        analysis: SourceRenderAnalysis,
         count: Int,
         angles: [Double],
-        worldAxis: SIMD3<Double>,
-        worldPivot: SIMD3<Double>,
-        matrix: DoubleTransform,
-        axisTolerance: Double,
-        tolerance: Double
+        distribution: RadialArrayDistribution,
+        tolerances: RenderTolerances
     ) throws -> ValidationStatistics {
-        guard sourceWorld.count == source.vertices.count,
+        guard analysis.world.count == source.vertices.count,
               positions.count == source.vertices.count * count,
               angles.count == count else { throw MeshRadialArrayError.validationFailed }
         var statistics = ValidationStatistics()
         var actualWorld = Array(repeating: SIMD3<Double>.zero, count: positions.count)
+        var actualWorldFloat = Array(repeating: SIMD3<Float>.zero, count: positions.count)
         for copyIndex in 0..<count {
             let base = copyIndex * source.vertices.count
             let angle = angles[copyIndex]
             let principalExpected = principalAngle(angle)
             for sourceVertexID in source.vertices.indices {
-                let actual = try matrix.position(
-                    DiagnosticMath.double(positions[base + sourceVertexID]), using: matrix.model)
+                let vertexTolerance = tolerances.positionByVertex[sourceVertexID]
+                let actualFloat = transform.worldPosition(
+                    fromLocal: positions[base + sourceVertexID])
+                guard actualFloat.allFinite else {
+                    throw MeshRadialArrayError.renderSpacePrecisionFailure
+                }
+                let actual = DiagnosticMath.double(actualFloat)
+                let ideal = rotate(
+                    point: analysis.world[sourceVertexID],
+                    around: analysis.axis,
+                    pivot: analysis.pivot,
+                    angle: angle)
+                let positionError = simd_length(actual - ideal)
+                guard positionError.isFinite,
+                      positionError <= vertexTolerance * 2 else {
+                    throw MeshRadialArrayError.rotationRoundTripFailure
+                }
                 actualWorld[base + sourceVertexID] = actual
-                let sourceOffset = sourceWorld[sourceVertexID] - worldPivot
-                let actualOffset = actual - worldPivot
-                let sourceAxial = simd_dot(sourceOffset, worldAxis)
-                let actualAxial = simd_dot(actualOffset, worldAxis)
-                let sourceRadial = sourceOffset - worldAxis * sourceAxial
-                let actualRadial = actualOffset - worldAxis * actualAxial
-                let sourceRadius = simd_length(sourceRadial)
+                actualWorldFloat[base + sourceVertexID] = actualFloat
+                let sourceOffset = analysis.world[sourceVertexID] - analysis.pivot
+                let actualOffset = actual - analysis.pivot
+                let sourceAxial = simd_dot(sourceOffset, analysis.axis)
+                let actualAxial = simd_dot(actualOffset, analysis.axis)
+                let sourceRadial = sourceOffset - analysis.axis * sourceAxial
+                let actualRadial = actualOffset - analysis.axis * actualAxial
+                let sourceRadius = analysis.radii[sourceVertexID]
                 let actualRadius = simd_length(actualRadial)
                 let axialError = abs(actualAxial - sourceAxial)
                 let radiusError = abs(actualRadius - sourceRadius)
                 statistics.maximumAxialError = max(statistics.maximumAxialError, axialError)
                 statistics.maximumRadiusError = max(statistics.maximumRadiusError, radiusError)
-                guard axialError <= tolerance, radiusError <= tolerance else {
+                guard axialError <= vertexTolerance * 2,
+                      radiusError <= vertexTolerance * 2 else {
                     throw MeshRadialArrayError.rotationRoundTripFailure
                 }
-                let actualChord = simd_length(actual - sourceWorld[sourceVertexID])
+                let actualChord = simd_length(actual - analysis.world[sourceVertexID])
                 let expectedChord = 2 * sourceRadius * abs(sin(angle / 2))
                 let chordError = abs(actualChord - expectedChord)
                 statistics.maximumChordError = max(statistics.maximumChordError, chordError)
-                guard actualChord.isFinite, chordError <= tolerance * 2 else {
+                guard actualChord.isFinite,
+                      chordError <= vertexTolerance * 2 else {
                     throw MeshRadialArrayError.rotationRoundTripFailure
                 }
-                if sourceRadius > max(axisTolerance, tolerance * 2) {
+                if !analysis.isAxisVertex[sourceVertexID] {
+                    guard actualRadius > analysis.axisThresholds[sourceVertexID] else {
+                        throw MeshRadialArrayError.renderSpacePrecisionFailure
+                    }
                     let raw = atan2(
-                        simd_dot(worldAxis, simd_cross(sourceRadial, actualRadial)),
+                        simd_dot(analysis.axis, simd_cross(sourceRadial, actualRadial)),
                         simd_dot(sourceRadial, actualRadial))
                     let angularError = abs(principalAngle(raw - principalExpected))
-                    let angularTolerance = min(0.01, max(1.0e-8, tolerance / sourceRadius * 180 / .pi * 2))
                     statistics.maximumAngularErrorDegrees = max(
                         statistics.maximumAngularErrorDegrees, angularError * 180 / .pi)
-                    guard angularError.isFinite, angularError <= angularTolerance * .pi / 180 else {
+                    guard angularError.isFinite,
+                          angularError * 180 / .pi
+                            <= tolerances.angularDegreesByVertex[sourceVertexID] else {
                         throw MeshRadialArrayError.rotationRoundTripFailure
                     }
                 } else {
-                    guard actualRadius <= max(axisTolerance, tolerance * 2) else {
+                    guard actualRadius <= analysis.axisThresholds[sourceVertexID]
+                            + vertexTolerance else {
                         throw MeshRadialArrayError.rotationRoundTripFailure
                     }
                 }
             }
         }
 
+        for sourceVertexID in source.vertices.indices
+        where !analysis.isAxisVertex[sourceVertexID] {
+            let sourceRadius = analysis.radii[sourceVertexID]
+            let vertexTolerance = tolerances.positionByVertex[sourceVertexID]
+            for copyIndex in 1..<count {
+                let previous = actualWorld[(copyIndex - 1) * source.vertices.count + sourceVertexID]
+                let current = actualWorld[copyIndex * source.vertices.count + sourceVertexID]
+                let step = abs(angles[copyIndex] - angles[copyIndex - 1])
+                let expected = 2 * sourceRadius * abs(sin(step / 2))
+                let actual = simd_length(current - previous)
+                guard actual.isFinite, actual > 0,
+                      abs(actual - expected) <= vertexTolerance * 2 else {
+                    throw MeshRadialArrayError.renderSpacePrecisionFailure
+                }
+            }
+            if distribution == .fullCircle {
+                let first = actualWorld[sourceVertexID]
+                let last = actualWorld[(count - 1) * source.vertices.count + sourceVertexID]
+                let expected = 2 * sourceRadius * abs(sin(abs(angles[1] - angles[0]) / 2))
+                let actual = simd_length(first - last)
+                guard actual.isFinite, actual > 0,
+                      abs(actual - expected) <= vertexTolerance * 2 else {
+                    throw MeshRadialArrayError.renderSpacePrecisionFailure
+                }
+            }
+        }
+
+        var renderedTriangles = Set<PositionTriangleKey>()
+        renderedTriangles.reserveCapacity(source.indices.count / 3 * count)
         for copyIndex in 0..<count {
             let base = copyIndex * source.vertices.count
             for faceID in 0..<(source.indices.count / 3) {
                 let ids = try triangleVertexIDs(mesh: source, faceID: faceID)
-                let sourcePoints = ids.map { sourceWorld[$0] }
+                let sourcePoints = ids.map { analysis.world[$0] }
                 let resultPoints = ids.map { actualWorld[base + $0] }
+                let resultPointFloats = ids.map { actualWorldFloat[base + $0] }
+                let vertexTolerance = ids.map {
+                    tolerances.positionByVertex[$0]
+                }.max() ?? tolerances.position
                 for edge in [(0, 1), (1, 2), (2, 0)] {
                     let sourceLength = simd_length(sourcePoints[edge.1] - sourcePoints[edge.0])
                     let resultLength = simd_length(resultPoints[edge.1] - resultPoints[edge.0])
                     guard sourceLength.isFinite, resultLength.isFinite,
-                          abs(resultLength - sourceLength) <= tolerance * 2 else {
-                        throw MeshRadialArrayError.rotationRoundTripFailure
+                          resultLength > vertexTolerance,
+                          abs(resultLength - sourceLength) <= vertexTolerance * 4 else {
+                        throw MeshRadialArrayError.copyWouldCollapseTriangle
                     }
                 }
-                let sourceArea = simd_length(simd_cross(
-                    sourcePoints[1] - sourcePoints[0], sourcePoints[2] - sourcePoints[0]))
-                let resultArea = simd_length(simd_cross(
-                    resultPoints[1] - resultPoints[0], resultPoints[2] - resultPoints[0]))
+                let sourceNormal = simd_cross(
+                    sourcePoints[1] - sourcePoints[0], sourcePoints[2] - sourcePoints[0])
+                let idealNormal = rotateVector(
+                    sourceNormal, around: analysis.axis, angle: angles[copyIndex])
+                let resultNormal = simd_cross(
+                    resultPoints[1] - resultPoints[0], resultPoints[2] - resultPoints[0])
+                let sourceArea = simd_length(sourceNormal)
+                let resultArea = simd_length(resultNormal)
                 let maximumEdge = max(
                     simd_length(sourcePoints[1] - sourcePoints[0]),
                     max(simd_length(sourcePoints[2] - sourcePoints[1]),
                         simd_length(sourcePoints[0] - sourcePoints[2])))
-                let areaTolerance = max(sourceArea * 1.0e-4, tolerance * maximumEdge * 4)
+                let areaTolerance = max(
+                    sourceArea * 1.0e-5,
+                    vertexTolerance * maximumEdge * 8)
                 guard sourceArea.isFinite, resultArea.isFinite, resultArea > 0,
-                      abs(resultArea - sourceArea) <= areaTolerance else {
+                      abs(resultArea - sourceArea) <= areaTolerance,
+                      simd_dot(idealNormal, resultNormal) > 0 else {
                     throw MeshRadialArrayError.copyWouldCollapseTriangle
+                }
+                guard renderedTriangles.insert(PositionTriangleKey(
+                    resultPointFloats[0], resultPointFloats[1], resultPointFloats[2])).inserted else {
+                    throw MeshRadialArrayError.copyWouldCreateDuplicateGeometry
                 }
             }
         }
@@ -727,9 +1018,6 @@ enum MeshRadialArray {
               topology.isolatedVertexCount == 0 else {
             throw MeshRadialArrayError.validationFailed
         }
-        guard topology.degenerateTriangleCount == 0 else {
-            throw MeshRadialArrayError.copyWouldCollapseTriangle
-        }
         guard topology.duplicateTriangleCount == 0,
               MeshTopologyDiagnostics.hasGeometricDuplicateTriangles(result) == false else {
             throw MeshRadialArrayError.copyWouldCreateDuplicateGeometry
@@ -750,23 +1038,38 @@ enum MeshRadialArray {
                 }
             }
         }
-        let matrix = try DoubleTransform(transform)
-        var sourceWorld: [SIMD3<Double>] = []
-        sourceWorld.reserveCapacity(source.vertices.count)
-        for vertex in source.vertices {
-            sourceWorld.append(try matrix.position(DiagnosticMath.double(vertex.position), using: matrix.model))
+        let analysis = try analyzeSourceRenderSpace(
+            mesh: source, transform: transform, axis: options.axis)
+        guard analysis.pivotFloat == plan.estimate.pivotWorld,
+              analysis.axisFloat == plan.estimate.axisWorld,
+              analysis.axisVertexCount == plan.estimate.axisVertexCount,
+              analysis.offAxisVertexCount == plan.estimate.offAxisVertexCount,
+              analysis.minimumPositiveRadius == plan.estimate.minimumPositiveSourceRadiusMillimeters,
+              analysis.maximumRadius == plan.estimate.maximumSourceRadiusMillimeters else {
+            throw MeshRadialArrayError.validationFailed
+        }
+        let minimumFeatureChord = 2 * analysis.minimumPositiveRadius
+            * abs(sin(abs(options.stepDegrees) * .pi / 360))
+        let tolerances = try renderTolerances(
+            analysis: analysis, minimumFeatureChord: minimumFeatureChord)
+        guard minimumFeatureChord == plan.estimate.minimumFeatureChordMillimeters,
+              tolerances.position == plan.estimate.validationToleranceMillimeters,
+              tolerances.radial == plan.estimate.radialToleranceMillimeters,
+              tolerances.axial == plan.estimate.axialToleranceMillimeters,
+              tolerances.angularDegrees == plan.estimate.maximumAngularToleranceDegrees,
+              tolerances.axisClassification
+                == plan.estimate.axisClassificationToleranceMillimeters else {
+            throw MeshRadialArrayError.validationFailed
         }
         _ = try validateStoredRotation(
             positions: result.vertices.map(\.position),
-            sourceWorld: sourceWorld,
             source: source,
+            transform: transform,
+            analysis: analysis,
             count: options.count,
             angles: plan.anglesRadians,
-            worldAxis: plan.worldAxis,
-            worldPivot: plan.worldPivot,
-            matrix: matrix,
-            axisTolerance: plan.estimate.validationToleranceMillimeters,
-            tolerance: plan.estimate.validationToleranceMillimeters)
+            distribution: options.distribution,
+            tolerances: tolerances)
         var worldBounds = AxisAlignedBoundingBox()
         for vertex in result.vertices {
             worldBounds.include(transform.worldPosition(fromLocal: vertex.position))
@@ -791,25 +1094,6 @@ enum MeshRadialArray {
             try multiply(resultingTriangles, 112))
     }
 
-    private static func rotationTolerance(
-        maximumWorldMagnitude: Double,
-        maximumRadius: Double,
-        minimumChord: Double,
-        transform: ObjectTransform
-    ) throws -> Double {
-        let safeScale = transform.sanitized().scale
-        let maximumScale = Double(max(safeScale.x, max(safeScale.y, safeScale.z)))
-        let precisionFloor = max(max(maximumWorldMagnitude, maximumRadius), max(maximumScale, 1))
-            * Double(Float.ulpOfOne) * 2
-        let requestedFloor = max(maximumRadius, 1) * 1.0e-7
-        let cap = max(1.0e-8, minimumChord * 0.5)
-        let required = max(1.0e-9, precisionFloor, requestedFloor)
-        guard required.isFinite, cap.isFinite, required <= cap else {
-            throw MeshRadialArrayError.rotationRoundTripFailure
-        }
-        return required
-    }
-
     private static func rotate(
         point: SIMD3<Double>,
         around axis: SIMD3<Double>,
@@ -821,6 +1105,17 @@ enum MeshRadialArray {
         return pivot + offset * cosine
             + simd_cross(axis, offset) * sine
             + axis * simd_dot(axis, offset) * (1 - cosine)
+    }
+
+    private static func rotateVector(
+        _ vector: SIMD3<Double>,
+        around axis: SIMD3<Double>,
+        angle: Double
+    ) -> SIMD3<Double> {
+        let (sine, cosine) = canonicalTrigonometry(angle)
+        return vector * cosine
+            + simd_cross(axis, vector) * sine
+            + axis * simd_dot(axis, vector) * (1 - cosine)
     }
 
     private static func canonicalTrigonometry(_ angle: Double) -> (sine: Double, cosine: Double) {
@@ -853,8 +1148,10 @@ enum MeshRadialArray {
         mesh: EditableMesh,
         options: MeshRadialArrayOptions,
         estimate: MeshRadialArrayEstimate,
+        sourceWorld: [SIMD3<Float>],
         positions: [SIMD3<Float>]
     ) -> UInt64 {
+        let options = options.canonicalized
         var hash: UInt64 = 14_695_981_039_346_656_037
         func mix(_ value: UInt64) { hash ^= value; hash &*= 1_099_511_628_211 }
         mix(UInt64(options.axis.componentIndex))
@@ -868,6 +1165,11 @@ enum MeshRadialArray {
             mix(UInt64(vertex.position.z.bitPattern))
         }
         for index in mesh.indices { mix(UInt64(index)) }
+        for position in sourceWorld {
+            mix(UInt64(position.x.bitPattern))
+            mix(UInt64(position.y.bitPattern))
+            mix(UInt64(position.z.bitPattern))
+        }
         for position in positions {
             mix(UInt64(position.x.bitPattern))
             mix(UInt64(position.y.bitPattern))
@@ -877,6 +1179,21 @@ enum MeshRadialArray {
         mix(UInt64(estimate.resultingTriangleCount))
         mix(UInt64(estimate.resultingComponentCount))
         mix(UInt64(estimate.resultingBoundaryEdgeCount))
+        mix(UInt64(estimate.pivotWorld.x.bitPattern))
+        mix(UInt64(estimate.pivotWorld.y.bitPattern))
+        mix(UInt64(estimate.pivotWorld.z.bitPattern))
+        mix(UInt64(estimate.axisWorld.x.bitPattern))
+        mix(UInt64(estimate.axisWorld.y.bitPattern))
+        mix(UInt64(estimate.axisWorld.z.bitPattern))
+        mix(UInt64(estimate.axisVertexCount))
+        mix(UInt64(estimate.offAxisVertexCount))
+        mix(estimate.minimumPositiveSourceRadiusMillimeters.bitPattern)
+        mix(estimate.maximumSourceRadiusMillimeters.bitPattern)
+        mix(estimate.axisClassificationToleranceMillimeters.bitPattern)
+        mix(estimate.radialToleranceMillimeters.bitPattern)
+        mix(estimate.axialToleranceMillimeters.bitPattern)
+        mix(estimate.maximumAngularToleranceDegrees.bitPattern)
+        mix(estimate.minimumFeatureChordMillimeters.bitPattern)
         return hash
     }
 

@@ -544,7 +544,9 @@ Applyはresult mesh、before snapshot、Picking BVHまでをfallible prepared ph
 
 `MeshRadialArray`はpure GeometryCore境界として、object-local X/Y/Z軸とlocal originを現在Transformでworld axis/pivotへ変換する。Full Circleはsourceをcopy 0として含むCount `2...256`へ右手系の`±360° / Count`を適用して終点を重複させない。Open Arcはsigned `±0.01...±359.99°`を`Count - 1`で割り、両端を含める。
 
-各copyはsource localをDouble worldへ変換し、world axis/pivot周りへ剛体回転してinverse Transformでlocal Floatへ格納する。copy間の累積変換は行わない。実格納値をworldへ戻して半径、axis projection、signed angle、chord、triangle edge length、world triangle areaを検証するため、rotationとnon-uniform scale下でもrigid world shapeを維持する。axis上vertexは許可し、全vertexがaxis上のsource、Float精度で角度を保持できない配置、collapse、exact rotational duplicateをmutation前に拒否する。
+表示済みsource position、local-origin pivot、transformed local axisはRendererと同じ`ObjectTransform.worldPosition`／`worldDirection`のFloat演算を基準にする。そのFloat結果をDoubleへ変換してideal Rodrigues rotationを行い、Double inverseでlocal candidateを求めてFloatへ格納する。成功判定はstored localを再びFloat `worldPosition`へ通したactual render-space positionだけを使い、ideal位置、半径、axis projection、signed angle、source／adjacent chord、edge length、triangle area／windingと比較する。
+
+axis分類はvertexごとのFloat ULPとprojection noiseによる専用toleranceを使い、global validation toleranceや最大半径を流用しない。minimum positive radiusと各off-axis feature chordを検査するため、mixed-radius sourceでもtiny featureをaxis扱いしない。render-space collapse／exact duplicate、表示済みsource自体のdegenerate、Float精度で角度を保持できない配置をmutation前に拒否する。non-uniform scale下ではlocal area一致を要求せず、local exact collinearityとactual world geometryを検証する。Full Circleのhidden SweepとOpen Arcのhidden Directionはcanonical化し、runtime identity／fingerprintへgeometryと無関係な値を含めない。
 
 vertex/triangleはcopy-majorで、copy 0を完全保持し、copy間でindexを共有しない。component／boundary countはCount倍である。PreviewはUUID request identity、runtime source identity、options、estimate、analysis fingerprintへ結合し、parameter変更／dismissalでUIとmodelのcandidateを同時に無効化する。Applyはcomplete planとfingerprintを再照合し、result mesh／normal／adjacency／bounds／Picking BVHをprepared phaseで完成してからnonthrowing commitを行う。
 

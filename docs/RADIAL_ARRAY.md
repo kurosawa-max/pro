@@ -6,29 +6,33 @@ Radial Array is a destructive, single-object topology operation. It duplicates t
 
 Full Circle uses `±360° / Count`. Positive follows the right-hand rule around the positive selected axis, negative reverses it, and the endpoint at `±360°` is not generated. Open Arc uses a signed sweep in `±0.01...±359.99°`, includes both endpoints, and uses `sweep / (Count - 1)`. The sweep sign is the Open Arc direction.
 
-The pivot and axis are derived from the current non-destructive Transform:
+The pivot and axis are derived through the same Float helpers used by rendering:
 
 ```text
-worldPivot = modelMatrix × localOrigin
-worldAxis = normalize(linearPart(modelMatrix) × localAxisUnit)
+worldPivotFloat = ObjectTransform.worldPosition(localOrigin)
+worldAxisFloat = ObjectTransform.worldDirection(localAxisUnit)
 ```
 
 Object translation moves the pivot. Rotation rotates the axis. Uniform and non-uniform scale do not multiply angles or produce a scaled rotation path.
 
-## World-space rigid construction
+Inactive controls are canonicalized before Preview identity or geometry is calculated. Full Circle fixes the hidden Sweep to one canonical value. Open Arc fixes the hidden Direction to one canonical value. Switching distribution remains a visible identity change, while changing an inactive control cannot change the result or fingerprint.
 
-Each copy is calculated directly from the source in Double world coordinates. Copy `i - 1` is never used to construct copy `i`.
+## Ideal Double and actual render-space Float paths
+
+The currently displayed source is authoritative. Source local Float vertices, the local origin, and the selected local axis first pass through `ObjectTransform.worldPosition` or `worldDirection`. Those Float results are converted to Double for ideal Rodrigues rotation. Float Renderer precision that has already been lost is never reconstructed by multiplying a Double-converted matrix.
 
 ```text
-sourceWorld = modelMatrix × sourceLocal
-rotatedWorld = worldPivot + rotate(sourceWorld - worldPivot, worldAxis, angle[i])
-storedLocalFloat = Float(inverseModelMatrix × rotatedWorld)
-actualWorld = modelMatrix × storedLocalFloat
+sourceWorldFloat = ObjectTransform.worldPosition(sourceLocalFloat)
+idealWorldDouble = rotate(Double(sourceWorldFloat), Double(worldAxisFloat), angle[i])
+storedLocalFloat = Float(doubleInverseModelMatrix × idealWorldDouble)
+actualWorldFloat = ObjectTransform.worldPosition(storedLocalFloat)
 ```
 
-Copy 0 retains source positions and indices exactly. The completed stored values are transformed back to world space and checked for radial-distance preservation, axis projection preservation, signed angular placement, source-to-copy chord length, every triangle edge length, and every triangle area. Tolerances account for Float storage, coordinate magnitude, Transform scale, radius, and minimum angular chord. A request whose minimum angular placement cannot survive the Float round trip is rejected before Workspace mutation.
+Copy 0 retains source positions and indices exactly. Only `actualWorldFloat` is used as the observed result. It is compared with the ideal Double position for radial distance, axis projection, signed angle, source chord, adjacent-copy chord, every edge length, triangle area, and winding. Render-space non-finite positions, zero chords, collapsed radii/edges/areas, and exact-position duplicate triangles are rejected before Workspace mutation.
 
-Vertices on the rotation axis are allowed and remain on the axis. A source whose every vertex lies on the chosen axis is rejected as having no radial extent. Exact geometric duplicate triangles introduced by rotational symmetry are rejected. Nearby-only geometry is not welded or treated as an exact duplicate.
+Axis classification has a separate per-vertex tolerance derived from that displayed vertex, pivot, axis projection, and Float ULP. It never uses the operation validation tolerance or the largest radius. A vertex beyond this strict threshold is always off-axis and must pass radius, axial, angle, position, and chord validation even when its radius is tiny. Preview records the axis/off-axis counts, minimum positive and maximum displayed radii, and minimum feature chord. Every off-axis vertex must be able to represent its adjacent angular chord; a large outer radius cannot hide an unrepresentable inner feature.
+
+A source whose displayed Float geometry has collapsed edges or triangle area is rejected. Exact local collinearity is checked after inverse conversion, but local area is not required to match the source under non-uniform scale; product validity is decided from actual render-space world edges, area, and winding. Exact geometric duplicate triangles introduced by rotational symmetry are rejected. Nearby-only geometry is not welded or treated as an exact duplicate.
 
 ## Deterministic topology and validation
 
@@ -47,11 +51,11 @@ The result is checked for finite normalized normals, adjacency, valid UInt32 ind
 
 ## Preview, stale identity, and commit
 
-Preview is mandatory and reports the distribution, signed sweep, angular step, source/result counts, components, boundaries, local/world bounds, maximum observed radius/axis/angle/chord errors, validation tolerance, and estimated working memory.
+Preview is mandatory and reports the distribution, signed sweep, angular step, local-origin/world pivot, world axis, axis/off-axis counts, displayed source radial range, minimum feature chord, separate position/radius/axis/angular tolerances, source/result counts, components, boundaries, local/world bounds, maximum measured radius/axis/angle/chord errors, and estimated working memory.
 
 The shared topology Preview request coordinator issues a UUID for every calculation. Parameter changes and sheet dismissal invalidate the current UUID and clear both UI and Workspace Preview. Only the latest request may install a candidate, publish an error, or release its busy state. A late result cannot leave a ghost Preview or become applicable.
 
-The source key's `matchesRuntimeIdentity` check is deliberately lightweight: topology ID/revision, vertex revision, non-rewinding mesh and Transform versions, sanitized Transform, options, and source counts. Apply rebuilds the complete plan and separately requires exact estimate and analysis-fingerprint agreement before any mutation.
+The source key's `matchesRuntimeIdentity` check is deliberately lightweight: topology ID/revision, vertex revision, non-rewinding mesh and Transform versions, sanitized Transform, canonical options, and source counts. Apply rebuilds the complete plan and separately requires exact estimate and analysis-fingerprint agreement before any mutation. The fingerprint includes the actual displayed source positions, pivot, axis, radius analysis, tolerances, and final stored positions; none of this work occurs during SwiftUI rendering.
 
 All fallible geometry, normal/adjacency work, bounds and topology validation, before snapshot creation, and Picking BVH preparation finish before the nonthrowing commit boundary. Commit installs one fresh mesh, installs the prepared Picking BVH, rebuilds the Vertex Spatial Index, updates profiler counts, clears Face Selection and topology Previews, invalidates Diagnostics/Cleanup, and records one `ReplaceMeshCommand`. Autosave snapshot permission is limited to the synchronous history-record call.
 
