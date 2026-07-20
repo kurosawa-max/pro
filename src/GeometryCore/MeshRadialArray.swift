@@ -726,10 +726,8 @@ enum MeshRadialArray {
         }
         let angularByVertex = analysis.radii.indices.map { index in
             guard !analysis.isAxisVertex[index] else { return 0.0 }
-            return min(
-                0.01,
-                max(1.0e-8, positionByVertex[index]
-                    / analysis.radii[index] * 180 / .pi))
+            return max(1.0e-8, positionByVertex[index]
+                / analysis.radii[index] * 180 / .pi)
         }
         let position = positionByVertex.max() ?? 1.0e-9
         let radial = position
@@ -745,7 +743,7 @@ enum MeshRadialArray {
             position: position,
             radial: radial,
             axial: axial,
-            angularDegrees: min(0.01, angular),
+            angularDegrees: angular,
             axisClassification: axisClassification,
             positionByVertex: positionByVertex,
             angularDegreesByVertex: angularByVertex)
