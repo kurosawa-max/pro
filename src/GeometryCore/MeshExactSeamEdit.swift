@@ -632,8 +632,9 @@ enum MeshExactSeamEdit {
         guard vertices <= maximumVertices else { throw MeshSeamEditError.vertexLimitExceeded }
         guard triangles <= maximumTriangles else { throw MeshSeamEditError.triangleLimitExceeded }
         guard vertices <= Int(UInt32.max) else { throw MeshSeamEditError.indexOverflow }
-        let approximate = try multiply(try add(vertices, triangles * 3), 96)
-            + try multiply(try add(seamVertices, seamEdges), 128)
+        let meshBytes = try multiply(try add(vertices, triangles * 3), 96)
+        let seamBytes = try multiply(try add(seamVertices, seamEdges), 128)
+        let approximate = try add(meshBytes, seamBytes)
         guard approximate <= maximumWorkingBytes else {
             throw MeshSeamEditError.workingMemoryLimitExceeded
         }
