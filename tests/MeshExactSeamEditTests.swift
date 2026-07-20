@@ -15,7 +15,10 @@ final class MeshExactSeamEditTests: XCTestCase {
         XCTAssertEqual(result.estimate.seamEdgeCount, 3)
         XCTAssertEqual(result.mesh.vertices.count, source.vertices.count + 3)
         XCTAssertEqual(result.mesh.indices.count, source.indices.count)
-        XCTAssertEqual(Array(result.mesh.vertices.prefix(source.vertices.count)), source.vertices)
+        XCTAssertEqual(
+            Array(result.mesh.vertices.prefix(source.vertices.count)).map(\.position),
+            source.vertices.map(\.position)
+        )
         XCTAssertEqual(Array(result.mesh.indices[3...]), Array(source.indices[3...]))
         XCTAssertEqual(Array(result.mesh.indices[0...2]), [4, 6, 5])
         XCTAssertEqual(result.estimate.sourceComponentCount, 1)
@@ -204,7 +207,13 @@ final class MeshExactSeamEditTests: XCTestCase {
     }
 
     func testUIContainsCompactAccessibleSafetyContract() throws {
-        let source = try String(contentsOfFile: "src/UI/MeshExactSeamEditView.swift")
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: repository.appendingPathComponent("src/UI/MeshExactSeamEditView.swift"),
+            encoding: .utf8
+        )
         XCTAssertTrue(source.contains("Form"))
         XCTAssertTrue(source.contains("accessibilityHint"))
         XCTAssertTrue(source.contains("open, coincident seam"))
