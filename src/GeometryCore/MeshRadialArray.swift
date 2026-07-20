@@ -416,7 +416,7 @@ enum MeshRadialArray {
         for vertex in mesh.vertices {
             let world = try matrix.position(DiagnosticMath.double(vertex.position), using: matrix.model)
             sourceWorld.append(world)
-            sourceWorldBounds.include(DiagnosticMath.float(world))
+            sourceWorldBounds.include(transform.worldPosition(fromLocal: vertex.position))
             maximumWorldMagnitude = max(maximumWorldMagnitude, max(abs(world.x), max(abs(world.y), abs(world.z))))
             let offset = world - worldPivot
             let axial = simd_dot(offset, worldAxis)
@@ -456,7 +456,7 @@ enum MeshRadialArray {
                 }
                 positions.append(stored)
                 resultLocalBounds.include(stored)
-                resultWorldBounds.include(DiagnosticMath.float(actualWorld))
+                resultWorldBounds.include(transform.worldPosition(fromLocal: stored))
             }
         }
         guard positions.count == resultingVertices,
@@ -801,9 +801,9 @@ enum MeshRadialArray {
         let safeScale = transform.sanitized().scale
         let maximumScale = Double(max(safeScale.x, max(safeScale.y, safeScale.z)))
         let precisionFloor = max(max(maximumWorldMagnitude, maximumRadius), max(maximumScale, 1))
-            * Double(Float.ulpOfOne) * 8
+            * Double(Float.ulpOfOne) * 2
         let requestedFloor = max(maximumRadius, 1) * 1.0e-7
-        let cap = max(1.0e-8, minimumChord * 0.01)
+        let cap = max(1.0e-8, minimumChord * 0.5)
         let required = max(1.0e-9, precisionFloor, requestedFloor)
         guard required.isFinite, cap.isFinite, required <= cap else {
             throw MeshRadialArrayError.rotationRoundTripFailure
