@@ -179,8 +179,9 @@ final class MeshRadialArrayTests: XCTestCase {
             SIMD3<Float>(4, 0, 0), SIMD3<Float>(5, 0, 0),
             SIMD3<Float>(4, 1, 0), SIMD3<Float>(4, 0, 1),
         ], [0, 1, 2, 0, 1, 3])
-        var nonFinite = offAxisTriangle()
-        nonFinite.vertices[0].position.x = .nan
+        var nonFinitePositions = offAllAxesPositions()
+        nonFinitePositions[0].x = .nan
+        let nonFinite = mesh(nonFinitePositions, [0, 1, 2], recalculateNormals: false)
         let isolated = mesh(offAllAxesPositions() + [SIMD3<Float>(12, 12, 12)], [0, 1, 2])
         let cases: [(EditableMesh, MeshRadialArrayError)] = [
             (invalidIndex, .invalidMesh),
