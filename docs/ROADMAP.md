@@ -44,7 +44,9 @@ Face Insetのplanar region安全境界を共有するFace Bevel foundationとし
 
 単一objectのlocal-axis Mirror Copy foundationとして、X/Y/Z zero-plane、same-side分類、linear component grouping、closed componentのdetached duplicate、open half meshのexact-zero seam共有、boundary／maximum snap Preview統計、snap後専用validation、決定論的vertex/triangle順、reverse winding、必須preview、prepared commit、ReplaceMeshCommand 1件を追加する。plane crossingは切断せず、closed-plane contact、off-plane boundary、bow-tie、branched/incomplete seam、non-manifold／invalid sourceを拒否する。arbitrary plane、world-axis mode、live modifier、self-intersection repair、boolean union、multiple objectは後続範囲とする。
 
-単一objectのlocal-axis Linear Array foundationとして、sourceを含むCount、signed world-mm Spacing、X/Y/Z axis、source基準Double placement、stored Float spacing再検証、copy-major vertex/triangle ordering、detached component/boundary倍増、必須preview、prepared commit、ReplaceMeshCommand 1件を追加する。Transformを維持し、normal/adjacency/BVH/Spatial Indexを再構築する。collision/self-intersection、weld/Boolean、Radial/Grid、per-copy transform、live modifier、multiple objectは後続範囲とする。
+単一objectのlocal-axis Linear Array foundationとして、sourceを含むCount、signed world-mm Spacing、X/Y/Z axis、source基準Double placement、stored Float spacing再検証、copy-major vertex/triangle ordering、detached component/boundary倍増、必須preview、prepared commit、ReplaceMeshCommand 1件を追加する。Transformを維持し、normal/adjacency/BVH/Spatial Indexを再構築する。collision/self-intersection、weld/Boolean、Grid、per-copy transform、live modifier、multiple objectは後続範囲とする。
+
+単一objectのlocal-axis Radial Array foundationとして、Full Circle／signed Open Arc、sourceを含むCount、local-origin pivot、world-space rigid rotation、non-uniform scale対応Double placement、stored Floatの半径／軸投影／角度／chord／edge／area再検証、copy-major detached topology、race-safe必須preview、prepared commit、ReplaceMeshCommand 1件を追加する。exact rotational duplicateは拒否し、一般collision/self-intersection、weld/Boolean、Grid/Spiral/Helix、custom pivot、live modifier、multiple objectは後続範囲とする。
 
 ## Milestone 0 — Repository Foundation
 
@@ -114,7 +116,7 @@ Face Insetのplanar region安全境界を共有するFace Bevel foundationとし
 - Inset（planar convex single-loop patchのconstant-width foundationは実装済み。concave、hole、multiple loop、outsetは未実装）
 - Basic bevel（planar convex face-region chamfer foundationは実装済み。general edge、multiple segment、concave／hole／non-planar regionは未実装）
 - Mirror（local zero-plane Copy foundationは実装済み。cut、arbitrary plane、live modifierは未実装）
-- Array（local-axis Linear Array foundation実装済み。Radial／Grid／live modifierは未実装）
+- Array（local-axis Linear／Radial Array foundation実装済み。Grid／Spiral／Helix／live modifierは未実装）
 - Merge/Split
 
 ## Milestone 6 — Sculpt Production Features

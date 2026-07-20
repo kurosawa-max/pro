@@ -539,3 +539,13 @@ previewはtopology/revision、非巻戻しmesh/Transform version、sanitized Tra
 vertexとtriangleはcopy index、source IDの順でcopy-majorに構築し、copy 0のposition/indexを保持する。copy間はindexを共有せず、component数・boundary edge数はCount倍になる。normal／adjacency、exact geometry duplicate、Diagnostics topology、local/world boundsを全検証し、collision／self-intersection／weld／Booleanは行わない。Previewはruntime topology/revision、非巻戻しmesh/Transform version、Transform、options、counts、topology metrics、total span、fingerprintへ結合する。
 
 Applyはresult mesh、before snapshot、Picking BVHまでをfallible prepared phaseで完成し、nonthrowing commitでfresh topologyを1回installする。`ReplaceMeshCommand` 1件、history record中だけのAutosave snapshot scope、Face Selectionと全topology Preview clear、Diagnostics/Cleanup invalidation、Picking/Spatial Index再構築、通常Renderer upload経路を使う。Transform、camera、tool/mode設定を維持し、formatVersion 1には通常meshだけを保存する。上限は2,000,000 vertices、4,000,000 triangles、Count 256、768 MiBで、初版はMainActor同期である。詳細は`LINEAR_ARRAY.md`を参照する。
+
+### 17.21 Local-axis Radial Array
+
+`MeshRadialArray`はpure GeometryCore境界として、object-local X/Y/Z軸とlocal originを現在Transformでworld axis/pivotへ変換する。Full Circleはsourceをcopy 0として含むCount `2...256`へ右手系の`±360° / Count`を適用して終点を重複させない。Open Arcはsigned `±0.01...±359.99°`を`Count - 1`で割り、両端を含める。
+
+各copyはsource localをDouble worldへ変換し、world axis/pivot周りへ剛体回転してinverse Transformでlocal Floatへ格納する。copy間の累積変換は行わない。実格納値をworldへ戻して半径、axis projection、signed angle、chord、triangle edge length、world triangle areaを検証するため、rotationとnon-uniform scale下でもrigid world shapeを維持する。axis上vertexは許可し、全vertexがaxis上のsource、Float精度で角度を保持できない配置、collapse、exact rotational duplicateをmutation前に拒否する。
+
+vertex/triangleはcopy-majorで、copy 0を完全保持し、copy間でindexを共有しない。component／boundary countはCount倍である。PreviewはUUID request identity、runtime source identity、options、estimate、analysis fingerprintへ結合し、parameter変更／dismissalでUIとmodelのcandidateを同時に無効化する。Applyはcomplete planとfingerprintを再照合し、result mesh／normal／adjacency／bounds／Picking BVHをprepared phaseで完成してからnonthrowing commitを行う。
+
+成功は`ReplaceMeshCommand` 1件、record-only Autosave snapshot scope、selection／topology Preview／Diagnostics/Cleanup clear、Picking/Spatial Index再構築、通常Renderer upload経路を使う。Transform、camera、tool/modeは維持し、formatVersion 1には普通のmeshだけを保存する。上限は2,000,000 vertices、4,000,000 triangles、Count 256、768 MiBでMainActor同期である。一般collision/self-intersection、weld／Boolean、Grid／Spiral／Helix、custom pivot、live modifier、multiple objectは含まない。詳細は`RADIAL_ARRAY.md`を参照する。

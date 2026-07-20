@@ -1,46 +1,17 @@
 import Foundation
 import SwiftUI
 
-struct TopologyPreviewRequestCoordinator: Equatable {
-    private(set) var activeRequestID: UUID?
-
-    var isCalculating: Bool { activeRequestID != nil }
-
-    @discardableResult
-    mutating func begin(requestID: UUID = UUID()) -> UUID {
-        activeRequestID = requestID
-        return requestID
-    }
-
-    func isCurrent(_ requestID: UUID) -> Bool {
-        activeRequestID == requestID
-    }
-
-    @discardableResult
-    mutating func finish(_ requestID: UUID) -> Bool {
-        guard activeRequestID == requestID else { return false }
-        activeRequestID = nil
-        return true
-    }
-
-    @discardableResult
-    mutating func invalidate() -> UUID? {
-        defer { activeRequestID = nil }
-        return activeRequestID
-    }
-}
-
-typealias MeshLinearArrayPreviewRequestCoordinator = TopologyPreviewRequestCoordinator
-
-struct MeshLinearArrayView: View {
+struct MeshRadialArrayView: View {
     @ObservedObject var model: WorkspaceModel
     @Environment(\.dismiss) private var dismiss
-    @State private var axis = LinearArrayAxis.x
-    @State private var countText = "2"
-    @State private var spacingText = "10.0"
-    @State private var preview: MeshLinearArrayPreview?
+    @State private var axis = LinearArrayAxis.z
+    @State private var distribution = RadialArrayDistribution.fullCircle
+    @State private var direction = RadialArrayDirection.positive
+    @State private var countText = "6"
+    @State private var sweepText = "180.0"
+    @State private var preview: MeshRadialArrayPreview?
     @State private var errorMessage: String?
-    @State private var previewRequestCoordinator = MeshLinearArrayPreviewRequestCoordinator()
+    @State private var previewRequestCoordinator = TopologyPreviewRequestCoordinator()
     @State private var isApplying = false
 
     var body: some View {
@@ -54,41 +25,61 @@ struct MeshLinearArrayView: View {
                     }
                     .pickerStyle(.segmented)
                     .disabled(isBusy)
-                    .accessibilityHint("Chooses the object-local direction of the Array")
+                    .accessibilityHint("Chooses the object-local rotation axis through the local origin")
+
+                    Picker("Distribution", selection: $distribution) {
+                        ForEach(RadialArrayDistribution.allCases) { value in
+                            Text(value.rawValue).tag(value)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(isBusy)
 
                     HStack {
                         TextField("Count", text: $countText)
                             .keyboardType(.numberPad)
-                            .accessibilityLabel("Array copy count")
-                        Stepper("", value: countBinding, in: MeshLinearArray.minimumCount...MeshLinearArray.maximumCount)
+                            .accessibilityLabel("Radial Array copy count")
+                        Stepper("", value: countBinding, in: MeshRadialArray.minimumCount...MeshRadialArray.maximumCount)
                             .labelsHidden()
-                            .accessibilityLabel("Adjust Array copy count")
+                            .accessibilityLabel("Adjust Radial Array copy count")
                     }
                     .disabled(isBusy)
                     Text("Count includes the unchanged source mesh as copy 0.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    HStack {
-                        TextField("Spacing", text: $spacingText)
-                            .keyboardType(.numbersAndPunctuation)
-                            .accessibilityLabel("Array spacing in millimeters")
-                        Text("mm").foregroundStyle(.secondary)
+                    if distribution == .fullCircle {
+                        Picker("Direction", selection: $direction) {
+                            ForEach(RadialArrayDirection.allCases) { value in
+                                Text(value.rawValue).tag(value)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(isBusy)
+                        Text("Full Circle uses 360° ÷ Count and does not duplicate the endpoint.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        HStack {
+                            TextField("Signed sweep", text: $sweepText)
+                                .keyboardType(.numbersAndPunctuation)
+                                .accessibilityLabel("Open Arc signed sweep in degrees")
+                            Text("°").foregroundStyle(.secondary)
+                        }
+                        .disabled(isBusy)
+                        Text("Open Arc includes both endpoints. The sweep sign chooses the direction.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .disabled(isBusy)
-                    Text("Positive and negative values choose opposite directions. Spacing is measured in world-space millimeters along the selected local axis.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Section("Preview") {
                     if let estimate {
                         LabeledContent("Axis", value: "Local \(estimate.axis.rawValue)")
+                        LabeledContent("Distribution", value: estimate.distribution.rawValue)
                         LabeledContent("Count", value: localizedCount(estimate.count))
-                        LabeledContent("Spacing", value: millimeters(estimate.spacingMillimeters))
-                        LabeledContent("Signed total span", value: millimeters(estimate.totalSpanMillimeters))
-                        LabeledContent("Total span length", value: millimeters(abs(estimate.totalSpanMillimeters)))
+                        LabeledContent("Signed sweep", value: degrees(estimate.effectiveSweepDegrees))
+                        LabeledContent("Angular step", value: degrees(estimate.stepDegrees))
                         transitionRow("Vertices", from: estimate.originalVertexCount, to: estimate.resultingVertexCount)
                         transitionRow("Triangles", from: estimate.originalTriangleCount, to: estimate.resultingTriangleCount)
                         transitionRow("Components", from: estimate.sourceComponentCount, to: estimate.resultingComponentCount)
@@ -97,45 +88,46 @@ struct MeshLinearArrayView: View {
                         LabeledContent("Result local bounds", value: dimensions(estimate.resultLocalBounds))
                         LabeledContent("Source world bounds", value: dimensions(estimate.sourceWorldBounds))
                         LabeledContent("Result world bounds", value: dimensions(estimate.resultWorldBounds))
+                        LabeledContent("Maximum radius error", value: millimeters(estimate.maximumRadiusErrorMillimeters))
+                        LabeledContent("Maximum axial error", value: millimeters(estimate.maximumAxialErrorMillimeters))
+                        LabeledContent("Maximum angle error", value: degrees(estimate.maximumAngularErrorDegrees))
+                        LabeledContent("Maximum chord error", value: millimeters(estimate.maximumChordErrorMillimeters))
+                        LabeledContent("Validation tolerance", value: millimeters(estimate.validationToleranceMillimeters))
                         LabeledContent(
                             "Estimated working memory",
                             value: ByteCountFormatter.string(
                                 fromByteCount: Int64(estimate.estimatedWorkingByteCount),
                                 countStyle: .memory))
-                        LabeledContent(
-                            "Spacing validation tolerance",
-                            value: millimeters(estimate.actualSpacingToleranceMillimeters))
                     } else {
-                        Text("Enter valid parameters, then calculate a mandatory Preview.")
+                        Text("Enter valid parameters, then calculate the mandatory Preview.")
                             .foregroundStyle(.secondary)
                     }
                 }
 
                 Section("Safety") {
                     Label("This destructive operation replaces the mesh and creates one Undo command.", systemImage: "arrow.uturn.backward.circle")
-                    Label("Copy 0 preserves the source vertex and triangle ordering.", systemImage: "list.number")
-                    Text("Copies remain detached. No proximity weld, collision detection, overlap repair, or Boolean union is performed.")
+                    Label("Copy 0 preserves source vertices and triangles exactly.", systemImage: "list.number")
+                    Text("Each copy is a world-space rigid rotation around the selected local axis. Copies remain detached; no weld, collision repair, or Boolean union is performed.")
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Very small spacing can be rejected when the stored Float positions cannot preserve the requested world-space distance.")
+                    Text("Rotational symmetry that creates exact duplicate triangles is rejected.")
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if previewIsStale {
                     Section("Preview Changed") {
-                        Label("The mesh, Transform, axis, Count, or Spacing changed. Recalculate before applying.", systemImage: "arrow.clockwise.circle")
-                            .fixedSize(horizontal: false, vertical: true)
+                        Label("The source or parameters changed. Recalculate before applying.", systemImage: "arrow.clockwise.circle")
                     }
                 }
-                if let message = parameterError ?? errorMessage ?? model.meshLinearArrayError {
+                if let message = parameterError ?? errorMessage ?? model.meshRadialArrayError {
                     Section("Cannot Apply") {
                         Label(message, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityLabel("Linear Array error: \(message)")
+                            .accessibilityLabel("Radial Array error: \(message)")
                     }
                 }
             }
-            .navigationTitle("Linear Array")
+            .navigationTitle("Radial Array")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -149,11 +141,11 @@ struct MeshLinearArrayView: View {
             .safeAreaInset(edge: .bottom) {
                 HStack {
                     if isBusy {
-                        ProgressView(isApplying ? "Applying Linear Array" : "Analyzing mesh")
-                            .accessibilityLabel(isApplying ? "Applying Linear Array" : "Calculating Linear Array preview")
+                        ProgressView(isApplying ? "Applying Radial Array" : "Analyzing mesh")
+                            .accessibilityLabel(isApplying ? "Applying Radial Array" : "Calculating Radial Array preview")
                     }
                     Spacer()
-                    Button("Apply Linear Array") { apply() }
+                    Button("Apply Radial Array") { apply() }
                         .buttonStyle(.borderedProminent)
                         .disabled(preview == nil || previewIsStale || isBusy)
                         .accessibilityHint("Replaces the mesh and records one Undo command")
@@ -163,54 +155,60 @@ struct MeshLinearArrayView: View {
             }
         }
         .task { if preview == nil { recalculatePreview() } }
-        .onChange(of: axis) { _, _ in invalidateLocalPreview() }
-        .onChange(of: countText) { _, _ in invalidateLocalPreview() }
-        .onChange(of: spacingText) { _, _ in invalidateLocalPreview() }
+        .onChange(of: axis) { _, _ in invalidatePreviewRequest() }
+        .onChange(of: distribution) { _, _ in invalidatePreviewRequest() }
+        .onChange(of: direction) { _, _ in invalidatePreviewRequest() }
+        .onChange(of: countText) { _, _ in invalidatePreviewRequest() }
+        .onChange(of: sweepText) { _, _ in invalidatePreviewRequest() }
         .onDisappear { invalidatePreviewRequest() }
     }
 
-    private var estimate: MeshLinearArrayEstimate? { preview?.estimate }
-    private var isCalculating: Bool { previewRequestCoordinator.isCalculating }
-    private var isBusy: Bool { isCalculating || isApplying || model.isMeshLinearArrayRunning }
-    private var requestedOptions: MeshLinearArrayOptions? {
+    private var estimate: MeshRadialArrayEstimate? { preview?.estimate }
+    private var isBusy: Bool {
+        previewRequestCoordinator.isCalculating || isApplying || model.isMeshRadialArrayRunning
+    }
+    private var requestedOptions: MeshRadialArrayOptions? {
         guard let count = Int(countText.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let spacing = Double(
-                spacingText.trimmingCharacters(in: .whitespacesAndNewlines)
+              let sweep = Double(
+                sweepText.trimmingCharacters(in: .whitespacesAndNewlines)
                     .replacingOccurrences(of: ",", with: ".")) else { return nil }
-        return MeshLinearArrayOptions(axis: axis, count: count, spacingMillimeters: spacing)
+        return MeshRadialArrayOptions(
+            axis: axis,
+            distribution: distribution,
+            count: count,
+            direction: direction,
+            sweepDegrees: sweep)
     }
     private var parameterError: String? {
-        guard let options = requestedOptions else { return "Enter numeric Count and Spacing values." }
-        guard (MeshLinearArray.minimumCount...MeshLinearArray.maximumCount).contains(options.count) else {
+        guard let options = requestedOptions else { return "Enter numeric Count and Sweep values." }
+        guard (MeshRadialArray.minimumCount...MeshRadialArray.maximumCount).contains(options.count) else {
             return "Count must include the source and be between 2 and 256."
         }
-        let magnitude = abs(options.spacingMillimeters)
-        guard options.spacingMillimeters.isFinite,
-              magnitude >= MeshLinearArray.minimumSpacingMillimeters,
-              magnitude <= MeshLinearArray.maximumSpacingMillimeters else {
-            return "Spacing must be from -1000 to -0.001 mm or from 0.001 to 1000 mm."
+        if options.distribution == .openArc {
+            let magnitude = abs(options.sweepDegrees)
+            guard options.sweepDegrees.isFinite,
+                  magnitude >= MeshRadialArray.minimumSweepDegrees,
+                  magnitude <= MeshRadialArray.maximumSweepDegrees else {
+                return "Sweep must be from -359.99° to -0.01° or from 0.01° to 359.99°."
+            }
         }
         return nil
     }
     private var previewIsStale: Bool {
         guard let preview, let requestedOptions else { return preview != nil }
-        return preview.options != requestedOptions || !model.isMeshLinearArrayPreviewCurrent(preview)
+        return preview.options != requestedOptions || !model.isMeshRadialArrayPreviewCurrent(preview)
     }
     private var countBinding: Binding<Int> {
         Binding(
-            get: { min(max(Int(countText) ?? 2, MeshLinearArray.minimumCount), MeshLinearArray.maximumCount) },
+            get: { min(max(Int(countText) ?? 6, MeshRadialArray.minimumCount), MeshRadialArray.maximumCount) },
             set: { countText = String($0) })
-    }
-
-    private func invalidateLocalPreview() {
-        invalidatePreviewRequest()
     }
 
     private func invalidatePreviewRequest() {
         let requestID = previewRequestCoordinator.invalidate()
         preview = nil
         errorMessage = nil
-        model.discardMeshLinearArrayPreview(requestID: requestID)
+        model.discardMeshRadialArrayPreview(requestID: requestID)
     }
 
     private func recalculatePreview() {
@@ -219,7 +217,7 @@ struct MeshLinearArrayView: View {
         preview = nil
         errorMessage = nil
         do {
-            try model.beginMeshLinearArrayPreviewRequest(requestID)
+            try model.beginMeshRadialArrayPreviewRequest(requestID)
         } catch {
             _ = previewRequestCoordinator.finish(requestID)
             errorMessage = error.localizedDescription
@@ -228,29 +226,25 @@ struct MeshLinearArrayView: View {
         Task { @MainActor in
             await Task.yield()
             guard previewRequestCoordinator.isCurrent(requestID) else {
-                model.discardMeshLinearArrayPreview(requestID: requestID)
+                model.discardMeshRadialArrayPreview(requestID: requestID)
                 return
             }
             do {
-                let candidate = try model.makeMeshLinearArrayPreviewCandidate(
+                let candidate = try model.makeMeshRadialArrayPreviewCandidate(
                     options: requestedOptions,
                     requestID: requestID)
                 guard previewRequestCoordinator.isCurrent(requestID) else {
-                    model.discardMeshLinearArrayPreview(requestID: requestID)
+                    model.discardMeshRadialArrayPreview(requestID: requestID)
                     return
                 }
-                let accepted = model.completeMeshLinearArrayPreviewRequest(
+                let accepted = model.completeMeshRadialArrayPreviewRequest(
                     requestID: requestID,
                     candidate: candidate)
                 guard previewRequestCoordinator.finish(requestID) else { return }
-                if accepted {
-                    preview = candidate
-                    errorMessage = nil
-                } else {
-                    preview = nil
-                }
+                preview = accepted ? candidate : nil
+                if accepted { errorMessage = nil }
             } catch {
-                let accepted = model.failMeshLinearArrayPreviewRequest(
+                let accepted = model.failMeshRadialArrayPreviewRequest(
                     requestID: requestID,
                     error: error)
                 guard previewRequestCoordinator.finish(requestID) else { return }
@@ -267,7 +261,7 @@ struct MeshLinearArrayView: View {
             await Task.yield()
             defer { isApplying = false }
             do {
-                _ = try model.applyMeshLinearArray(preview: preview)
+                _ = try model.applyMeshRadialArray(preview: preview)
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription
@@ -291,6 +285,10 @@ struct MeshLinearArrayView: View {
 
     private func millimeters(_ value: Double) -> String {
         "\(value.formatted(.number.precision(.fractionLength(0...6)))) mm"
+    }
+
+    private func degrees(_ value: Double) -> String {
+        "\(value.formatted(.number.precision(.fractionLength(0...6))))°"
     }
 
     private func dimensions(_ bounds: AxisAlignedBoundingBox) -> String {

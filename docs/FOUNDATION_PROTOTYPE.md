@@ -177,7 +177,15 @@ Applyはprepared／nonthrowing commit境界を使い、`ReplaceMeshCommand` 1件
 
 vertex/triangleはcopy-majorで決定論的に並び、copy 0のsource position/indexを保持する。各copyはdetachedで、component数とboundary edge数はCount倍になる。normal、adjacency、bounds、Diagnostics topology、exact geometry duplicateをApply前に検証するが、一般collision、self-intersection、proximity weld、Boolean unionは行わない。
 
-mandatory PreviewはUUID request identityを使い、最新requestだけがUI／model Preview、error、busy状態を更新する。parameter変更とsheet dismissalはrequestを無効化してghost Previewを防ぐ。軽量runtime identity判定はUI描画でDiagnosticsやfingerprintを再計算せず、Apply prepared phaseがestimateとanalysis fingerprintを完全照合する。`ReplaceMeshCommand` 1件、record-only Autosave snapshot scope、selection／他topology Preview／Diagnostics clear、BVH／Spatial Index再構築、通常Renderer upload経路を使用する。Transform、camera、tool/mode設定は維持し、formatVersion 1には通常のresult meshだけを保存する。2,000,000 vertices、4,000,000 triangles、Count 256、768 MiB estimateが上限で、初版はMainActor同期である。Radial/Grid Array、per-copy transform、selected-face Array、non-destructive modifier、multiple objectは未実装である。詳細は`LINEAR_ARRAY.md`を参照する。
+mandatory PreviewはUUID request identityを使い、最新requestだけがUI／model Preview、error、busy状態を更新する。parameter変更とsheet dismissalはrequestを無効化してghost Previewを防ぐ。軽量runtime identity判定はUI描画でDiagnosticsやfingerprintを再計算せず、Apply prepared phaseがestimateとanalysis fingerprintを完全照合する。`ReplaceMeshCommand` 1件、record-only Autosave snapshot scope、selection／他topology Preview／Diagnostics clear、BVH／Spatial Index再構築、通常Renderer upload経路を使用する。Transform、camera、tool/mode設定は維持し、formatVersion 1には通常のresult meshだけを保存する。2,000,000 vertices、4,000,000 triangles、Count 256、768 MiB estimateが上限で、初版はMainActor同期である。Grid Array、per-copy transform、selected-face Array、non-destructive modifier、multiple objectは未実装である。詳細は`LINEAR_ARRAY.md`を参照する。
+
+## Radial Array foundation
+
+通常toolbarの`Radial Array`はlocal X/Y/Z軸とlocal originを現在Transformでworld axis/pivotへ写し、Full Circleまたはsigned Open Arcへmesh全体を破壊的に複製する。Full Circleは`±360° / Count`で終点を重複させず、Open Arcは`Sweep / (Count - 1)`で両端を含む。Countはsource copy 0を含む`2...256`である。
+
+各copyはsourceから直接Double world座標で剛体回転し、inverse Transformでlocal Floatへ格納する。実格納値をworldへ戻してradius、axis projection、signed angle、chord、triangle edge length、world areaを検証するため、translation、rotation、uniform／non-uniform scaleに対応する。copy 0とsource index順を保持し、copy間はdetachedである。axis上vertexは許可するが全vertexがaxis上のsource、Float精度で表現不能な角度、collapse、exact rotational duplicateは拒否する。
+
+mandatory PreviewはLinear Arrayと共通のUUID request coordinatorを使い、最新requestだけがUI／model状態を更新する。parameter変更とdismissalはghost Previewを防ぎ、Applyは軽量runtime identityに加えてcomplete estimate／fingerprintを再検証する。prepared/nonthrowing commit、`ReplaceMeshCommand` 1件、record-only Autosave、selection／preview／Diagnostics clear、BVH／Spatial Index再構築、通常Renderer upload、formatVersion 1維持もLinear Arrayと同じである。2,000,000 vertices、4,000,000 triangles、Count 256、768 MiBが上限である。Grid／Spiral／Helix、custom pivot、weld／Boolean、general collision、live modifier、multiple objectは未実装である。詳細は`RADIAL_ARRAY.md`を参照する。
 
 1. iPadOS 17+ の iPad で起動し、球体が表示される。
 2. 指操作と Pencil ストロークが競合しない。
