@@ -729,6 +729,10 @@ enum MeshExactSeamEdit {
             incidentFaces[Int(ids.1)].append(face)
             incidentFaces[Int(ids.2)].append(face)
         }
+        let allBoundaryEdges = incidence.edges.compactMap { edge, uses in
+            uses.count == 1 ? edge : nil
+        }
+        let allBoundaryDegree = boundaryDegree(allBoundaryEdges)
         for vertexID in vertexIDs {
             let vertexIndex = Int(vertexID)
             guard vertexIndex < incidentFaces.count,
@@ -739,12 +743,7 @@ enum MeshExactSeamEdit {
             guard connectedSubsets(faces, neighbors: incidence.faceNeighbors).count == 1 else {
                 throw MeshSeamEditError.nonManifoldEdge
             }
-            let boundaryCount = incidence.edges.reduce(into: 0) { count, item in
-                if item.value.count == 1
-                    && (item.key.low == vertexID || item.key.high == vertexID) {
-                    count += 1
-                }
-            }
+            let boundaryCount = allBoundaryDegree[vertexID, default: 0]
             guard boundaryCount == expectedBoundaryEdgeCount else {
                 throw MeshSeamEditError.nonManifoldEdge
             }
