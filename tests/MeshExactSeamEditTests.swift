@@ -113,6 +113,115 @@ final class MeshExactSeamEditTests: XCTestCase {
         }
     }
 
+    func testConservativePreflightRejectsBeforeDiagnosticsAndIncidence() throws {
+        let source = tetrahedron()
+        let exactLimit = try MeshExactSeamEdit.conservativeMemoryEstimate(
+            vertexCount: source.vertices.count,
+            indexCount: source.indices.count,
+            operation: .splitRegion
+        )
+        let instrumentation = MeshSeamMemoryInstrumentation()
+        XCTAssertThrowsError(try MeshExactSeamEdit.edit(
+            mesh: source,
+            transform: .identity,
+            selection: try selected(source, [0]),
+            operation: .splitRegion,
+            memoryLimit: exactLimit - 1,
+            memoryInstrumentation: instrumentation
+        )) {
+            XCTAssertEqual($0 as? MeshSeamEditError, .workingMemoryLimitExceeded)
+        }
+        XCTAssertEqual(instrumentation.preflightCount, 1)
+        XCTAssertEqual(instrumentation.sourceDiagnosticsCount, 0)
+        XCTAssertEqual(instrumentation.sourceIncidenceCount, 0)
+        XCTAssertEqual(instrumentation.resultFanScanCount, 0)
+
+        let accepted = MeshSeamMemoryInstrumentation()
+        XCTAssertNoThrow(try MeshExactSeamEdit.edit(
+            mesh: source,
+            transform: .identity,
+            selection: try selected(source, [0]),
+            operation: .splitRegion,
+            memoryLimit: exactLimit,
+            memoryInstrumentation: accepted
+        ))
+        XCTAssertEqual(accepted.preflightCount, 1)
+        XCTAssertEqual(accepted.sourceDiagnosticsCount, 1)
+        XCTAssertEqual(accepted.sourceIncidenceCount, 1)
+        XCTAssertEqual(accepted.resultFanScanCount, 1)
+    }
+
+    func testRefinedEstimateMatchesPreviewForSplitAndMerge() throws {
+        let source = tetrahedron()
+        let split = try MeshExactSeamEdit.edit(
+            mesh: source,
+            transform: .identity,
+            selection: try selected(source, [0]),
+            operation: .splitRegion
+        )
+        let splitExpected = try MeshExactSeamEdit.refinedMemoryEstimate(
+            sourceVertexCount: source.vertices.count,
+            sourceIndexCount: source.indices.count,
+            resultVertexCount: split.mesh.vertices.count,
+            seamVertexCount: split.estimate.seamVertexCount,
+            seamEdgeCount: split.estimate.seamEdgeCount,
+            operation: .splitRegion
+        )
+        XCTAssertEqual(split.estimate.estimatedWorkingByteCount, splitExpected)
+
+        let merge = try MeshExactSeamEdit.edit(
+            mesh: split.mesh,
+            transform: .identity,
+            selection: try selected(split.mesh, [0]),
+            operation: .mergeExactSeam
+        )
+        let mergeExpected = try MeshExactSeamEdit.refinedMemoryEstimate(
+            sourceVertexCount: split.mesh.vertices.count,
+            sourceIndexCount: split.mesh.indices.count,
+            resultVertexCount: merge.mesh.vertices.count,
+            seamVertexCount: merge.estimate.seamVertexCount,
+            seamEdgeCount: merge.estimate.seamEdgeCount,
+            operation: .mergeExactSeam
+        )
+        XCTAssertEqual(merge.estimate.estimatedWorkingByteCount, mergeExpected)
+        XCTAssertNotEqual(splitExpected, mergeExpected)
+        XCTAssertThrowsError(try MeshExactSeamEdit.conservativeMemoryEstimate(
+            vertexCount: Int.max,
+            indexCount: 3,
+            operation: .splitRegion
+        )) {
+            XCTAssertEqual($0 as? MeshSeamEditError, .arithmeticOverflow)
+        }
+    }
+
+    func testMergeRejectsSelectedComponentInteriorVertexOnlyContact() throws {
+        let split = try splitOctahedronTop()
+        let shared = appendRemoteTetrahedronSharingVertex(
+            to: split.mesh, sharedVertexID: 0)
+        XCTAssertThrowsError(try MeshExactSeamEdit.edit(
+            mesh: shared,
+            transform: .identity,
+            selection: try selected(shared, [0, 1, 2, 3]),
+            operation: .mergeExactSeam
+        )) {
+            XCTAssertEqual($0 as? MeshSeamEditError, .vertexOnlyContact)
+        }
+    }
+
+    func testMergeRejectsCounterpartComponentInteriorVertexOnlyContact() throws {
+        let split = try splitOctahedronTop()
+        let shared = appendRemoteTetrahedronSharingVertex(
+            to: split.mesh, sharedVertexID: 1)
+        XCTAssertThrowsError(try MeshExactSeamEdit.edit(
+            mesh: shared,
+            transform: .identity,
+            selection: try selected(shared, [0, 1, 2, 3]),
+            operation: .mergeExactSeam
+        )) {
+            XCTAssertEqual($0 as? MeshSeamEditError, .vertexOnlyContact)
+        }
+    }
+
     func testMergeUsesCounterpartVerticesAndCompactsInSourceOrder() throws {
         let source = tetrahedron()
         let split = try MeshExactSeamEdit.edit(
@@ -370,6 +479,45 @@ final class MeshExactSeamEditTests: XCTestCase {
             base, base + 1, base + 3,
             base, base + 3, base + 2,
             base + 1, base + 2, base + 3
+        ]
+        return mesh(positions, source.indices + remote)
+    }
+
+    private func splitOctahedronTop() throws -> MeshSeamEditResult {
+        let source = mesh(
+            [
+                SIMD3<Float>(0, 1, 0), SIMD3<Float>(0, -1, 0),
+                SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 0, 1),
+                SIMD3<Float>(-1, 0, 0), SIMD3<Float>(0, 0, -1)
+            ],
+            [
+                0, 3, 2, 0, 4, 3, 0, 5, 4, 0, 2, 5,
+                1, 2, 3, 1, 3, 4, 1, 4, 5, 1, 5, 2
+            ]
+        )
+        return try MeshExactSeamEdit.edit(
+            mesh: source,
+            transform: .identity,
+            selection: try selected(source, [0, 1, 2, 3]),
+            operation: .splitRegion
+        )
+    }
+
+    private func appendRemoteTetrahedronSharingVertex(
+        to source: EditableMesh,
+        sharedVertexID: UInt32
+    ) -> EditableMesh {
+        var positions = source.vertices.map(\.position)
+        let base = UInt32(positions.count)
+        let anchor = source.vertices[Int(sharedVertexID)].position
+        positions.append(anchor + SIMD3<Float>(8, 0, 0))
+        positions.append(anchor + SIMD3<Float>(8, 1, 0))
+        positions.append(anchor + SIMD3<Float>(8, 0, 1))
+        let remote: [UInt32] = [
+            sharedVertexID, base + 1, base,
+            sharedVertexID, base, base + 2,
+            sharedVertexID, base + 2, base + 1,
+            base, base + 1, base + 2
         ]
         return mesh(positions, source.indices + remote)
     }

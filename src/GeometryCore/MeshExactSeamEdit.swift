@@ -82,6 +82,18 @@ struct MeshSeamEditResult: Equatable {
     let analysisFingerprint: UInt64
 }
 
+final class MeshSeamMemoryInstrumentation {
+    private(set) var preflightCount = 0
+    private(set) var sourceDiagnosticsCount = 0
+    private(set) var sourceIncidenceCount = 0
+    private(set) var resultFanScanCount = 0
+
+    fileprivate func recordPreflight() { preflightCount += 1 }
+    fileprivate func recordSourceDiagnostics() { sourceDiagnosticsCount += 1 }
+    fileprivate func recordSourceIncidence() { sourceIncidenceCount += 1 }
+    fileprivate func recordResultFanScan() { resultFanScanCount += 1 }
+}
+
 enum MeshSeamEditError: Error, Equatable, LocalizedError {
     case invalidMesh
     case nonFiniteValue
@@ -212,6 +224,8 @@ enum MeshExactSeamEdit {
         let counterpartComponent: [Int]?
         let counterpartBySelectedVertex: [UInt32: UInt32]
         let fingerprint: UInt64
+        let memoryLimit: Int
+        let memoryInstrumentation: MeshSeamMemoryInstrumentation?
     }
 
     private struct MeshIncidence {
@@ -269,10 +283,21 @@ enum MeshExactSeamEdit {
         mesh: EditableMesh,
         transform: ObjectTransform,
         selection: FaceSelection,
-        operation: MeshSeamOperation
+        operation: MeshSeamOperation,
+        memoryLimit: Int = maximumWorkingBytes,
+        memoryInstrumentation: MeshSeamMemoryInstrumentation? = nil
     ) throws -> MeshSeamEditResult {
+        try conservativeMemoryPreflight(
+            vertexCount: mesh.vertices.count,
+            indexCount: mesh.indices.count,
+            operation: operation,
+            memoryLimit: memoryLimit,
+            instrumentation: memoryInstrumentation
+        )
         let analysis = try analyze(mesh: mesh, transform: transform,
-                                   selection: selection, operation: operation)
+                                   selection: selection, operation: operation,
+                                   memoryLimit: memoryLimit,
+                                   memoryInstrumentation: memoryInstrumentation)
         switch operation {
         case .splitRegion: return try split(mesh: mesh, analysis: analysis)
         case .mergeExactSeam: return try merge(mesh: mesh, analysis: analysis)
@@ -289,7 +314,9 @@ enum MeshExactSeamEdit {
         mesh: EditableMesh,
         transform: ObjectTransform,
         selection: FaceSelection,
-        operation: MeshSeamOperation
+        operation: MeshSeamOperation,
+        memoryLimit: Int,
+        memoryInstrumentation: MeshSeamMemoryInstrumentation?
     ) throws -> Analysis {
         guard transform.isFinite,
               transform.scale.x > 0, transform.scale.y > 0, transform.scale.z > 0 else {
@@ -298,8 +325,10 @@ enum MeshExactSeamEdit {
         guard selection.matches(mesh) else { throw MeshSeamEditError.staleSelection }
         let selected = selection.selectedFaceIDs()
         guard !selected.isEmpty else { throw MeshSeamEditError.emptySelection }
-        let topology = try validateSource(mesh)
-        let incidence = try buildIncidence(mesh)
+        let topology = try validateSource(
+            mesh, instrumentation: memoryInstrumentation)
+        let incidence = try buildIncidence(
+            mesh, instrumentation: memoryInstrumentation)
         let edges = incidence.edges
         let faceNeighbors = incidence.faceNeighbors
         let components = incidence.components
@@ -409,6 +438,13 @@ enum MeshExactSeamEdit {
             guard mappedVertices.allSatisfy({ counterpartBoundaryDegree[$0] == 2 }) else {
                 throw MeshSeamEditError.ambiguousCounterpart
             }
+            guard incidence.componentVertices[hostID].allSatisfy({
+                incidence.vertexComponentIDs[Int($0)] == [hostID]
+            }), incidence.componentVertices[counterpartID].allSatisfy({
+                incidence.vertexComponentIDs[Int($0)] == [counterpartID]
+            }) else {
+                throw MeshSeamEditError.vertexOnlyContact
+            }
             for edge in seamEdges {
                 guard let a = pairing[edge.low], let b = pairing[edge.high],
                       counterpartBoundary.contains(Edge(a, b)) else {
@@ -438,7 +474,9 @@ enum MeshExactSeamEdit {
                         sourceTopology: topology, seamEdges: seamEdges,
                         seamVertices: seamVertices.sorted(), hostComponent: host,
                         counterpartComponent: counterpart,
-                        counterpartBySelectedVertex: pairing, fingerprint: fingerprint)
+                        counterpartBySelectedVertex: pairing, fingerprint: fingerprint,
+                        memoryLimit: memoryLimit,
+                        memoryInstrumentation: memoryInstrumentation)
     }
 
     private static func split(mesh: EditableMesh, analysis: Analysis) throws -> MeshSeamEditResult {
@@ -447,7 +485,8 @@ enum MeshExactSeamEdit {
             source: mesh, resultVertices: resultVertexCount,
             seamVertices: analysis.seamVertices.count,
             seamEdges: analysis.seamEdges.count,
-            operation: .splitRegion)
+            operation: .splitRegion,
+            memoryLimit: analysis.memoryLimit)
         guard resultVertexCount <= Int(UInt32.max) else { throw MeshSeamEditError.indexOverflow }
         var vertices = mesh.vertices
         var duplicate: [UInt32: UInt32] = [:]
@@ -467,7 +506,8 @@ enum MeshExactSeamEdit {
         try validateVertexFans(
             mesh: result,
             vertexIDs: analysis.seamVertices + duplicate.values.sorted(),
-            expectedBoundaryEdgeCount: 2
+            expectedBoundaryEdgeCount: 2,
+            instrumentation: analysis.memoryInstrumentation
         )
         let estimate = try validateResult(mesh: mesh, result: result, analysis: analysis,
                                           operation: .splitRegion)
@@ -482,7 +522,8 @@ enum MeshExactSeamEdit {
             source: mesh, resultVertices: resultVertexCount,
             seamVertices: analysis.seamVertices.count,
             seamEdges: analysis.seamEdges.count,
-            operation: .mergeExactSeam)
+            operation: .mergeExactSeam,
+            memoryLimit: analysis.memoryLimit)
         let removed = Set(analysis.seamVertices)
         var oldToNew = Array(repeating: UInt32.max, count: mesh.vertices.count)
         var vertices: [MeshVertex] = []
@@ -514,7 +555,8 @@ enum MeshExactSeamEdit {
         try validateVertexFans(
             mesh: result,
             vertexIDs: mergedSeamVertices.sorted(),
-            expectedBoundaryEdgeCount: 0
+            expectedBoundaryEdgeCount: 0,
+            instrumentation: analysis.memoryInstrumentation
         )
         let estimate = try validateResult(mesh: mesh, result: result, analysis: analysis,
                                           operation: .mergeExactSeam)
@@ -522,12 +564,16 @@ enum MeshExactSeamEdit {
                                   analysisFingerprint: analysis.fingerprint)
     }
 
-    private static func validateSource(_ mesh: EditableMesh) throws -> MeshTopologyReport {
+    private static func validateSource(
+        _ mesh: EditableMesh,
+        instrumentation: MeshSeamMemoryInstrumentation? = nil
+    ) throws -> MeshTopologyReport {
         guard !mesh.vertices.isEmpty, !mesh.indices.isEmpty,
               mesh.indices.count.isMultiple(of: 3) else { throw MeshSeamEditError.invalidMesh }
         guard mesh.vertices.allSatisfy({ $0.position.allFinite && $0.normal.allFinite }) else {
             throw MeshSeamEditError.nonFiniteValue
         }
+        instrumentation?.recordSourceDiagnostics()
         let topology = MeshTopologyDiagnostics.analyze(mesh)
         guard !topology.hasInvalidStructure, topology.invalidIndexTriangleCount == 0 else {
             throw MeshSeamEditError.invalidMesh
@@ -572,7 +618,8 @@ enum MeshExactSeamEdit {
             source: mesh, resultVertices: result.vertices.count,
             seamVertices: analysis.seamVertices.count,
             seamEdges: analysis.seamEdges.count,
-            operation: operation)
+            operation: operation,
+            memoryLimit: analysis.memoryLimit)
         return MeshSeamEditEstimate(
             operation: operation, selectedFaceCount: analysis.selected.count,
             hostComponentFaceCount: analysis.hostComponent.count,
@@ -615,7 +662,11 @@ enum MeshExactSeamEdit {
         return visited.sorted()
     }
 
-    private static func buildIncidence(_ mesh: EditableMesh) throws -> MeshIncidence {
+    private static func buildIncidence(
+        _ mesh: EditableMesh,
+        instrumentation: MeshSeamMemoryInstrumentation? = nil
+    ) throws -> MeshIncidence {
+        instrumentation?.recordSourceIncidence()
         let triangleCount = mesh.indices.count / 3
         var edges: [Edge: [EdgeUse]] = [:]
         edges.reserveCapacity(try multiply(triangleCount, 2))
@@ -719,32 +770,65 @@ enum MeshExactSeamEdit {
     private static func validateVertexFans(
         mesh: EditableMesh,
         vertexIDs: [UInt32],
-        expectedBoundaryEdgeCount: Int
+        expectedBoundaryEdgeCount: Int,
+        instrumentation: MeshSeamMemoryInstrumentation?
     ) throws {
-        let incidence = try buildIncidence(mesh)
-        var incidentFaces = Array(repeating: [Int](), count: mesh.vertices.count)
+        instrumentation?.recordResultFanScan()
+        let targets = Set(vertexIDs)
+        var incidentFaces: [UInt32: Set<Int>] = [:]
+        var incidentEdgeFaces: [UInt32: [Edge: [Int]]] = [:]
+        incidentFaces.reserveCapacity(targets.count)
+        incidentEdgeFaces.reserveCapacity(targets.count)
         for face in 0..<(mesh.indices.count / 3) {
             let ids = try triangle(mesh, face)
-            incidentFaces[Int(ids.0)].append(face)
-            incidentFaces[Int(ids.1)].append(face)
-            incidentFaces[Int(ids.2)].append(face)
+            let triangleVertices = [ids.0, ids.1, ids.2]
+            for (offset, vertexID) in triangleVertices.enumerated()
+                where targets.contains(vertexID) {
+                incidentFaces[vertexID, default: []].insert(face)
+                let first = triangleVertices[(offset + 1) % 3]
+                let second = triangleVertices[(offset + 2) % 3]
+                incidentEdgeFaces[vertexID, default: [:]][
+                    Edge(vertexID, first), default: []
+                ].append(face)
+                incidentEdgeFaces[vertexID, default: [:]][
+                    Edge(vertexID, second), default: []
+                ].append(face)
+            }
         }
-        let allBoundaryEdges = incidence.edges.compactMap { edge, uses in
-            uses.count == 1 ? edge : nil
-        }
-        let allBoundaryDegree = boundaryDegree(allBoundaryEdges)
         for vertexID in vertexIDs {
-            let vertexIndex = Int(vertexID)
-            guard vertexIndex < incidentFaces.count,
-                  !incidentFaces[vertexIndex].isEmpty else {
+            guard let faces = incidentFaces[vertexID], !faces.isEmpty,
+                  let edgeFaces = incidentEdgeFaces[vertexID] else {
                 throw MeshSeamEditError.validationFailed
             }
-            let faces = Set(incidentFaces[vertexIndex])
-            guard connectedSubsets(faces, neighbors: incidence.faceNeighbors).count == 1 else {
+            var boundaryCount = 0
+            var neighbors: [Int: Set<Int>] = [:]
+            for face in faces { neighbors[face] = [] }
+            for uses in edgeFaces.values {
+                if uses.count == 1 {
+                    boundaryCount += 1
+                } else if uses.count == 2 {
+                    neighbors[uses[0], default: []].insert(uses[1])
+                    neighbors[uses[1], default: []].insert(uses[0])
+                } else {
+                    throw MeshSeamEditError.nonManifoldEdge
+                }
+            }
+            guard boundaryCount == expectedBoundaryEdgeCount else {
                 throw MeshSeamEditError.nonManifoldEdge
             }
-            let boundaryCount = allBoundaryDegree[vertexID, default: 0]
-            guard boundaryCount == expectedBoundaryEdgeCount else {
+            guard let seed = faces.min() else { throw MeshSeamEditError.validationFailed }
+            var visited: Set<Int> = [seed]
+            var queue = [seed]
+            var cursor = 0
+            while cursor < queue.count {
+                let face = queue[cursor]
+                cursor += 1
+                for neighbor in neighbors[face, default: []].sorted()
+                    where visited.insert(neighbor).inserted {
+                    queue.append(neighbor)
+                }
+            }
+            guard visited.count == faces.count else {
                 throw MeshSeamEditError.nonManifoldEdge
             }
         }
@@ -807,7 +891,8 @@ enum MeshExactSeamEdit {
         resultVertices: Int,
         seamVertices: Int,
         seamEdges: Int,
-        operation: MeshSeamOperation
+        operation: MeshSeamOperation,
+        memoryLimit: Int
     ) throws -> Int {
         let triangles = source.indices.count / 3
         guard resultVertices <= maximumVertices else {
@@ -815,38 +900,131 @@ enum MeshExactSeamEdit {
         }
         guard triangles <= maximumTriangles else { throw MeshSeamEditError.triangleLimitExceeded }
         guard resultVertices <= Int(UInt32.max) else { throw MeshSeamEditError.indexOverflow }
-        let indexCount = try multiply(triangles, 3)
-        guard indexCount == source.indices.count else {
+        guard try multiply(triangles, 3) == source.indices.count else {
+            throw MeshSeamEditError.arithmeticOverflow
+        }
+        let indexCount = source.indices.count
+        let approximate = try refinedMemoryEstimate(
+            sourceVertexCount: source.vertices.count,
+            sourceIndexCount: indexCount,
+            resultVertexCount: resultVertices,
+            seamVertexCount: seamVertices,
+            seamEdgeCount: seamEdges,
+            operation: operation
+        )
+        guard approximate <= memoryLimit else {
+            throw MeshSeamEditError.workingMemoryLimitExceeded
+        }
+        return approximate
+    }
+
+    static func conservativeMemoryEstimate(
+        vertexCount: Int,
+        indexCount: Int,
+        operation: MeshSeamOperation
+    ) throws -> Int {
+        let resultVertexCount = operation == .splitRegion
+            ? try add(vertexCount, vertexCount)
+            : vertexCount
+        return try peakMemoryEstimate(
+            sourceVertexCount: vertexCount,
+            sourceIndexCount: indexCount,
+            resultVertexCount: resultVertexCount,
+            seamVertexCount: vertexCount,
+            seamEdgeCount: indexCount,
+            operation: operation
+        )
+    }
+
+    static func refinedMemoryEstimate(
+        sourceVertexCount: Int,
+        sourceIndexCount: Int,
+        resultVertexCount: Int,
+        seamVertexCount: Int,
+        seamEdgeCount: Int,
+        operation: MeshSeamOperation
+    ) throws -> Int {
+        try peakMemoryEstimate(
+            sourceVertexCount: sourceVertexCount,
+            sourceIndexCount: sourceIndexCount,
+            resultVertexCount: resultVertexCount,
+            seamVertexCount: seamVertexCount,
+            seamEdgeCount: seamEdgeCount,
+            operation: operation
+        )
+    }
+
+    private static func conservativeMemoryPreflight(
+        vertexCount: Int,
+        indexCount: Int,
+        operation: MeshSeamOperation,
+        memoryLimit: Int,
+        instrumentation: MeshSeamMemoryInstrumentation?
+    ) throws {
+        instrumentation?.recordPreflight()
+        guard vertexCount <= maximumVertices else {
+            throw MeshSeamEditError.vertexLimitExceeded
+        }
+        guard indexCount.isMultiple(of: 3) else {
+            throw MeshSeamEditError.invalidMesh
+        }
+        guard indexCount / 3 <= maximumTriangles else {
+            throw MeshSeamEditError.triangleLimitExceeded
+        }
+        guard vertexCount <= Int(UInt32.max) else {
+            throw MeshSeamEditError.indexOverflow
+        }
+        let estimate = try conservativeMemoryEstimate(
+            vertexCount: vertexCount,
+            indexCount: indexCount,
+            operation: operation
+        )
+        guard estimate <= memoryLimit else {
+            throw MeshSeamEditError.workingMemoryLimitExceeded
+        }
+    }
+
+    private static func peakMemoryEstimate(
+        sourceVertexCount: Int,
+        sourceIndexCount: Int,
+        resultVertexCount: Int,
+        seamVertexCount: Int,
+        seamEdgeCount: Int,
+        operation: MeshSeamOperation
+    ) throws -> Int {
+        guard sourceVertexCount >= 0, sourceIndexCount >= 0,
+              resultVertexCount >= 0, seamVertexCount >= 0,
+              seamEdgeCount >= 0 else {
+            throw MeshSeamEditError.arithmeticOverflow
+        }
+        let triangleCount = sourceIndexCount / 3
+        guard try multiply(triangleCount, 3) == sourceIndexCount else {
             throw MeshSeamEditError.arithmeticOverflow
         }
         var approximate = 0
         func account(_ count: Int, _ bytesPerItem: Int) throws {
             approximate = try add(approximate, multiply(count, bytesPerItem))
         }
-        // Source, result, before/after history snapshots, and Renderer staging.
-        try account(source.vertices.count, 64 * 3)
-        try account(source.indices.count, 4 * 3)
-        try account(resultVertices, 64 * 4)
-        try account(indexCount, 4 * 4)
-        // Edge dictionary/uses, face neighbors, component labels/lists/vertex sets.
-        try account(indexCount, 80)
-        try account(triangles, 96)
-        try account(source.vertices.count, 80)
-        // Exact-position incidence, boundary maps, selected/host/remainder sets, pairing.
-        try account(source.vertices.count, 64)
-        try account(indexCount, 32)
-        try account(try add(seamVertices, seamEdges), 160)
-        // Normal rebuild, adjacency, Diagnostics, Preview, BVH, and Spatial Index.
-        try account(resultVertices, 160)
-        try account(indexCount, 48)
-        try account(triangles, 96)
+        try account(sourceVertexCount, 64 * 3)
+        try account(sourceIndexCount, 4 * 3)
+        try account(resultVertexCount, 64 * 4)
+        try account(sourceIndexCount, 4 * 4)
+        try account(sourceIndexCount, 112)
+        try account(triangleCount, 192)
+        try account(sourceVertexCount, 144)
+        try account(sourceVertexCount, 64)
+        try account(sourceIndexCount, 32)
+        try account(try add(seamVertexCount, seamEdgeCount), 160)
+        try account(resultVertexCount, 160)
+        try account(sourceIndexCount, 48)
+        try account(triangleCount, 96)
+        try account(try add(seamVertexCount, seamEdgeCount), 96)
+        try account(resultVertexCount, 96)
+        try account(triangleCount, 80)
         if operation == .splitRegion {
-            try account(seamVertices, 64)
+            try account(seamVertexCount, 64)
         } else {
-            try account(source.vertices.count, 8)
-        }
-        guard approximate <= maximumWorkingBytes else {
-            throw MeshSeamEditError.workingMemoryLimitExceeded
+            try account(sourceVertexCount, 8)
         }
         return approximate
     }
