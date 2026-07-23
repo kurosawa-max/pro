@@ -226,6 +226,7 @@ final class MeshExactSeamEditTests: XCTestCase {
         try model.beginMeshSeamEditPreviewRequest(requestA)
         let candidateA = try model.makeMeshSeamEditPreviewCandidate(
             operation: .splitRegion, requestID: requestA)
+        model.discardMeshSeamEditPreview(requestID: requestA)
         let requestB = UUID()
         try model.beginMeshSeamEditPreviewRequest(requestB)
         XCTAssertFalse(model.completeMeshSeamEditPreviewRequest(
