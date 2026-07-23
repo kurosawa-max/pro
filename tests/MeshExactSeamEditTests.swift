@@ -47,6 +47,72 @@ final class MeshExactSeamEditTests: XCTestCase {
                        MeshTopologyDiagnostics.analyze(source))
     }
 
+    func testMultiFaceSplitMergeRoundTripWithTransformAndRemoteComponent() throws {
+        let first = tetrahedron()
+        let source = twoTetrahedra()
+        let split = try MeshExactSeamEdit.edit(
+            mesh: source,
+            transform: transformed(),
+            selection: try selected(source, [0, 1]),
+            operation: .splitRegion
+        )
+        XCTAssertEqual(split.mesh.indices.count, source.indices.count)
+        XCTAssertEqual(split.estimate.resultingComponentCount,
+                       split.estimate.sourceComponentCount + 1)
+        XCTAssertEqual(split.estimate.resultingBoundaryEdgeCount,
+                       split.estimate.sourceBoundaryEdgeCount + 2 * split.estimate.seamEdgeCount)
+        XCTAssertEqual(
+            Array(split.mesh.vertices.prefix(source.vertices.count)).map(\.position),
+            source.vertices.map(\.position)
+        )
+        XCTAssertEqual(Array(split.mesh.indices[(first.indices.count)...]),
+                       Array(source.indices[(first.indices.count)...]))
+
+        let merge = try MeshExactSeamEdit.edit(
+            mesh: split.mesh,
+            transform: transformed(),
+            selection: try selected(split.mesh, [0, 1]),
+            operation: .mergeExactSeam
+        )
+        XCTAssertEqual(merge.mesh.vertices.map(\.position), source.vertices.map(\.position))
+        XCTAssertEqual(merge.mesh.indices, source.indices)
+        XCTAssertEqual(merge.mesh.bounds, source.bounds)
+    }
+
+    func testSplitRejectsVertexOnlyContactWithOutsideComponentExactly() throws {
+        let source = tetrahedronSharingVertexWithRemoteComponent()
+        XCTAssertThrowsError(try MeshExactSeamEdit.edit(
+            mesh: source,
+            transform: .identity,
+            selection: try selected(source, [0]),
+            operation: .splitRegion
+        )) {
+            XCTAssertEqual($0 as? MeshSeamEditError, .vertexOnlyContact)
+        }
+    }
+
+    func testMergeRejectsThirdExactPositionVertexAsAmbiguous() throws {
+        let source = tetrahedron()
+        let split = try MeshExactSeamEdit.edit(
+            mesh: source,
+            transform: .identity,
+            selection: try selected(source, [0]),
+            operation: .splitRegion
+        )
+        let augmented = appendRemoteTetrahedron(
+            to: split.mesh,
+            firstPosition: source.vertices[0].position
+        )
+        XCTAssertThrowsError(try MeshExactSeamEdit.edit(
+            mesh: augmented,
+            transform: .identity,
+            selection: try selected(augmented, [0]),
+            operation: .mergeExactSeam
+        )) {
+            XCTAssertEqual($0 as? MeshSeamEditError, .ambiguousCounterpart)
+        }
+    }
+
     func testMergeUsesCounterpartVerticesAndCompactsInSourceOrder() throws {
         let source = tetrahedron()
         let split = try MeshExactSeamEdit.edit(
@@ -80,7 +146,9 @@ final class MeshExactSeamEditTests: XCTestCase {
         let detached = twoTetrahedra()
         XCTAssertThrowsError(try MeshExactSeamEdit.edit(
             mesh: detached, transform: .identity, selection: try selected(detached, [0, 4]),
-            operation: .splitRegion))
+            operation: .splitRegion)) {
+            XCTAssertEqual($0 as? MeshSeamEditError, .multipleHostComponents)
+        }
         XCTAssertThrowsError(try MeshExactSeamEdit.edit(
             mesh: source, transform: .identity, selection: try selected(source, [0, 1, 2, 3]),
             operation: .splitRegion)) { XCTAssertEqual($0 as? MeshSeamEditError, .wholeComponentSelected) }
@@ -90,7 +158,9 @@ final class MeshExactSeamEditTests: XCTestCase {
             [0, 1, 2, 0, 2, 3])
         XCTAssertThrowsError(try MeshExactSeamEdit.edit(
             mesh: open, transform: .identity, selection: try selected(open, [0]),
-            operation: .splitRegion))
+            operation: .splitRegion)) {
+            XCTAssertEqual($0 as? MeshSeamEditError, .selectedRegionTouchesOpenBoundary)
+        }
     }
 
     func testMergeRequiresCompleteComponentAndRejectsMissingCounterpart() throws {
@@ -143,6 +213,40 @@ final class MeshExactSeamEditTests: XCTestCase {
         XCTAssertTrue(coordinator.isCalculating)
         XCTAssertTrue(coordinator.finish(second))
         XCTAssertFalse(coordinator.isCalculating)
+    }
+
+    func testWorkspaceRequestIdentityRejectsOldSuccessFailureAndOperationChange() throws {
+        let model = WorkspaceModel()
+        model.mesh = tetrahedron()
+        model.setInteractionMode(.faceSelect)
+        XCTAssertTrue(model.applyFaceSelectionHit(0))
+        try model.prepareForMeshSeamEdit()
+
+        let requestA = UUID()
+        try model.beginMeshSeamEditPreviewRequest(requestA)
+        let candidateA = try model.makeMeshSeamEditPreviewCandidate(
+            operation: .splitRegion, requestID: requestA)
+        let requestB = UUID()
+        try model.beginMeshSeamEditPreviewRequest(requestB)
+        XCTAssertFalse(model.completeMeshSeamEditPreviewRequest(
+            requestID: requestA, candidate: candidateA))
+        XCTAssertNil(model.meshSeamEditPreview)
+        XCTAssertTrue(model.isMeshSeamEditRunning)
+
+        let candidateB = try model.makeMeshSeamEditPreviewCandidate(
+            operation: .splitRegion, requestID: requestB)
+        XCTAssertTrue(model.completeMeshSeamEditPreviewRequest(
+            requestID: requestB, candidate: candidateB))
+        XCTAssertFalse(model.isMeshSeamEditRunning)
+        XCTAssertEqual(model.meshSeamEditPreview, candidateB)
+
+        let invalidation = UUID()
+        model.discardMeshSeamEditPreview(requestID: invalidation)
+        XCTAssertNil(model.meshSeamEditPreview)
+        XCTAssertThrowsError(try model.applyMeshSeamEdit(preview: candidateB)) {
+            XCTAssertEqual($0 as? MeshSeamEditError, .stalePreview)
+        }
+        XCTAssertFalse(model.isMeshSeamEditRunning)
     }
 
     func testWorkspaceSplitIsOneUndoCommandAndUndoRedoClearRuntimeSelection() throws {
@@ -233,6 +337,42 @@ final class MeshExactSeamEditTests: XCTestCase {
         let shifted = first.vertices.map { $0.position + SIMD3<Float>(5, 0, 0) }
         return mesh(first.vertices.map(\.position) + shifted,
                     first.indices + first.indices.map { $0 + 4 })
+    }
+
+    private func tetrahedronSharingVertexWithRemoteComponent() -> EditableMesh {
+        let source = tetrahedron()
+        let positions = source.vertices.map(\.position) + [
+            SIMD3<Float>(8, 0, 0),
+            SIMD3<Float>(9, 1, 0),
+            SIMD3<Float>(9, 0, 1)
+        ]
+        let remote: [UInt32] = [
+            0, 4, 5,
+            0, 6, 4,
+            0, 5, 6,
+            4, 6, 5
+        ]
+        return mesh(positions, source.indices + remote)
+    }
+
+    private func appendRemoteTetrahedron(
+        to source: EditableMesh,
+        firstPosition: SIMD3<Float>
+    ) -> EditableMesh {
+        let base = UInt32(source.vertices.count)
+        let positions = source.vertices.map(\.position) + [
+            firstPosition,
+            firstPosition + SIMD3<Float>(7, 1, 0),
+            firstPosition + SIMD3<Float>(7, 0, 1),
+            firstPosition + SIMD3<Float>(8, 1, 1)
+        ]
+        let remote: [UInt32] = [
+            base, base + 2, base + 1,
+            base, base + 1, base + 3,
+            base, base + 3, base + 2,
+            base + 1, base + 2, base + 3
+        ]
+        return mesh(positions, source.indices + remote)
     }
 
     private func transformed() -> ObjectTransform {

@@ -197,6 +197,6 @@ mandatory PreviewはLinear Arrayと共通のUUID request coordinatorを使い、
 
 ## Exact Seam Merge / Split foundation
 
-Face Selectの単一edge-connected regionを、selected側の境界vertexだけ複製して2つのdetached componentへ分離する。source vertex／triangle順、face ID、position、bounds、winding、triangle countを維持し、cap／wall／gapは生成しない。
+Face Selectの単一edge-connected regionを、selected側の境界vertexだけ複製して2つのdetached componentへ分離する。source vertex／triangle順、face ID、position、bounds、winding、triangle countを維持し、cap／wall／gapは生成しない。全vertexのcomponent incidenceを構築し、host外componentとのvertex-only contactも拒否する。
 
-Split由来のselected component全体と別componentのsingle boundary loopを、`+0`／`-0`だけ正規化したbit-exact local Float positionで一対一対応させて再接続する。counterpart側をsurvivorとしてselected seam duplicateだけを決定論的にcompactする。曖昧pair、同方向winding、non-manifold／duplicate結果はrepairせず拒否する。PreviewはUUID identityと完全plan fingerprintへ結合し、Applyはprepared BVH後の1 install、1 ReplaceMeshCommand、1 Autosaveを使う。詳細は`EXACT_SEAM_MERGE_SPLIT.md`を参照する。
+Split由来のselected component全体と別componentのsingle boundary loopを、`+0`／`-0`だけ正規化したbit-exact local Float positionで一対一対応させて再接続する。全vertex exact-position incidence、counterpart loop、result vertex fanを独立検証し、第三候補やcomponent共有vertexを拒否する。counterpart側をsurvivorとしてselected seam duplicateだけを決定論的にcompactする。曖昧pair、同方向winding、non-manifold／duplicate結果はrepairせず拒否する。PreviewはUUID identityと完全plan fingerprintへ結合し、Applyはprepared BVH後の1 install、1 ReplaceMeshCommand、1 Autosaveを使う。詳細は`EXACT_SEAM_MERGE_SPLIT.md`を参照する。

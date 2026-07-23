@@ -200,7 +200,11 @@ enum MeshExactSeamEdit {
         let selectedSet: Set<Int>
         let components: [[Int]]
         let componentOfFace: [Int]
+        let componentVertices: [Set<UInt32>]
+        let vertexComponentIDs: [[Int]]
         let edges: [Edge: [EdgeUse]]
+        let boundaryEdgesByComponent: [[Edge]]
+        let exactPositionVertices: [ExactPositionKey: [UInt32]]
         let sourceTopology: MeshTopologyReport
         let seamEdges: [Edge]
         let seamVertices: [UInt32]
@@ -208,6 +212,17 @@ enum MeshExactSeamEdit {
         let counterpartComponent: [Int]?
         let counterpartBySelectedVertex: [UInt32: UInt32]
         let fingerprint: UInt64
+    }
+
+    private struct MeshIncidence {
+        let edges: [Edge: [EdgeUse]]
+        let faceNeighbors: [Set<Int>]
+        let components: [[Int]]
+        let componentOfFace: [Int]
+        let componentVertices: [Set<UInt32>]
+        let vertexComponentIDs: [[Int]]
+        let boundaryEdgesByComponent: [[Edge]]
+        let exactPositionVertices: [ExactPositionKey: [UInt32]]
     }
 
     static func makePreview(
@@ -284,31 +299,18 @@ enum MeshExactSeamEdit {
         let selected = selection.selectedFaceIDs()
         guard !selected.isEmpty else { throw MeshSeamEditError.emptySelection }
         let topology = try validateSource(mesh)
-        let triangleCount = mesh.indices.count / 3
-        var edges: [Edge: [EdgeUse]] = [:]
-        var faceNeighbors = Array(repeating: Set<Int>(), count: triangleCount)
-        for face in 0..<triangleCount {
-            let ids = try triangle(mesh, face)
-            for (from, to) in [(ids.0, ids.1), (ids.1, ids.2), (ids.2, ids.0)] {
-                edges[Edge(from, to), default: []].append(EdgeUse(face: face, from: from, to: to))
-            }
-        }
-        for uses in edges.values where uses.count > 1 {
-            for i in uses.indices {
-                for j in uses.indices where i < j {
-                    faceNeighbors[uses[i].face].insert(uses[j].face)
-                    faceNeighbors[uses[j].face].insert(uses[i].face)
-                }
-            }
-        }
-        let (components, componentOfFace) = components(neighbors: faceNeighbors)
+        let incidence = try buildIncidence(mesh)
+        let edges = incidence.edges
+        let faceNeighbors = incidence.faceNeighbors
+        let components = incidence.components
+        let componentOfFace = incidence.componentOfFace
         let selectedSet = Set(selected)
-        let selectedComponents = connectedSubsets(selectedSet, neighbors: faceNeighbors)
-        guard selectedComponents.count == 1 else { throw MeshSeamEditError.disconnectedSelection }
         let hostIDs = Set(selected.map { componentOfFace[$0] })
         guard hostIDs.count == 1, let hostID = hostIDs.first else {
             throw MeshSeamEditError.multipleHostComponents
         }
+        let selectedComponents = connectedSubsets(selectedSet, neighbors: faceNeighbors)
+        guard selectedComponents.count == 1 else { throw MeshSeamEditError.disconnectedSelection }
         let host = components[hostID]
 
         var seamEdges: [Edge] = []
@@ -329,10 +331,12 @@ enum MeshExactSeamEdit {
             guard connectedSubsets(remainder, neighbors: faceNeighbors).count == 1 else {
                 throw MeshSeamEditError.disconnectedRemainder
             }
-            for (edge, uses) in edges where uses.count == 1 {
-                if selectedSet.contains(uses[0].face) { throw MeshSeamEditError.selectedRegionTouchesOpenBoundary }
-                if seamEdges.contains(where: { $0.low == edge.low || $0.low == edge.high
-                    || $0.high == edge.low || $0.high == edge.high }) {
+            let seamVertexSet = Set(seamEdges.flatMap { [$0.low, $0.high] })
+            for edge in incidence.boundaryEdgesByComponent[hostID] {
+                guard let use = edges[edge]?.first else { throw MeshSeamEditError.invalidBoundary }
+                if selectedSet.contains(use.face)
+                    || seamVertexSet.contains(edge.low)
+                    || seamVertexSet.contains(edge.high) {
                     throw MeshSeamEditError.selectedRegionTouchesOpenBoundary
                 }
             }
@@ -350,52 +354,61 @@ enum MeshExactSeamEdit {
                 == seamVertices.count else { throw MeshSeamEditError.invalidBoundary }
 
         if operation == .splitRegion {
-            let selectedVertices = Set(selected.flatMap { face -> [UInt32] in
-                let offset = face * 3
-                return Array(mesh.indices[offset..<(offset + 3)])
-            })
-            let remainderVertices = Set(host.filter { !selectedSet.contains($0) }.flatMap { face -> [UInt32] in
-                let offset = face * 3
-                return Array(mesh.indices[offset..<(offset + 3)])
-            })
+            let selectedVertices = try vertices(of: selected, mesh: mesh)
+            let remainderVertices = try vertices(
+                of: host.filter { !selectedSet.contains($0) }, mesh: mesh)
             let shared = selectedVertices.intersection(remainderVertices)
             guard shared == Set(seamVertices) else { throw MeshSeamEditError.vertexOnlyContact }
+            var outsideVertices = Set<UInt32>()
+            for componentID in components.indices where componentID != hostID {
+                outsideVertices.formUnion(incidence.componentVertices[componentID])
+            }
+            guard selectedVertices.isDisjoint(with: outsideVertices) else {
+                throw MeshSeamEditError.vertexOnlyContact
+            }
         } else {
-            let boundaryEdges = edges.filter { $0.value.count == 1 }
-            var boundaryVerticesByPosition: [ExactPositionKey: [UInt32]] = [:]
-            for (edge, _) in boundaryEdges {
-                boundaryVerticesByPosition[ExactPositionKey(mesh.vertices[Int(edge.low)].position), default: []]
-                    .append(edge.low)
-                boundaryVerticesByPosition[ExactPositionKey(mesh.vertices[Int(edge.high)].position), default: []]
-                    .append(edge.high)
-            }
-            for key in boundaryVerticesByPosition.keys {
-                boundaryVerticesByPosition[key] = Array(Set(boundaryVerticesByPosition[key]!)).sorted()
-            }
             var counterpartIDs = Set<Int>()
+            var usedCandidates = Set<UInt32>()
             for selectedVertex in seamVertices {
                 let key = ExactPositionKey(mesh.vertices[Int(selectedVertex)].position)
-                let candidates = (boundaryVerticesByPosition[key] ?? []).filter { candidate in
-                    candidate != selectedVertex && !host.contains { face in
-                        let offset = face * 3
-                        return mesh.indices[offset..<(offset + 3)].contains(candidate)
-                    }
-                }
-                guard candidates.count == 1, let candidate = candidates.first else {
-                    throw candidates.isEmpty ? MeshSeamEditError.unmatchedSeamVertex
+                let exactVertices = incidence.exactPositionVertices[key] ?? []
+                guard exactVertices.count == 2,
+                      exactVertices.contains(selectedVertex) else {
+                    throw exactVertices.count < 2
+                        ? MeshSeamEditError.unmatchedSeamVertex
                         : MeshSeamEditError.ambiguousCounterpart
                 }
+                guard incidence.vertexComponentIDs[Int(selectedVertex)] == [hostID] else {
+                    throw MeshSeamEditError.ambiguousCounterpart
+                }
+                guard let candidate = exactVertices.first(where: { $0 != selectedVertex }),
+                      usedCandidates.insert(candidate).inserted else {
+                    throw MeshSeamEditError.ambiguousCounterpart
+                }
+                let candidateComponents = incidence.vertexComponentIDs[Int(candidate)]
+                guard candidateComponents.count == 1,
+                      let candidateComponent = candidateComponents.first,
+                      candidateComponent != hostID else {
+                    throw MeshSeamEditError.ambiguousCounterpart
+                }
                 pairing[selectedVertex] = candidate
-                let incident = boundaryEdges.first { $0.key.low == candidate || $0.key.high == candidate }
-                guard let incident else { throw MeshSeamEditError.unmatchedSeamVertex }
-                counterpartIDs.insert(componentOfFace[incident.value[0].face])
+                counterpartIDs.insert(candidateComponent)
             }
             guard counterpartIDs.count == 1, let counterpartID = counterpartIDs.first,
                   counterpartID != hostID else { throw MeshSeamEditError.ambiguousCounterpart }
             counterpart = components[counterpartID]
-            let counterpartBoundary = Set(boundaryEdges.compactMap { edge, uses in
-                componentOfFace[uses[0].face] == counterpartID ? edge : nil
-            })
+            let counterpartBoundary = Set(incidence.boundaryEdgesByComponent[counterpartID])
+            let mappedEdges = try mappedSeamEdges(seamEdges, pairing: pairing)
+            let mappedVertices = try validateSimpleLoop(mappedEdges)
+            guard Set(mappedVertices) == Set(pairing.values),
+                  mappedEdges.allSatisfy(counterpartBoundary.contains) else {
+                throw MeshSeamEditError.unmatchedSeamEdge
+            }
+            let counterpartBoundaryDegree = boundaryDegree(
+                incidence.boundaryEdgesByComponent[counterpartID])
+            guard mappedVertices.allSatisfy({ counterpartBoundaryDegree[$0] == 2 }) else {
+                throw MeshSeamEditError.ambiguousCounterpart
+            }
             for edge in seamEdges {
                 guard let a = pairing[edge.low], let b = pairing[edge.high],
                       counterpartBoundary.contains(Edge(a, b)) else {
@@ -416,7 +429,12 @@ enum MeshExactSeamEdit {
             mesh: mesh, operation: operation, selected: selected,
             seamEdges: seamEdges, pairing: pairing)
         return Analysis(selected: selected, selectedSet: selectedSet, components: components,
-                        componentOfFace: componentOfFace, edges: edges,
+                        componentOfFace: componentOfFace,
+                        componentVertices: incidence.componentVertices,
+                        vertexComponentIDs: incidence.vertexComponentIDs,
+                        edges: edges,
+                        boundaryEdgesByComponent: incidence.boundaryEdgesByComponent,
+                        exactPositionVertices: incidence.exactPositionVertices,
                         sourceTopology: topology, seamEdges: seamEdges,
                         seamVertices: seamVertices.sorted(), hostComponent: host,
                         counterpartComponent: counterpart,
@@ -425,8 +443,11 @@ enum MeshExactSeamEdit {
 
     private static func split(mesh: EditableMesh, analysis: Analysis) throws -> MeshSeamEditResult {
         let resultVertexCount = try add(mesh.vertices.count, analysis.seamVertices.count)
-        try validateLimits(vertices: resultVertexCount, triangles: mesh.indices.count / 3,
-                           seamVertices: analysis.seamVertices.count, seamEdges: analysis.seamEdges.count)
+        _ = try validateLimits(
+            source: mesh, resultVertices: resultVertexCount,
+            seamVertices: analysis.seamVertices.count,
+            seamEdges: analysis.seamEdges.count,
+            operation: .splitRegion)
         guard resultVertexCount <= Int(UInt32.max) else { throw MeshSeamEditError.indexOverflow }
         var vertices = mesh.vertices
         var duplicate: [UInt32: UInt32] = [:]
@@ -443,6 +464,11 @@ enum MeshExactSeamEdit {
         var result = EditableMesh(vertices: vertices, indices: indices)
         result.recalculateNormals(recordChange: false)
         _ = result.adjacency()
+        try validateVertexFans(
+            mesh: result,
+            vertexIDs: analysis.seamVertices + duplicate.values.sorted(),
+            expectedBoundaryEdgeCount: 2
+        )
         let estimate = try validateResult(mesh: mesh, result: result, analysis: analysis,
                                           operation: .splitRegion)
         return MeshSeamEditResult(mesh: result, estimate: estimate,
@@ -452,8 +478,11 @@ enum MeshExactSeamEdit {
     private static func merge(mesh: EditableMesh, analysis: Analysis) throws -> MeshSeamEditResult {
         guard analysis.counterpartComponent != nil else { throw MeshSeamEditError.ambiguousCounterpart }
         let resultVertexCount = mesh.vertices.count - analysis.seamVertices.count
-        try validateLimits(vertices: resultVertexCount, triangles: mesh.indices.count / 3,
-                           seamVertices: analysis.seamVertices.count, seamEdges: analysis.seamEdges.count)
+        _ = try validateLimits(
+            source: mesh, resultVertices: resultVertexCount,
+            seamVertices: analysis.seamVertices.count,
+            seamEdges: analysis.seamEdges.count,
+            operation: .mergeExactSeam)
         let removed = Set(analysis.seamVertices)
         var oldToNew = Array(repeating: UInt32.max, count: mesh.vertices.count)
         var vertices: [MeshVertex] = []
@@ -468,6 +497,10 @@ enum MeshExactSeamEdit {
                   oldToNew[Int(survivor)] != .max else { throw MeshSeamEditError.unmatchedSeamVertex }
             oldToNew[Int(selectedVertex)] = oldToNew[Int(survivor)]
         }
+        let mergedSeamVertices = Set(analysis.seamVertices.compactMap {
+            let mapped = oldToNew[Int($0)]
+            return mapped == .max ? nil : mapped
+        })
         var indices: [UInt32] = []
         indices.reserveCapacity(mesh.indices.count)
         for old in mesh.indices {
@@ -478,6 +511,11 @@ enum MeshExactSeamEdit {
         var result = EditableMesh(vertices: vertices, indices: indices)
         result.recalculateNormals(recordChange: false)
         _ = result.adjacency()
+        try validateVertexFans(
+            mesh: result,
+            vertexIDs: mergedSeamVertices.sorted(),
+            expectedBoundaryEdgeCount: 0
+        )
         let estimate = try validateResult(mesh: mesh, result: result, analysis: analysis,
                                           operation: .mergeExactSeam)
         return MeshSeamEditResult(mesh: result, estimate: estimate,
@@ -530,9 +568,11 @@ enum MeshExactSeamEdit {
             let target = try trianglePositions(result, face)
             guard source == target else { throw MeshSeamEditError.validationFailed }
         }
-        let bytes = try estimateWorkingBytes(source: mesh, resultVertices: result.vertices.count,
-                                             seamVertices: analysis.seamVertices.count,
-                                             seamEdges: analysis.seamEdges.count)
+        let bytes = try validateLimits(
+            source: mesh, resultVertices: result.vertices.count,
+            seamVertices: analysis.seamVertices.count,
+            seamEdges: analysis.seamEdges.count,
+            operation: operation)
         return MeshSeamEditEstimate(
             operation: operation, selectedFaceCount: analysis.selected.count,
             hostComponentFaceCount: analysis.hostComponent.count,
@@ -573,6 +613,142 @@ enum MeshExactSeamEdit {
         } while current != start
         guard visited.count == neighbors.count else { throw MeshSeamEditError.multipleBoundaryLoops }
         return visited.sorted()
+    }
+
+    private static func buildIncidence(_ mesh: EditableMesh) throws -> MeshIncidence {
+        let triangleCount = mesh.indices.count / 3
+        var edges: [Edge: [EdgeUse]] = [:]
+        edges.reserveCapacity(try multiply(triangleCount, 2))
+        var faceNeighbors = Array(repeating: Set<Int>(), count: triangleCount)
+        var exactPositionVertices: [ExactPositionKey: [UInt32]] = [:]
+        exactPositionVertices.reserveCapacity(mesh.vertices.count)
+        for vertexID in mesh.vertices.indices {
+            exactPositionVertices[
+                ExactPositionKey(mesh.vertices[vertexID].position), default: []
+            ].append(UInt32(vertexID))
+        }
+        for face in 0..<triangleCount {
+            let ids = try triangle(mesh, face)
+            for (from, to) in [(ids.0, ids.1), (ids.1, ids.2), (ids.2, ids.0)] {
+                edges[Edge(from, to), default: []].append(
+                    EdgeUse(face: face, from: from, to: to))
+            }
+        }
+        for uses in edges.values where uses.count > 1 {
+            for index in 1..<uses.count {
+                let first = uses[0].face
+                let other = uses[index].face
+                faceNeighbors[first].insert(other)
+                faceNeighbors[other].insert(first)
+            }
+        }
+        let (components, componentOfFace) = components(neighbors: faceNeighbors)
+        var componentVertices = Array(repeating: Set<UInt32>(), count: components.count)
+        var vertexComponents = Array(repeating: Set<Int>(), count: mesh.vertices.count)
+        for face in 0..<triangleCount {
+            let componentID = componentOfFace[face]
+            let ids = try triangle(mesh, face)
+            for vertexID in [ids.0, ids.1, ids.2] {
+                componentVertices[componentID].insert(vertexID)
+                vertexComponents[Int(vertexID)].insert(componentID)
+            }
+        }
+        var boundaryEdgesByComponent = Array(repeating: [Edge](), count: components.count)
+        for (edge, uses) in edges where uses.count == 1 {
+            boundaryEdgesByComponent[componentOfFace[uses[0].face]].append(edge)
+        }
+        for index in boundaryEdgesByComponent.indices {
+            boundaryEdgesByComponent[index].sort()
+        }
+        return MeshIncidence(
+            edges: edges,
+            faceNeighbors: faceNeighbors,
+            components: components,
+            componentOfFace: componentOfFace,
+            componentVertices: componentVertices,
+            vertexComponentIDs: vertexComponents.map { $0.sorted() },
+            boundaryEdgesByComponent: boundaryEdgesByComponent,
+            exactPositionVertices: exactPositionVertices
+        )
+    }
+
+    private static func vertices(
+        of faces: [Int],
+        mesh: EditableMesh
+    ) throws -> Set<UInt32> {
+        var result = Set<UInt32>()
+        result.reserveCapacity(try multiply(faces.count, 2))
+        for face in faces {
+            let ids = try triangle(mesh, face)
+            result.insert(ids.0)
+            result.insert(ids.1)
+            result.insert(ids.2)
+        }
+        return result
+    }
+
+    private static func mappedSeamEdges(
+        _ edges: [Edge],
+        pairing: [UInt32: UInt32]
+    ) throws -> [Edge] {
+        var result: [Edge] = []
+        result.reserveCapacity(edges.count)
+        var unique = Set<Edge>()
+        for edge in edges {
+            guard let low = pairing[edge.low], let high = pairing[edge.high] else {
+                throw MeshSeamEditError.unmatchedSeamVertex
+            }
+            let mapped = Edge(low, high)
+            guard unique.insert(mapped).inserted else {
+                throw MeshSeamEditError.ambiguousCounterpart
+            }
+            result.append(mapped)
+        }
+        return result.sorted()
+    }
+
+    private static func boundaryDegree(_ edges: [Edge]) -> [UInt32: Int] {
+        var result: [UInt32: Int] = [:]
+        for edge in edges {
+            result[edge.low, default: 0] += 1
+            result[edge.high, default: 0] += 1
+        }
+        return result
+    }
+
+    private static func validateVertexFans(
+        mesh: EditableMesh,
+        vertexIDs: [UInt32],
+        expectedBoundaryEdgeCount: Int
+    ) throws {
+        let incidence = try buildIncidence(mesh)
+        var incidentFaces = Array(repeating: [Int](), count: mesh.vertices.count)
+        for face in 0..<(mesh.indices.count / 3) {
+            let ids = try triangle(mesh, face)
+            incidentFaces[Int(ids.0)].append(face)
+            incidentFaces[Int(ids.1)].append(face)
+            incidentFaces[Int(ids.2)].append(face)
+        }
+        for vertexID in vertexIDs {
+            let vertexIndex = Int(vertexID)
+            guard vertexIndex < incidentFaces.count,
+                  !incidentFaces[vertexIndex].isEmpty else {
+                throw MeshSeamEditError.validationFailed
+            }
+            let faces = Set(incidentFaces[vertexIndex])
+            guard connectedSubsets(faces, neighbors: incidence.faceNeighbors).count == 1 else {
+                throw MeshSeamEditError.nonManifoldEdge
+            }
+            let boundaryCount = incidence.edges.reduce(into: 0) { count, item in
+                if item.value.count == 1
+                    && (item.key.low == vertexID || item.key.high == vertexID) {
+                    count += 1
+                }
+            }
+            guard boundaryCount == expectedBoundaryEdgeCount else {
+                throw MeshSeamEditError.nonManifoldEdge
+            }
+        }
     }
 
     private static func components(neighbors: [Set<Int>]) -> ([[Int]], [Int]) {
@@ -626,28 +802,54 @@ enum MeshExactSeamEdit {
                 mesh.vertices[Int(ids.2)].position]
     }
 
+    @discardableResult
     private static func validateLimits(
-        vertices: Int, triangles: Int, seamVertices: Int, seamEdges: Int
-    ) throws {
-        guard vertices <= maximumVertices else { throw MeshSeamEditError.vertexLimitExceeded }
+        source: EditableMesh,
+        resultVertices: Int,
+        seamVertices: Int,
+        seamEdges: Int,
+        operation: MeshSeamOperation
+    ) throws -> Int {
+        let triangles = source.indices.count / 3
+        guard resultVertices <= maximumVertices else {
+            throw MeshSeamEditError.vertexLimitExceeded
+        }
         guard triangles <= maximumTriangles else { throw MeshSeamEditError.triangleLimitExceeded }
-        guard vertices <= Int(UInt32.max) else { throw MeshSeamEditError.indexOverflow }
-        let meshBytes = try multiply(try add(vertices, triangles * 3), 96)
-        let seamBytes = try multiply(try add(seamVertices, seamEdges), 128)
-        let approximate = try add(meshBytes, seamBytes)
+        guard resultVertices <= Int(UInt32.max) else { throw MeshSeamEditError.indexOverflow }
+        let indexCount = try multiply(triangles, 3)
+        guard indexCount == source.indices.count else {
+            throw MeshSeamEditError.arithmeticOverflow
+        }
+        var approximate = 0
+        func account(_ count: Int, _ bytesPerItem: Int) throws {
+            approximate = try add(approximate, multiply(count, bytesPerItem))
+        }
+        // Source, result, before/after history snapshots, and Renderer staging.
+        try account(source.vertices.count, 64 * 3)
+        try account(source.indices.count, 4 * 3)
+        try account(resultVertices, 64 * 4)
+        try account(indexCount, 4 * 4)
+        // Edge dictionary/uses, face neighbors, component labels/lists/vertex sets.
+        try account(indexCount, 80)
+        try account(triangles, 96)
+        try account(source.vertices.count, 80)
+        // Exact-position incidence, boundary maps, selected/host/remainder sets, pairing.
+        try account(source.vertices.count, 64)
+        try account(indexCount, 32)
+        try account(try add(seamVertices, seamEdges), 160)
+        // Normal rebuild, adjacency, Diagnostics, Preview, BVH, and Spatial Index.
+        try account(resultVertices, 160)
+        try account(indexCount, 48)
+        try account(triangles, 96)
+        if operation == .splitRegion {
+            try account(seamVertices, 64)
+        } else {
+            try account(source.vertices.count, 8)
+        }
         guard approximate <= maximumWorkingBytes else {
             throw MeshSeamEditError.workingMemoryLimitExceeded
         }
-    }
-
-    private static func estimateWorkingBytes(
-        source: EditableMesh, resultVertices: Int, seamVertices: Int, seamEdges: Int
-    ) throws -> Int {
-        let sourceUnits = try add(source.vertices.count, source.indices.count)
-        let resultUnits = try add(resultVertices, source.indices.count)
-        let meshBytes = try multiply(try add(sourceUnits, resultUnits), 64)
-        let analysisBytes = try multiply(try add(seamVertices, seamEdges), 128)
-        return try add(meshBytes, analysisBytes)
+        return approximate
     }
 
     private static func analysisFingerprint(
