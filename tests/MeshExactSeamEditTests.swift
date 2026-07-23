@@ -241,8 +241,7 @@ final class MeshExactSeamEditTests: XCTestCase {
         XCTAssertFalse(model.isMeshSeamEditRunning)
         XCTAssertEqual(model.meshSeamEditPreview, candidateB)
 
-        let invalidation = UUID()
-        model.discardMeshSeamEditPreview(requestID: invalidation)
+        model.discardMeshSeamEditPreview()
         XCTAssertNil(model.meshSeamEditPreview)
         XCTAssertThrowsError(try model.applyMeshSeamEdit(preview: candidateB)) {
             XCTAssertEqual($0 as? MeshSeamEditError, .stalePreview)
