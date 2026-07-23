@@ -360,12 +360,11 @@ final class MeshExactSeamEditTests: XCTestCase {
         firstPosition: SIMD3<Float>
     ) -> EditableMesh {
         let base = UInt32(source.vertices.count)
-        let positions = source.vertices.map(\.position) + [
-            firstPosition,
-            firstPosition + SIMD3<Float>(7, 1, 0),
-            firstPosition + SIMD3<Float>(7, 0, 1),
-            firstPosition + SIMD3<Float>(8, 1, 1)
-        ]
+        var positions: [SIMD3<Float>] = source.vertices.map(\.position)
+        positions.append(firstPosition)
+        positions.append(firstPosition + SIMD3<Float>(7, 1, 0))
+        positions.append(firstPosition + SIMD3<Float>(7, 0, 1))
+        positions.append(firstPosition + SIMD3<Float>(8, 1, 1))
         let remote: [UInt32] = [
             base, base + 2, base + 1,
             base, base + 1, base + 3,
