@@ -425,7 +425,8 @@ enum MeshEdgePicker {
         viewProjection: simd_float4x4,
         viewport: CGSize
     ) -> CGPoint? {
-        let clip = viewProjection * transform.modelMatrix * SIMD4<Float>(local, 1)
+        let world = transform.modelMatrix * SIMD4<Float>(local, 1)
+        let clip = viewProjection * world
         guard clip.x.isFinite, clip.y.isFinite, clip.z.isFinite, clip.w.isFinite,
               clip.w > 0.000_001 else { return nil }
         let x = clip.x / clip.w, y = clip.y / clip.w
