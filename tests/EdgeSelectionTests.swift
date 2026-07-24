@@ -1,5 +1,6 @@
 import XCTest
 import MetalKit
+import SwiftUI
 @testable import Forge3D
 
 @MainActor
@@ -30,12 +31,13 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertEqual(quad.edges.map(\.key), quad.edges.map(\.key).sorted())
     }
 
-    func testTableOrderingAndFingerprintIgnoreTriangleOrder() throws {
+    func testTableOrderingIgnoresTriangleOrderButFingerprintIncludesFaceIdentity() throws {
         let first = try MeshEdgeTable.build(mesh: twoTriangleQuad())
         let reordered = try MeshEdgeTable.build(mesh: mesh(
             [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 1, 0), SIMD3(0, 1, 0)],
             [0, 2, 3, 0, 1, 2]))
         XCTAssertEqual(first.edges.map(\.key), reordered.edges.map(\.key))
+        XCTAssertNotEqual(first.fingerprint, reordered.fingerprint)
         XCTAssertEqual(first.fingerprint,
                        try MeshEdgeTable.build(mesh: twoTriangleQuad()).fingerprint)
     }
@@ -115,6 +117,103 @@ final class EdgeSelectionTests: XCTestCase {
         let firstComponent = try EdgeSelectionConnectivity.connectedEdgeIDs(
             table: detached, seeds: [0])
         XCTAssertEqual(firstComponent.count, 3)
+    }
+
+    func testConnectedCanonicalizesDuplicateUnsortedSeeds() throws {
+        let table = try MeshEdgeTable.build(mesh: twoTriangleQuad())
+        let instrumentation = EdgeConnectedInstrumentation()
+        let result = try EdgeSelectionConnectivity.connectedEdgeIDs(
+            table: table, seeds: [4, 0, 4, 0], instrumentation: instrumentation)
+        XCTAssertEqual(result, Array(table.edges.indices))
+        XCTAssertEqual(instrumentation.visitedEdgeCount, table.edges.count)
+    }
+
+    func testNearPlaneProjectionVisibleAndClipsEitherEndpoint() {
+        let viewport = CGSize(width: 200, height: 100)
+        XCTAssertEqual(
+            EdgeClipProjection.projectSegment(
+                SIMD4(-0.5, 0, 0.5, 1), SIMD4(0.5, 0, 0.5, 1), viewport: viewport),
+            .visible(start: CGPoint(x: 50, y: 50), end: CGPoint(x: 150, y: 50)))
+
+        guard case .visible(let clippedAStart, let clippedAEnd) =
+            EdgeClipProjection.projectSegment(
+                SIMD4(-1, 0, -1, 1), SIMD4(1, 0, 1, 1), viewport: viewport) else {
+            return XCTFail("Expected A endpoint to clip to the Metal near plane")
+        }
+        XCTAssertEqual(clippedAStart.x, 100, accuracy: 0.001)
+        XCTAssertEqual(clippedAEnd.x, 200, accuracy: 0.001)
+
+        guard case .visible(let clippedBStart, let clippedBEnd) =
+            EdgeClipProjection.projectSegment(
+                SIMD4(-1, 0, 1, 1), SIMD4(1, 0, -1, 1), viewport: viewport) else {
+            return XCTFail("Expected B endpoint to clip to the Metal near plane")
+        }
+        XCTAssertEqual(clippedBStart.x, 0, accuracy: 0.001)
+        XCTAssertEqual(clippedBEnd.x, 100, accuracy: 0.001)
+    }
+
+    func testNearPlaneProjectionClassifiesInvisibleDegenerateAndInvalidSegments() {
+        let viewport = CGSize(width: 100, height: 100)
+        XCTAssertEqual(EdgeClipProjection.projectSegment(
+            SIMD4(-1, 0, -1, 1), SIMD4(1, 0, -0.1, 1), viewport: viewport), .clippedOut)
+        XCTAssertEqual(EdgeClipProjection.projectSegment(
+            SIMD4(0, 0, 0, 1), SIMD4(0, 0, 1, 1), viewport: viewport), .clippedOut)
+        XCTAssertEqual(EdgeClipProjection.projectSegment(
+            SIMD4(0, 0, 1, 0), SIMD4(1, 0, 1, 1), viewport: viewport), .clippedOut)
+        XCTAssertEqual(EdgeClipProjection.projectSegment(
+            SIMD4(Float.nan, 0, 1, 1), SIMD4(1, 0, 1, 1), viewport: viewport), .invalid)
+        XCTAssertEqual(EdgeClipProjection.projectSegment(
+            SIMD4(0, 0, 1, 1), SIMD4(1, 0, 1, 1),
+            viewport: CGSize(width: 0, height: 100)), .invalid)
+    }
+
+    func testNearPlaneProjectionHandlesExtremePerspectiveWithoutNonFiniteOutput() {
+        guard case .visible(let start, let end) = EdgeClipProjection.projectSegment(
+            SIMD4(-1_000, 20, 1, 10_000), SIMD4(1_000, -20, 1, 10_000),
+            viewport: CGSize(width: 3_000, height: 2_000)) else {
+            return XCTFail("Expected finite projected segment")
+        }
+        XCTAssertTrue(start.x.isFinite && start.y.isFinite)
+        XCTAssertTrue(end.x.isFinite && end.y.isFinite)
+    }
+
+    func testOverlayThicknessConvertsPointsToPixelsForDisplayScale() throws {
+        for scale: Float in [1, 2, 3] {
+            let selected = try XCTUnwrap(try? EdgeSelectionOverlayMetrics
+                .thicknessPixels(thicknessPoints: 2.5, displayScale: scale).get())
+            let hover = try XCTUnwrap(try? EdgeSelectionOverlayMetrics
+                .thicknessPixels(thicknessPoints: 5, displayScale: scale).get())
+            XCTAssertEqual(selected, 2.5 * scale)
+            XCTAssertEqual(hover, 5 * scale)
+        }
+        XCTAssertThrowsError(try EdgeSelectionOverlayMetrics
+            .thicknessPixels(thicknessPoints: 2.5, displayScale: 0).get())
+        XCTAssertThrowsError(try EdgeSelectionOverlayMetrics
+            .thicknessPixels(thicknessPoints: 2.5, displayScale: .nan).get())
+    }
+
+    func testOverlayFailureNotificationIsDeduplicatedAndSuccessClearsIt() {
+        let model = WorkspaceModel()
+        model.handleEdgeSelectionOverlayUpdate(.unavailable(.allocationFailed))
+        let firstStatus = model.status
+        model.handleEdgeSelectionOverlayUpdate(.unavailable(.allocationFailed))
+        XCTAssertEqual(model.status, firstStatus)
+        XCTAssertNotNil(model.edgeSelectionError)
+        model.handleEdgeSelectionOverlayUpdate(.updated)
+        XCTAssertNil(model.edgeSelectionError)
+    }
+
+    func testEdgeSelectionPanelFitsCompactRegularAndAccessibilityLayouts() {
+        let model = WorkspaceModel()
+        model.setInteractionMode(.edgeSelect)
+        for width: CGFloat in [320, 744, 1_024] {
+            let root = EdgeSelectionPanel(model: model)
+                .environment(\.dynamicTypeSize, .accessibility3)
+            let host = UIHostingController(rootView: root)
+            let size = host.sizeThatFits(in: CGSize(width: width, height: 700))
+            XCTAssertLessThanOrEqual(size.width, width + 0.5)
+            XCTAssertGreaterThan(size.height, 0)
+        }
     }
 
     func testScreenDistanceAndVisibleTrianglePicking() throws {

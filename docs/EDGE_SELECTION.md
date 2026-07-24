@@ -16,15 +16,15 @@ Face and Edge Selection states remain independent. Switching modes preserves bot
 
 ## Visible-surface picking
 
-Picking first uses the current CPU BVH to find the nearest visible triangle with the existing double-sided policy. Only that triangle's three canonical edges are candidates. Their transformed endpoints are projected into the current viewport, and point-to-segment distance is measured in screen points. The threshold is 14 points. Equal-distance candidates choose the lower edge ID.
+Picking first uses the current CPU BVH to find the nearest visible triangle with the existing double-sided policy. Only that triangle's three canonical edges are candidates. Each homogeneous clip-space segment is clipped against Metal's `z >= 0` near plane before point-to-segment distance is measured in screen points. A clipped-out edge is skipped without suppressing the triangle's other visible edges; an invalid matrix or topology makes the pick unavailable. The threshold is 14 points. Equal-distance candidates choose the lower edge ID.
 
 Silhouette-only picking outside a triangle, hidden or occluded edges, through/X-Ray selection, loop/ring selection, and box/lasso selection are not included.
 
 ## Overlay and failure behavior
 
-The Metal overlay uploads endpoint vertex-ID pairs. Its vertex shader reads positions from the normal mesh vertex buffer and expands each edge into a screen-space quad. Selected edges use 2.5-point thickness; hover uses 5 points, so states are not distinguished by color alone. Depth testing is enabled, depth writes are disabled, and depth bias reduces z-fighting.
+The Metal overlay uploads endpoint vertex-ID pairs. Its vertex shader reads positions from the normal mesh vertex buffer, applies the same Metal near-plane segment clipping, and expands each visible edge into a screen-space quad. Selected edges use 2.5-point thickness and hover uses 5 points. `displayScale` converts these values to drawable pixels, preserving their apparent point width across 1x, 2x, 3x, resized, Split View, and external-display surfaces. Invalid or degenerate projected segments emit no visible quad. Depth testing is enabled, depth writes are disabled, and depth bias reduces z-fighting.
 
-Selection, hover, Transform, camera, and Sculpt do not upload mesh indices. Transform/camera updates require uniforms only, and Sculpt follows the normal mesh vertex upload while preserving the edge pair buffer. An unchanged selection skips pair upload. Allocation or validation failure clears the overlay cache, keeps mesh and selection state intact, and permits a later retry.
+Selection, hover, Transform, camera, and Sculpt do not upload mesh indices. Transform/camera updates require uniforms only, and Sculpt follows the normal mesh vertex upload while preserving the edge pair buffer. An unchanged selection skips pair upload. Selected and hover staging, allocation, and copy complete before references, counts, and the cache key are committed. Failure clears both counts and the key, never draws stale buffers, preserves mesh and selection state, reports a deduplicated runtime error, and permits a later retry.
 
 ## Memory and persistence
 

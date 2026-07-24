@@ -4,13 +4,11 @@ struct EdgeSelectionPanel: View {
     @ObservedObject var model: WorkspaceModel
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) { content }
-                VStack(alignment: .leading, spacing: 8) { content }
-            }
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 8) { content }
             .padding(10)
         }
+        .frame(maxWidth: 420, maxHeight: 420)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
         .accessibilityElement(children: .contain)
     }

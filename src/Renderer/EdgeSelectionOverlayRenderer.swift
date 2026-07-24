@@ -4,11 +4,22 @@ import simd
 
 protocol EdgeSelectionPairBufferAllocating {
     func makeBuffer(device: MTLDevice, length: Int) -> MTLBuffer?
+    func copy(_ pairs: [SIMD2<UInt32>], byteCount: Int, to buffer: MTLBuffer) -> Bool
 }
 
 struct MetalEdgeSelectionPairBufferAllocator: EdgeSelectionPairBufferAllocating {
     func makeBuffer(device: MTLDevice, length: Int) -> MTLBuffer? {
         device.makeBuffer(length: length, options: .storageModeShared)
+    }
+
+    func copy(_ pairs: [SIMD2<UInt32>], byteCount: Int, to buffer: MTLBuffer) -> Bool {
+        pairs.withUnsafeBufferPointer { source in
+            guard let base = source.baseAddress, byteCount > 0, buffer.length >= byteCount else {
+                return false
+            }
+            buffer.contents().copyMemory(from: base, byteCount: byteCount)
+            return true
+        }
     }
 }
 
@@ -18,6 +29,53 @@ struct EdgeSelectionOverlayCacheKey: Equatable {
     let tableFingerprint: UInt64
     let selectionVersion: EdgeSelectionVersion
     let hoveredEdgeID: Int?
+}
+
+enum EdgeSelectionOverlayError: Error, LocalizedError, Equatable {
+    case staleTable
+    case staleSelection
+    case invalidEndpoint
+    case arithmeticOverflow
+    case allocationFailed
+    case copyFailed
+    case invalidViewport
+    case invalidDisplayScale
+
+    var errorDescription: String? {
+        switch self {
+        case .staleTable: "The edge overlay table is stale."
+        case .staleSelection: "The edge overlay selection is stale."
+        case .invalidEndpoint: "The edge overlay contains an invalid endpoint."
+        case .arithmeticOverflow: "The edge overlay buffer size is not representable."
+        case .allocationFailed: "The edge overlay buffer could not be allocated."
+        case .copyFailed: "The edge overlay buffer could not be populated."
+        case .invalidViewport: "The edge overlay viewport is invalid."
+        case .invalidDisplayScale: "The edge overlay display scale is invalid."
+        }
+    }
+}
+
+enum EdgeSelectionOverlayUpdateResult: Equatable {
+    case unchanged
+    case updated
+    case unavailable(EdgeSelectionOverlayError)
+}
+
+enum EdgeSelectionOverlayMetrics {
+    static func thicknessPixels(
+        thicknessPoints: Float,
+        displayScale: Float
+    ) -> Result<Float, EdgeSelectionOverlayError> {
+        guard thicknessPoints.isFinite, thicknessPoints > 0 else {
+            return .failure(.invalidViewport)
+        }
+        guard displayScale.isFinite, displayScale > 0 else {
+            return .failure(.invalidDisplayScale)
+        }
+        let value = thicknessPoints * displayScale
+        guard value.isFinite else { return .failure(.arithmeticOverflow) }
+        return .success(value)
+    }
 }
 
 final class EdgeSelectionOverlayRenderer {
@@ -62,16 +120,30 @@ final class EdgeSelectionOverlayRenderer {
         self.depthState = depthState
     }
 
-    @discardableResult
     func update(
         mesh: EditableMesh,
         table: MeshEdgeTable?,
         selection: EdgeSelection,
-        hoveredEdgeID: Int?
-    ) -> Bool {
-        guard let table, table.matches(mesh), selection.matches(table) else {
+        hoveredEdgeID: Int?,
+        drawableSizePixels: CGSize,
+        displayScale: CGFloat
+    ) -> EdgeSelectionOverlayUpdateResult {
+        guard drawableSizePixels.width.isFinite, drawableSizePixels.height.isFinite,
+              drawableSizePixels.width > 0, drawableSizePixels.height > 0 else {
             invalidate()
-            return false
+            return .unavailable(.invalidViewport)
+        }
+        guard displayScale.isFinite, displayScale > 0 else {
+            invalidate()
+            return .unavailable(.invalidDisplayScale)
+        }
+        guard let table, table.matches(mesh) else {
+            invalidate()
+            return .unavailable(.staleTable)
+        }
+        guard selection.matches(table) else {
+            invalidate()
+            return .unavailable(.staleSelection)
         }
         let validHover = hoveredEdgeID.flatMap { table.edges.indices.contains($0) ? $0 : nil }
         let key = EdgeSelectionOverlayCacheKey(
@@ -80,10 +152,7 @@ final class EdgeSelectionOverlayRenderer {
             tableFingerprint: table.fingerprint,
             selectionVersion: selection.version,
             hoveredEdgeID: validHover)
-        guard uploadedKey != key else { return false }
-        selectedEdgeCount = 0
-        hoverEdgeCount = 0
-        uploadedKey = nil
+        guard uploadedKey != key else { return .unchanged }
         do {
             let selectedPairs = try pairs(
                 edgeIDs: selection.selectedEdgeIDs(), table: table, vertexCount: mesh.vertices.count)
@@ -93,14 +162,15 @@ final class EdgeSelectionOverlayRenderer {
             if selectedPairs.isEmpty {
                 selectedTarget = nil
             } else {
-                selectedTarget = try buffer(for: selectedPairs, reusing: selectedBuffer)
+                selectedTarget = try freshBuffer(for: selectedPairs)
             }
             let hoverTarget: MTLBuffer?
             if hoverPairs.isEmpty {
                 hoverTarget = nil
             } else {
-                hoverTarget = try buffer(for: hoverPairs, reusing: hoverBuffer)
+                hoverTarget = try freshBuffer(for: hoverPairs)
             }
+            // Commit references, counts, and key only after every fallible allocation and copy.
             selectedBuffer = selectedTarget
             hoverBuffer = hoverTarget
             selectedEdgeCount = selectedPairs.count
@@ -109,10 +179,13 @@ final class EdgeSelectionOverlayRenderer {
             #if DEBUG
             uploadCount += 1
             #endif
-            return true
+            return .updated
+        } catch let error as EdgeSelectionOverlayError {
+            invalidate()
+            return .unavailable(error)
         } catch {
             invalidate()
-            return false
+            return .unavailable(.copyFailed)
         }
     }
 
@@ -121,22 +194,27 @@ final class EdgeSelectionOverlayRenderer {
         vertexBuffer: MTLBuffer,
         viewProjection: simd_float4x4,
         model: simd_float4x4,
-        viewportSize: SIMD2<Float>
+        drawableSizePixels: SIMD2<Float>,
+        displayScale: Float
     ) {
-        guard viewportSize.x > 0, viewportSize.y > 0 else { return }
+        guard drawableSizePixels.x.isFinite, drawableSizePixels.y.isFinite,
+              drawableSizePixels.x > 0, drawableSizePixels.y > 0,
+              displayScale.isFinite, displayScale > 0 else { return }
         encoder.setRenderPipelineState(pipeline)
         encoder.setDepthStencilState(depthState)
         encoder.setDepthBias(-2, slopeScale: -1, clamp: -0.0001)
         encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
         if let selectedBuffer, selectedEdgeCount > 0 {
-            encode(buffer: selectedBuffer, edgeCount: selectedEdgeCount, thickness: 2.5,
+            encode(buffer: selectedBuffer, edgeCount: selectedEdgeCount, thicknessPoints: 2.5,
                    color: SIMD4<Float>(1, 0.76, 0.08, 0.95), encoder: encoder,
-                   viewProjection: viewProjection, model: model, viewportSize: viewportSize)
+                   viewProjection: viewProjection, model: model,
+                   drawableSizePixels: drawableSizePixels, displayScale: displayScale)
         }
         if let hoverBuffer, hoverEdgeCount > 0 {
-            encode(buffer: hoverBuffer, edgeCount: hoverEdgeCount, thickness: 5,
+            encode(buffer: hoverBuffer, edgeCount: hoverEdgeCount, thicknessPoints: 5,
                    color: SIMD4<Float>(1, 1, 1, 1), encoder: encoder,
-                   viewProjection: viewProjection, model: model, viewportSize: viewportSize)
+                   viewProjection: viewProjection, model: model,
+                   drawableSizePixels: drawableSizePixels, displayScale: displayScale)
         }
         encoder.setDepthBias(0, slopeScale: 0, clamp: 0)
     }
@@ -144,16 +222,18 @@ final class EdgeSelectionOverlayRenderer {
     private func encode(
         buffer: MTLBuffer,
         edgeCount: Int,
-        thickness: Float,
+        thicknessPoints: Float,
         color: SIMD4<Float>,
         encoder: MTLRenderCommandEncoder,
         viewProjection: simd_float4x4,
         model: simd_float4x4,
-        viewportSize: SIMD2<Float>
+        drawableSizePixels: SIMD2<Float>,
+        displayScale: Float
     ) {
         var uniforms = EdgeSelectionOverlayUniforms(
             viewProjection: viewProjection, model: model,
-            viewportSize: viewportSize, thickness: thickness, color: color)
+            drawableSizePixels: drawableSizePixels,
+            thicknessPoints: thicknessPoints, displayScale: displayScale, color: color)
         encoder.setVertexBuffer(buffer, offset: 0, index: 1)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<EdgeSelectionOverlayUniforms>.stride, index: 2)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6,
@@ -168,33 +248,28 @@ final class EdgeSelectionOverlayRenderer {
         var result: [SIMD2<UInt32>] = []
         result.reserveCapacity(edgeIDs.count)
         for edgeID in edgeIDs {
-            guard table.edges.indices.contains(edgeID) else { throw EdgeSelectionError.invalidEdgeID }
+            guard table.edges.indices.contains(edgeID) else {
+                throw EdgeSelectionOverlayError.staleSelection
+            }
             let key = table.edges[edgeID].key
             guard Int(key.low) < vertexCount, Int(key.high) < vertexCount else {
-                throw EdgeSelectionError.invalidTable
+                throw EdgeSelectionOverlayError.invalidEndpoint
             }
             result.append(SIMD2(key.low, key.high))
         }
         return result
     }
 
-    private func buffer(
-        for pairs: [SIMD2<UInt32>],
-        reusing existing: MTLBuffer?
-    ) throws -> MTLBuffer {
+    private func freshBuffer(for pairs: [SIMD2<UInt32>]) throws -> MTLBuffer {
         let (bytes, overflow) = pairs.count.multipliedReportingOverflow(
             by: MemoryLayout<SIMD2<UInt32>>.stride)
-        guard !overflow, bytes > 0 else { throw EdgeSelectionError.allocationOverflow }
-        guard let target = existing.flatMap({ $0.length >= bytes ? $0 : nil })
-            ?? allocator.makeBuffer(device: device, length: bytes) else {
-            throw EdgeSelectionError.unavailable
+        guard !overflow, bytes > 0 else { throw EdgeSelectionOverlayError.arithmeticOverflow }
+        guard let target = allocator.makeBuffer(device: device, length: bytes) else {
+            throw EdgeSelectionOverlayError.allocationFailed
         }
-        let copied = pairs.withUnsafeBufferPointer { source -> Bool in
-            guard let source = source.baseAddress else { return false }
-            target.contents().copyMemory(from: source, byteCount: bytes)
-            return true
+        guard allocator.copy(pairs, byteCount: bytes, to: target) else {
+            throw EdgeSelectionOverlayError.copyFailed
         }
-        guard copied else { throw EdgeSelectionError.unavailable }
         return target
     }
 
@@ -208,8 +283,8 @@ final class EdgeSelectionOverlayRenderer {
 struct EdgeSelectionOverlayUniforms {
     var viewProjection: simd_float4x4
     var model: simd_float4x4
-    var viewportSize: SIMD2<Float>
-    var thickness: Float
-    var padding: Float = 0
+    var drawableSizePixels: SIMD2<Float>
+    var thicknessPoints: Float
+    var displayScale: Float
     var color: SIMD4<Float>
 }

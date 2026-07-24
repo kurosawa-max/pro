@@ -32,9 +32,10 @@ struct MetalCanvas: UIViewRepresentable {
         context.coordinator.installGestures(on: view)
         renderer.update(mesh: model.mesh)
         renderer.updateFaceSelection(mesh: model.mesh, selection: model.faceSelection)
-        renderer.updateEdgeSelection(
+        model.handleEdgeSelectionOverlayUpdate(renderer.updateEdgeSelection(
             mesh: model.mesh, table: model.meshEdgeTable,
-            selection: model.edgeSelection, hoveredEdgeID: model.hoveredEdgeID)
+            selection: model.edgeSelection, hoveredEdgeID: model.hoveredEdgeID,
+            drawableSizePixels: view.drawableSize, displayScale: view.contentScaleFactor))
         renderer.showsFaceSelection = model.interactionMode == .faceSelect
         renderer.showsEdgeSelection = model.interactionMode == .edgeSelect
         return view
@@ -59,9 +60,12 @@ struct MetalCanvas: UIViewRepresentable {
                                                         options: model.meshDiagnosticsOverlayOptions)
         context.coordinator.renderer?.update(mesh: model.mesh)
         context.coordinator.renderer?.updateFaceSelection(mesh: model.mesh, selection: model.faceSelection)
-        context.coordinator.renderer?.updateEdgeSelection(
+        if let result = context.coordinator.renderer?.updateEdgeSelection(
             mesh: model.mesh, table: model.meshEdgeTable,
-            selection: model.edgeSelection, hoveredEdgeID: model.hoveredEdgeID)
+            selection: model.edgeSelection, hoveredEdgeID: model.hoveredEdgeID,
+            drawableSizePixels: view.drawableSize, displayScale: view.contentScaleFactor) {
+            model.handleEdgeSelectionOverlayUpdate(result)
+        }
         context.coordinator.renderer?.showsFaceSelection = model.interactionMode == .faceSelect
         context.coordinator.renderer?.showsEdgeSelection = model.interactionMode == .edgeSelect
     }

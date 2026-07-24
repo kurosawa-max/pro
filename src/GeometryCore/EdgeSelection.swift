@@ -331,7 +331,8 @@ enum EdgeSelectionConnectivity {
             throw EdgeSelectionError.invalidEdgeID
         }
         var selected = Array(repeating: false, count: table.edges.count)
-        var queue = seeds.sorted(), cursor = 0
+        let canonicalSeeds = Array(Set(seeds)).sorted()
+        var queue = canonicalSeeds, cursor = 0
         queue.forEach { selected[$0] = true }
         while cursor < queue.count {
             let edgeID = queue[cursor]
@@ -363,6 +364,69 @@ enum IndexedMeshEdgePickResult: Equatable {
     case unavailable
 }
 
+enum ProjectedEdgeSegment: Equatable {
+    case visible(start: CGPoint, end: CGPoint)
+    case clippedOut
+    case invalid
+}
+
+enum EdgeClipProjection {
+    private static let minimumW: Float = 1e-6
+    private static let minimumScreenLengthSquared: CGFloat = 1e-12
+
+    static func projectSegment(
+        _ endpointA: SIMD4<Float>,
+        _ endpointB: SIMD4<Float>,
+        viewport: CGSize
+    ) -> ProjectedEdgeSegment {
+        guard viewport.width.isFinite, viewport.height.isFinite,
+              viewport.width > 0, viewport.height > 0,
+              finite(endpointA), finite(endpointB) else { return .invalid }
+
+        var a = endpointA
+        var b = endpointB
+        let aBehindNear = a.z < 0
+        let bBehindNear = b.z < 0
+        if aBehindNear && bBehindNear { return .clippedOut }
+        if aBehindNear != bBehindNear {
+            let denominator = b.z - a.z
+            guard denominator.isFinite, abs(denominator) > Float.ulpOfOne else {
+                return .invalid
+            }
+            let t = -a.z / denominator
+            guard t.isFinite, t >= 0, t <= 1 else { return .invalid }
+            let intersection = a + (b - a) * t
+            guard finite(intersection) else { return .invalid }
+            if aBehindNear { a = intersection } else { b = intersection }
+        }
+        guard a.w.isFinite, b.w.isFinite, a.w > minimumW, b.w > minimumW else {
+            return .clippedOut
+        }
+        let ndcA = SIMD2(a.x / a.w, a.y / a.w)
+        let ndcB = SIMD2(b.x / b.w, b.y / b.w)
+        guard finite(ndcA), finite(ndcB) else { return .invalid }
+        let start = CGPoint(
+            x: (CGFloat(ndcA.x) + 1) * 0.5 * viewport.width,
+            y: (1 - CGFloat(ndcA.y)) * 0.5 * viewport.height)
+        let end = CGPoint(
+            x: (CGFloat(ndcB.x) + 1) * 0.5 * viewport.width,
+            y: (1 - CGFloat(ndcB.y)) * 0.5 * viewport.height)
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        guard dx.isFinite, dy.isFinite else { return .invalid }
+        guard dx * dx + dy * dy > minimumScreenLengthSquared else { return .clippedOut }
+        return .visible(start: start, end: end)
+    }
+
+    private static func finite(_ value: SIMD4<Float>) -> Bool {
+        value.x.isFinite && value.y.isFinite && value.z.isFinite && value.w.isFinite
+    }
+
+    private static func finite(_ value: SIMD2<Float>) -> Bool {
+        value.x.isFinite && value.y.isFinite
+    }
+}
+
 enum MeshEdgePicker {
     static let pickRadiusPoints: CGFloat = 14
 
@@ -392,14 +456,21 @@ enum MeshEdgePicker {
         var candidates: [(distance: CGFloat, id: Int, key: MeshEdgeKey)] = []
         for pair in [(ids[0], ids[1]), (ids[1], ids[2]), (ids[2], ids[0])] {
             guard let key = MeshEdgeKey(pair.0, pair.1), let id = table.edgeIDByKey[key],
-                  Int(key.low) < mesh.vertices.count, Int(key.high) < mesh.vertices.count,
-                  let a = project(mesh.vertices[Int(key.low)].position, transform: transform,
-                                  viewProjection: viewProjection, viewport: viewportSize),
-                  let b = project(mesh.vertices[Int(key.high)].position, transform: transform,
-                                  viewProjection: viewProjection, viewport: viewportSize) else {
+                  Int(key.low) < mesh.vertices.count, Int(key.high) < mesh.vertices.count else {
                 return .unavailable
             }
-            candidates.append((pointSegmentDistance(screenPoint, a, b), id, key))
+            let clipA = clipPosition(mesh.vertices[Int(key.low)].position,
+                                     transform: transform, viewProjection: viewProjection)
+            let clipB = clipPosition(mesh.vertices[Int(key.high)].position,
+                                     transform: transform, viewProjection: viewProjection)
+            switch EdgeClipProjection.projectSegment(clipA, clipB, viewport: viewportSize) {
+            case .visible(let start, let end):
+                candidates.append((pointSegmentDistance(screenPoint, start, end), id, key))
+            case .clippedOut:
+                continue
+            case .invalid:
+                return .unavailable
+            }
         }
         guard let nearest = candidates.min(by: {
             abs($0.distance - $1.distance) > 0.000_1
@@ -419,20 +490,13 @@ enum MeshEdgePicker {
         return hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy))
     }
 
-    private static func project(
+    private static func clipPosition(
         _ local: SIMD3<Float>,
         transform: ObjectTransform,
-        viewProjection: simd_float4x4,
-        viewport: CGSize
-    ) -> CGPoint? {
+        viewProjection: simd_float4x4
+    ) -> SIMD4<Float> {
         let world = transform.modelMatrix * SIMD4<Float>(local, 1)
-        let clip = viewProjection * world
-        guard clip.x.isFinite, clip.y.isFinite, clip.z.isFinite, clip.w.isFinite,
-              clip.w > 0.000_001 else { return nil }
-        let x = clip.x / clip.w, y = clip.y / clip.w
-        guard x.isFinite, y.isFinite else { return nil }
-        return CGPoint(x: (CGFloat(x) + 1) * 0.5 * viewport.width,
-                       y: (1 - CGFloat(y)) * 0.5 * viewport.height)
+        return viewProjection * world
     }
 }
 

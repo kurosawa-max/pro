@@ -121,15 +121,17 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         faceSelectionOverlayRenderer.update(mesh: mesh, selection: selection)
     }
 
-    @discardableResult
     func updateEdgeSelection(
         mesh: EditableMesh,
         table: MeshEdgeTable?,
         selection: EdgeSelection,
-        hoveredEdgeID: Int?
-    ) -> Bool {
+        hoveredEdgeID: Int?,
+        drawableSizePixels: CGSize,
+        displayScale: CGFloat
+    ) -> EdgeSelectionOverlayUpdateResult {
         edgeSelectionOverlayRenderer.update(
-            mesh: mesh, table: table, selection: selection, hoveredEdgeID: hoveredEdgeID)
+            mesh: mesh, table: table, selection: selection, hoveredEdgeID: hoveredEdgeID,
+            drawableSizePixels: drawableSizePixels, displayScale: displayScale)
     }
 
     private func makeOrReuse(buffer: MTLBuffer?, requiredLength: Int) -> MTLBuffer? {
@@ -184,7 +186,9 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             edgeSelectionOverlayRenderer.encode(
                 encoder: encoder, vertexBuffer: vertexBuffer,
                 viewProjection: viewProjection, model: objectTransform.modelMatrix,
-                viewportSize: SIMD2(Float(view.drawableSize.width), Float(view.drawableSize.height)))
+                drawableSizePixels: SIMD2(
+                    Float(view.drawableSize.width), Float(view.drawableSize.height)),
+                displayScale: Float(view.contentScaleFactor))
         }
         diagnosticsOverlayRenderer.encode(encoder: encoder, viewProjection: viewProjection,
                                           model: objectTransform.modelMatrix,

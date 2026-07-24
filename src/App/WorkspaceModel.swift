@@ -776,6 +776,22 @@ final class WorkspaceModel: ObservableObject {
         hoveredEdgeID = nil
     }
 
+    func handleEdgeSelectionOverlayUpdate(_ result: EdgeSelectionOverlayUpdateResult) {
+        switch result {
+        case .unchanged:
+            break
+        case .updated:
+            if edgeSelectionError?.hasPrefix("Edge overlay:") == true {
+                edgeSelectionError = nil
+            }
+        case .unavailable(let error):
+            let message = "Edge overlay: \(error.localizedDescription)"
+            guard edgeSelectionError != message else { return }
+            edgeSelectionError = message
+            status = message
+        }
+    }
+
     @discardableResult
     func applyEdgeSelectionHit(_ edgeID: Int) -> Bool {
         guard isEdgeSelectionInteractionEnabled, let table = meshEdgeTable,
