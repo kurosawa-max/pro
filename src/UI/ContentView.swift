@@ -69,6 +69,11 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding(.horizontal, 8)
                         .padding(.bottom, 4)
+                } else if model.interactionMode == .edgeSelect {
+                    EdgeSelectionPanel(model: model)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 4)
                 }
             }
             .navigationTitle("Forge3D")
@@ -116,7 +121,7 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    .accessibilityHint("Switch between sculpting and triangle face selection")
+                    .accessibilityHint("Switch between sculpting, triangle face selection, and topological edge selection")
                     #if DEBUG
                     .disabled(model.isBenchmarkRunning)
                     #endif

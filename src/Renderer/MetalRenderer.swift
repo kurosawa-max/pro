@@ -10,6 +10,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private let rotationGizmoRenderer: RotationGizmoRenderer
     private let scaleGizmoRenderer: ScaleGizmoRenderer
     private let faceSelectionOverlayRenderer: FaceSelectionOverlayRenderer
+    private let edgeSelectionOverlayRenderer: EdgeSelectionOverlayRenderer
     private let diagnosticsOverlayRenderer: MeshDiagnosticsOverlayRenderer
     private let profiler: PerformanceProfiler?
     private var depthState: MTLDepthStencilState
@@ -26,12 +27,15 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     var scaleGizmoState = ScaleGizmoState()
     var gizmoMode = GizmoMode.translate
     var showsTranslationGizmo = true
+    var showsFaceSelection = false
+    var showsEdgeSelection = false
     var diagnosticsOverlayOptions = MeshDiagnosticsOverlayOptions()
     private(set) var gizmoWorldScale: Float = 1
     private(set) var viewProjection = matrix_identity_float4x4
 
     init?(view: MTKView, profiler: PerformanceProfiler?,
-          faceSelectionBufferAllocator: FaceSelectionIndexBufferAllocating = MetalFaceSelectionIndexBufferAllocator()) {
+          faceSelectionBufferAllocator: FaceSelectionIndexBufferAllocating = MetalFaceSelectionIndexBufferAllocator(),
+          edgeSelectionBufferAllocator: EdgeSelectionPairBufferAllocating = MetalEdgeSelectionPairBufferAllocator()) {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
         self.device = device; self.queue = queue; self.profiler = profiler
         view.device = device; view.depthStencilPixelFormat = .depth32Float; view.colorPixelFormat = .bgra8Unorm_srgb
@@ -57,6 +61,10 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
                 device: device, library: library, colorPixelFormat: view.colorPixelFormat,
                 depthPixelFormat: view.depthStencilPixelFormat,
                 bufferAllocator: faceSelectionBufferAllocator),
+              let edgeSelectionOverlayRenderer = EdgeSelectionOverlayRenderer(
+                device: device, library: library, colorPixelFormat: view.colorPixelFormat,
+                depthPixelFormat: view.depthStencilPixelFormat,
+                allocator: edgeSelectionBufferAllocator),
               let diagnosticsOverlayRenderer = MeshDiagnosticsOverlayRenderer(
                 device: device, library: library, colorPixelFormat: view.colorPixelFormat,
                 depthPixelFormat: view.depthStencilPixelFormat) else { return nil }
@@ -65,6 +73,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         self.rotationGizmoRenderer = rotationGizmoRenderer
         self.scaleGizmoRenderer = scaleGizmoRenderer
         self.faceSelectionOverlayRenderer = faceSelectionOverlayRenderer
+        self.edgeSelectionOverlayRenderer = edgeSelectionOverlayRenderer
         self.diagnosticsOverlayRenderer = diagnosticsOverlayRenderer
         let depth = MTLDepthStencilDescriptor(); depth.isDepthWriteEnabled = true; depth.depthCompareFunction = .less
         guard let depthState = device.makeDepthStencilState(descriptor: depth) else { return nil }
@@ -112,6 +121,19 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         faceSelectionOverlayRenderer.update(mesh: mesh, selection: selection)
     }
 
+    func updateEdgeSelection(
+        mesh: EditableMesh,
+        table: MeshEdgeTable?,
+        selection: EdgeSelection,
+        hoveredEdgeID: Int?,
+        drawableSizePixels: CGSize,
+        displayScale: CGFloat
+    ) -> EdgeSelectionOverlayUpdateResult {
+        edgeSelectionOverlayRenderer.update(
+            mesh: mesh, table: table, selection: selection, hoveredEdgeID: hoveredEdgeID,
+            drawableSizePixels: drawableSizePixels, displayScale: displayScale)
+    }
+
     private func makeOrReuse(buffer: MTLBuffer?, requiredLength: Int) -> MTLBuffer? {
         guard requiredLength > 0 else { return nil }
         if let buffer, buffer.length >= requiredLength { return buffer }
@@ -155,9 +177,19 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
         encoder.drawIndexedPrimitives(type: .triangle, indexCount: indexCount, indexType: .uint32,
                                       indexBuffer: indexBuffer, indexBufferOffset: 0)
-        faceSelectionOverlayRenderer.encode(encoder: encoder, vertexBuffer: vertexBuffer,
-                                            viewProjection: viewProjection,
-                                            model: objectTransform.modelMatrix)
+        if showsFaceSelection {
+            faceSelectionOverlayRenderer.encode(encoder: encoder, vertexBuffer: vertexBuffer,
+                                                viewProjection: viewProjection,
+                                                model: objectTransform.modelMatrix)
+        }
+        if showsEdgeSelection {
+            edgeSelectionOverlayRenderer.encode(
+                encoder: encoder, vertexBuffer: vertexBuffer,
+                viewProjection: viewProjection, model: objectTransform.modelMatrix,
+                drawableSizePixels: SIMD2(
+                    Float(view.drawableSize.width), Float(view.drawableSize.height)),
+                displayScale: Float(view.contentScaleFactor))
+        }
         diagnosticsOverlayRenderer.encode(encoder: encoder, viewProjection: viewProjection,
                                           model: objectTransform.modelMatrix,
                                           options: diagnosticsOverlayOptions)
@@ -211,7 +243,9 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         return simd_normalize(camera.target - eye)
     }
 
-    static let drawOrder: [RendererDrawLayer] = [.mesh, .faceSelection, .diagnostics, .gizmo]
+    static let drawOrder: [RendererDrawLayer] = [
+        .mesh, .faceSelection, .edgeSelection, .diagnostics, .gizmo
+    ]
 
     #if DEBUG
     var faceSelectionOverlayUploadCount: Int { faceSelectionOverlayRenderer.uploadCount }
@@ -219,12 +253,19 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     var faceSelectionOverlayUploadedKey: FaceSelectionOverlayCacheKey? {
         faceSelectionOverlayRenderer.uploadedKey
     }
+    var edgeSelectionOverlayUploadCount: Int { edgeSelectionOverlayRenderer.uploadCount }
+    var edgeSelectionOverlayEdgeCount: Int { edgeSelectionOverlayRenderer.selectedEdgeCount }
+    var edgeSelectionOverlayHoverCount: Int { edgeSelectionOverlayRenderer.hoverEdgeCount }
+    var edgeSelectionOverlayUploadedKey: EdgeSelectionOverlayCacheKey? {
+        edgeSelectionOverlayRenderer.uploadedKey
+    }
     #endif
 }
 
 enum RendererDrawLayer: Equatable {
     case mesh
     case faceSelection
+    case edgeSelection
     case diagnostics
     case gizmo
 }
