@@ -19,6 +19,7 @@ final class WorkspaceModel: ObservableObject {
                 if !isInstallingMeshCleanup { lastMeshCleanupSummary = nil }
             }
             reconcileFaceSelection(previousMesh: oldValue)
+            reconcileEdgeSelection(previousMesh: oldValue)
         }
     }
     @Published var camera = CameraState()
@@ -41,6 +42,12 @@ final class WorkspaceModel: ObservableObject {
         sourceTopologyID: UUID(), sourceTopologyRevision: 0)
     @Published private(set) var isFaceSelectionProcessing = false
     @Published private(set) var faceSelectionError: String?
+    @Published private(set) var edgeSelectionOperation = EdgeSelectionOperation.replace
+    @Published private(set) var edgeSelection = EdgeSelection.unavailable(
+        topologyID: UUID(), topologyRevision: 0)
+    @Published private(set) var meshEdgeTable: MeshEdgeTable?
+    @Published private(set) var hoveredEdgeID: Int?
+    @Published private(set) var edgeSelectionError: String?
     @Published var brush = BrushKind.draw
     @Published var brushSettings = BrushSettings()
     @Published var symmetry = SculptSymmetry.none
@@ -179,6 +186,7 @@ final class WorkspaceModel: ObservableObject {
         self.pickingCache = pickingCache
         self.lastSavedGeneration = projectMutationGeneration
         rebuildFaceSelectionForCurrentTopology()
+        rebuildEdgeSelectionForCurrentTopology()
         profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
     }
 
@@ -540,6 +548,33 @@ final class WorkspaceModel: ObservableObject {
 
     var selectedFaceCount: Int { faceSelection.matches(mesh) ? faceSelection.selectedCount : 0 }
     var totalFaceCount: Int { mesh.indices.count.isMultiple(of: 3) ? mesh.indices.count / 3 : 0 }
+    var selectedEdgeCount: Int {
+        guard let table = meshEdgeTable, edgeSelection.matches(table) else { return 0 }
+        return edgeSelection.selectedCount
+    }
+    var totalEdgeCount: Int { meshEdgeTable?.edges.count ?? 0 }
+
+    var isEdgeSelectionInteractionEnabled: Bool {
+        guard interactionMode == .edgeSelect,
+              let table = meshEdgeTable,
+              table.matches(mesh),
+              edgeSelection.matches(table),
+              !isFaceSelectionProcessing,
+              !isStrokeActive,
+              !isGizmoDragging,
+              !isTransformPanelEditing,
+              !isSTLImporting,
+              !isMeshDiagnosticsRunning,
+              !isMeshCleanupRunning,
+              !isTopologyEditRunning,
+              !isRecoveryOperationInProgress,
+              !isRecoveryPromptPresented else { return false }
+        #if DEBUG
+        return !isBenchmarkRunning
+        #else
+        return true
+        #endif
+    }
 
     var isFaceSelectionInteractionEnabled: Bool {
         guard interactionMode == .faceSelect,
@@ -663,7 +698,13 @@ final class WorkspaceModel: ObservableObject {
         hoverLocation = nil
         interactionMode = mode
         faceSelectionError = nil
-        status = mode == .faceSelect ? "Face Select mode" : "Sculpt mode"
+        edgeSelectionError = nil
+        hoveredEdgeID = nil
+        switch mode {
+        case .sculpt: status = "Sculpt mode"
+        case .faceSelect: status = "Face Select mode"
+        case .edgeSelect: status = "Edge Select mode"
+        }
     }
 
     func setFaceSelectionOperation(_ operation: FaceSelectionOperation) {
@@ -673,6 +714,104 @@ final class WorkspaceModel: ObservableObject {
         #endif
         faceSelectionOperation = operation
         faceSelectionError = nil
+    }
+
+    func setEdgeSelectionOperation(_ operation: EdgeSelectionOperation) {
+        guard operation != edgeSelectionOperation else { return }
+        #if DEBUG
+        guard !isBenchmarkRunning else { return }
+        #endif
+        edgeSelectionOperation = operation
+        edgeSelectionError = nil
+    }
+
+    @discardableResult
+    func selectEdge(
+        fromWorldRay ray: Ray,
+        screenPoint: CGPoint,
+        viewportSize: CGSize,
+        viewProjection: simd_float4x4
+    ) -> Bool {
+        guard isEdgeSelectionInteractionEnabled, let table = meshEdgeTable else {
+            reportEdgeSelectionError(EdgeSelectionError.unavailable)
+            return false
+        }
+        switch MeshEdgePicker.pick(
+            worldRay: ray, screenPoint: screenPoint, viewportSize: viewportSize,
+            mesh: mesh, transform: objectTransform, viewProjection: viewProjection,
+            table: table, cache: pickingCache) {
+        case .hit(let edgeID, _):
+            return applyEdgeSelectionHit(edgeID)
+        case .miss:
+            edgeSelectionError = nil
+            return false
+        case .unavailable:
+            reportEdgeSelectionError(EdgeSelectionError.unavailable)
+            return false
+        }
+    }
+
+    func updateEdgeHover(
+        fromWorldRay ray: Ray?,
+        screenPoint: CGPoint?,
+        viewportSize: CGSize,
+        viewProjection: simd_float4x4
+    ) {
+        guard let ray, let screenPoint, isEdgeSelectionInteractionEnabled,
+              let table = meshEdgeTable else {
+            hoveredEdgeID = nil
+            return
+        }
+        if case .hit(let edgeID, _) = MeshEdgePicker.pick(
+            worldRay: ray, screenPoint: screenPoint, viewportSize: viewportSize,
+            mesh: mesh, transform: objectTransform, viewProjection: viewProjection,
+            table: table, cache: pickingCache) {
+            hoveredEdgeID = edgeID
+        } else {
+            hoveredEdgeID = nil
+        }
+    }
+
+    func clearEdgeHover() {
+        hoveredEdgeID = nil
+    }
+
+    @discardableResult
+    func applyEdgeSelectionHit(_ edgeID: Int) -> Bool {
+        guard isEdgeSelectionInteractionEnabled, let table = meshEdgeTable,
+              edgeSelection.matches(table) else {
+            reportEdgeSelectionError(EdgeSelectionError.unavailable)
+            return false
+        }
+        do {
+            var updated = edgeSelection
+            guard try updated.apply(edgeSelectionOperation, edgeID: edgeID) else {
+                edgeSelectionError = nil
+                return false
+            }
+            commitEdgeSelection(updated)
+            return true
+        } catch {
+            reportEdgeSelectionError(error)
+            return false
+        }
+    }
+
+    func clearEdgeSelection() { mutateEdgeSelection { $0.clear() } }
+    func selectAllEdges() { mutateEdgeSelection { $0.selectAll() } }
+    func invertEdgeSelection() { mutateEdgeSelection { $0.invert() } }
+
+    func selectConnectedEdges() {
+        guard isEdgeSelectionInteractionEnabled, let table = meshEdgeTable,
+              edgeSelection.matches(table), edgeSelection.selectedCount > 0 else { return }
+        do {
+            let connected = try EdgeSelectionConnectivity.connectedEdgeIDs(
+                table: table, seeds: edgeSelection.selectedEdgeIDs())
+            var updated = edgeSelection
+            if try updated.formUnion(connected) { commitEdgeSelection(updated) }
+        } catch {
+            reportEdgeSelectionError(error)
+        }
     }
 
     @discardableResult
@@ -2737,6 +2876,31 @@ final class WorkspaceModel: ObservableObject {
         rebuildFaceSelectionForCurrentTopology()
     }
 
+    private func reconcileEdgeSelection(previousMesh: EditableMesh) {
+        let topologyChanged = previousMesh.runtime.topologyID != mesh.runtime.topologyID
+            || previousMesh.runtime.topologyRevision != mesh.runtime.topologyRevision
+            || previousMesh.indices.count != mesh.indices.count
+        guard topologyChanged else { return }
+        rebuildEdgeSelectionForCurrentTopology()
+    }
+
+    private func rebuildEdgeSelectionForCurrentTopology() {
+        hoveredEdgeID = nil
+        do {
+            let table = try MeshEdgeTable.build(mesh: mesh)
+            let selection = try EdgeSelection(table: table)
+            meshEdgeTable = table
+            edgeSelection = selection
+            edgeSelectionError = nil
+        } catch {
+            meshEdgeTable = nil
+            edgeSelection = EdgeSelection.unavailable(
+                topologyID: mesh.runtime.topologyID,
+                topologyRevision: mesh.runtime.topologyRevision)
+            reportEdgeSelectionError(error)
+        }
+    }
+
     private func rebuildFaceSelectionForCurrentTopology() {
         cancelFaceSelectionProcessing()
         faceExtrudePreview = nil
@@ -2788,6 +2952,33 @@ final class WorkspaceModel: ObservableObject {
         discardMeshSeamEditPreview()
         faceSelectionError = nil
         status = "Selected \(updated.selectedCount) of \(updated.triangleCount) faces"
+    }
+
+    private func mutateEdgeSelection(_ operation: (inout EdgeSelection) throws -> Bool) {
+        guard isEdgeSelectionInteractionEnabled, let table = meshEdgeTable,
+              edgeSelection.matches(table) else {
+            reportEdgeSelectionError(EdgeSelectionError.unavailable)
+            return
+        }
+        do {
+            var updated = edgeSelection
+            if try operation(&updated) { commitEdgeSelection(updated) }
+            else { edgeSelectionError = nil }
+        } catch {
+            reportEdgeSelectionError(error)
+        }
+    }
+
+    private func commitEdgeSelection(_ updated: EdgeSelection) {
+        edgeSelection = updated
+        edgeSelectionError = nil
+        status = "Selected \(updated.selectedCount) of \(updated.edgeCount) edges"
+    }
+
+    private func reportEdgeSelectionError(_ error: Error) {
+        let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        edgeSelectionError = message
+        status = "Edge selection: \(message)"
     }
 
     private func reportFaceSelectionError(_ error: Error) {

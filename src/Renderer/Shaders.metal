@@ -39,6 +39,49 @@ fragment float4 faceSelectionFragment(FaceSelectionVertexOut in [[stage_in]]) {
     return float4(1.0, 0.56, 0.08, 0.34);
 }
 
+struct EdgeSelectionUniforms {
+    float4x4 viewProjection;
+    float4x4 model;
+    float2 viewportSize;
+    float thickness;
+    float padding;
+    float4 color;
+};
+struct EdgeSelectionVertexOut {
+    float4 position [[position]];
+    float4 color;
+};
+
+vertex EdgeSelectionVertexOut edgeSelectionVertex(
+    uint vertexID [[vertex_id]],
+    uint instanceID [[instance_id]],
+    constant MeshVertex *vertices [[buffer(0)]],
+    constant uint2 *edgePairs [[buffer(1)]],
+    constant EdgeSelectionUniforms &uniforms [[buffer(2)]]) {
+    uint2 pair = edgePairs[instanceID];
+    float4 clipA = uniforms.viewProjection * uniforms.model * float4(vertices[pair.x].position, 1.0);
+    float4 clipB = uniforms.viewProjection * uniforms.model * float4(vertices[pair.y].position, 1.0);
+    float2 ndcA = clipA.xy / max(clipA.w, 1e-6);
+    float2 ndcB = clipB.xy / max(clipB.w, 1e-6);
+    float2 pixelDirection = (ndcB - ndcA) * uniforms.viewportSize * 0.5;
+    float directionLength = max(length(pixelDirection), 1e-6);
+    float2 pixelNormal = float2(-pixelDirection.y, pixelDirection.x) / directionLength;
+    float2 ndcOffset = pixelNormal * uniforms.thickness * 2.0 / uniforms.viewportSize;
+    const uint endpointPattern[6] = {0, 1, 1, 0, 1, 0};
+    const float sidePattern[6] = {-1, -1, 1, -1, 1, 1};
+    bool useB = endpointPattern[vertexID] != 0;
+    float4 clip = useB ? clipB : clipA;
+    clip.xy += ndcOffset * sidePattern[vertexID] * clip.w;
+    EdgeSelectionVertexOut out;
+    out.position = clip;
+    out.color = uniforms.color;
+    return out;
+}
+
+fragment float4 edgeSelectionFragment(EdgeSelectionVertexOut in [[stage_in]]) {
+    return in.color;
+}
+
 struct GizmoVertex { float3 position; float4 color; int handle; };
 struct GizmoUniforms { float4x4 viewProjection; float3 origin; float scale; int hoverHandle; int activeHandle; };
 struct GizmoVertexOut { float4 position [[position]]; float4 color; };

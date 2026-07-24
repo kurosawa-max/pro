@@ -32,6 +32,11 @@ struct MetalCanvas: UIViewRepresentable {
         context.coordinator.installGestures(on: view)
         renderer.update(mesh: model.mesh)
         renderer.updateFaceSelection(mesh: model.mesh, selection: model.faceSelection)
+        renderer.updateEdgeSelection(
+            mesh: model.mesh, table: model.meshEdgeTable,
+            selection: model.edgeSelection, hoveredEdgeID: model.hoveredEdgeID)
+        renderer.showsFaceSelection = model.interactionMode == .faceSelect
+        renderer.showsEdgeSelection = model.interactionMode == .edgeSelect
         return view
     }
 
@@ -54,6 +59,11 @@ struct MetalCanvas: UIViewRepresentable {
                                                         options: model.meshDiagnosticsOverlayOptions)
         context.coordinator.renderer?.update(mesh: model.mesh)
         context.coordinator.renderer?.updateFaceSelection(mesh: model.mesh, selection: model.faceSelection)
+        context.coordinator.renderer?.updateEdgeSelection(
+            mesh: model.mesh, table: model.meshEdgeTable,
+            selection: model.edgeSelection, hoveredEdgeID: model.hoveredEdgeID)
+        context.coordinator.renderer?.showsFaceSelection = model.interactionMode == .faceSelect
+        context.coordinator.renderer?.showsEdgeSelection = model.interactionMode == .edgeSelect
     }
 
     @MainActor final class Coordinator: NSObject, UIGestureRecognizerDelegate {
@@ -75,6 +85,7 @@ struct MetalCanvas: UIViewRepresentable {
             if model.isGizmoDragging { model.cancelAllGizmoDrags() }
             else { model.cancelStroke() }
             model.hoverLocation = nil
+            model.clearEdgeHover()
             updateGizmoHover(ray: nil, scale: 1)
         }
 
@@ -82,8 +93,10 @@ struct MetalCanvas: UIViewRepresentable {
             guard !isInputSuppressed else { return }
             guard let renderer, let ray = renderer.ray(at: sample.location, viewSize: view.bounds.size) else { return }
             if beginGizmoDrag(ray: ray, renderer: renderer) { return }
-            if model.interactionMode == .faceSelect {
-                guard model.isFaceSelectionInteractionEnabled else { return }
+            if model.interactionMode == .faceSelect || model.interactionMode == .edgeSelect {
+                guard model.interactionMode == .faceSelect
+                    ? model.isFaceSelectionInteractionEnabled
+                    : model.isEdgeSelectionInteractionEnabled else { return }
                 faceSelectionTap.begin(sample)
                 return
             }
@@ -96,7 +109,9 @@ struct MetalCanvas: UIViewRepresentable {
                 guard let ray = renderer.ray(at: sample.location, viewSize: view.bounds.size) else { return }
                 updateGizmoDrag(ray: ray, renderer: renderer)
             } else if faceSelectionTap.isTracking {
-                if model.interactionMode == .faceSelect { faceSelectionTap.update(sample) }
+                if model.interactionMode == .faceSelect || model.interactionMode == .edgeSelect {
+                    faceSelectionTap.update(sample)
+                }
                 else { faceSelectionTap.cancel() }
             } else {
                 guard let ray = renderer?.ray(at: sample.location, viewSize: view.bounds.size) else { return }
@@ -110,14 +125,20 @@ struct MetalCanvas: UIViewRepresentable {
                 faceSelectionTap.cancel()
                 endGizmoDrag()
             } else if faceSelectionTap.isTracking {
-                guard model.interactionMode == .faceSelect,
+                guard model.interactionMode == .faceSelect || model.interactionMode == .edgeSelect,
                       let sample,
                       let point = faceSelectionTap.finish(sample, viewport: view.bounds),
                       let ray = renderer?.ray(at: point, viewSize: view.bounds.size) else {
                     faceSelectionTap.cancel()
                     return
                 }
-                _ = model.selectFace(fromWorldRay: ray)
+                if model.interactionMode == .faceSelect {
+                    _ = model.selectFace(fromWorldRay: ray)
+                } else if let renderer {
+                    _ = model.selectEdge(
+                        fromWorldRay: ray, screenPoint: point,
+                        viewportSize: view.bounds.size, viewProjection: renderer.viewProjection)
+                }
             } else {
                 model.endStroke()
             }
@@ -132,11 +153,13 @@ struct MetalCanvas: UIViewRepresentable {
         func hover(_ point: CGPoint?, in view: UIView) {
             guard !isInputSuppressed else {
                 model.hoverLocation = nil
+                model.clearEdgeHover()
                 updateGizmoHover(ray: nil, scale: 1)
                 return
             }
             guard let point, let renderer, let ray = renderer.ray(at: point, viewSize: view.bounds.size) else {
                 model.hoverLocation = nil
+                model.clearEdgeHover()
                 updateGizmoHover(ray: nil, scale: 1)
                 return
             }
@@ -147,7 +170,18 @@ struct MetalCanvas: UIViewRepresentable {
             case .rotate: hasHover = model.rotationGizmoState.hoverHandle != nil
             case .scale: hasHover = model.scaleGizmoState.hoverHandle != nil
             }
-            model.hoverLocation = hasHover || model.interactionMode == .faceSelect ? nil : point
+            if model.interactionMode == .edgeSelect, !hasHover {
+                model.updateEdgeHover(
+                    fromWorldRay: ray, screenPoint: point, viewportSize: view.bounds.size,
+                    viewProjection: renderer.viewProjection)
+            } else if model.interactionMode == .edgeSelect {
+                model.updateEdgeHover(
+                    fromWorldRay: nil, screenPoint: nil, viewportSize: view.bounds.size,
+                    viewProjection: renderer.viewProjection)
+            }
+            model.hoverLocation = hasHover
+                || model.interactionMode == .faceSelect
+                || model.interactionMode == .edgeSelect ? nil : point
         }
 
         private func beginGizmoDrag(ray: Ray, renderer: MetalRenderer) -> Bool {
