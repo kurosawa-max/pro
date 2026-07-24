@@ -216,6 +216,63 @@ final class EdgeSelectionTests: XCTestCase {
         }
     }
 
+    func testOverlayAllocationFailureClearsCountsAndRetriesAtomically() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), device: device)
+        let allocator = FaultInjectingEdgePairAllocator()
+        guard let renderer = MetalRenderer(
+            view: view, profiler: nil, edgeSelectionBufferAllocator: allocator) else {
+            return XCTFail("Renderer unavailable")
+        }
+        let source = twoTriangleQuad()
+        let table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table)
+        XCTAssertTrue(try selection.apply(.add, edgeID: 0))
+        allocator.failAllocationNumber = 2
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 200, height: 200), displayScale: 2),
+            .unavailable(.allocationFailed))
+        XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 0)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 0)
+        XCTAssertNil(renderer.edgeSelectionOverlayUploadedKey)
+
+        allocator.failAllocationNumber = nil
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 200, height: 200), displayScale: 2), .updated)
+        XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 1)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 1)
+        XCTAssertNotNil(renderer.edgeSelectionOverlayUploadedKey)
+    }
+
+    func testOverlayCopyFailureDoesNotInstallStaleKeyAndCanRetry() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), device: device)
+        let allocator = FaultInjectingEdgePairAllocator()
+        guard let renderer = MetalRenderer(
+            view: view, profiler: nil, edgeSelectionBufferAllocator: allocator) else {
+            return XCTFail("Renderer unavailable")
+        }
+        let source = twoTriangleQuad()
+        let table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table)
+        XCTAssertTrue(try selection.apply(.add, edgeID: 0))
+        allocator.failCopyNumber = 1
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1),
+            .unavailable(.copyFailed))
+        XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 0)
+        XCTAssertNil(renderer.edgeSelectionOverlayUploadedKey)
+
+        allocator.failCopyNumber = nil
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1), .updated)
+        XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 1)
+    }
+
     func testScreenDistanceAndVisibleTrianglePicking() throws {
         let source = mesh(
             [SIMD3(-0.5, -0.5, 0), SIMD3(0.5, -0.5, 0), SIMD3(0, 0.5, 0)],
@@ -321,5 +378,28 @@ final class EdgeSelectionTests: XCTestCase {
             indices: indices)
         value.recalculateNormals(recordChange: false)
         return value
+    }
+}
+
+private final class FaultInjectingEdgePairAllocator: EdgeSelectionPairBufferAllocating {
+    var failAllocationNumber: Int?
+    var failCopyNumber: Int?
+    private var allocationCount = 0
+    private var copyCount = 0
+
+    func makeBuffer(device: MTLDevice, length: Int) -> MTLBuffer? {
+        allocationCount += 1
+        if allocationCount == failAllocationNumber { return nil }
+        return device.makeBuffer(length: length, options: .storageModeShared)
+    }
+
+    func copy(_ pairs: [SIMD2<UInt32>], byteCount: Int, to buffer: MTLBuffer) -> Bool {
+        copyCount += 1
+        if copyCount == failCopyNumber { return false }
+        return pairs.withUnsafeBufferPointer { source in
+            guard let base = source.baseAddress, buffer.length >= byteCount else { return false }
+            buffer.contents().copyMemory(from: base, byteCount: byteCount)
+            return true
+        }
     }
 }
