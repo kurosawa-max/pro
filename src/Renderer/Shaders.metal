@@ -39,6 +39,80 @@ fragment float4 faceSelectionFragment(FaceSelectionVertexOut in [[stage_in]]) {
     return float4(1.0, 0.56, 0.08, 0.34);
 }
 
+struct EdgeSelectionUniforms {
+    float4x4 viewProjection;
+    float4x4 model;
+    float2 drawableSizePixels;
+    float thicknessPoints;
+    float displayScale;
+    float4 color;
+};
+struct EdgeSelectionVertexOut {
+    float4 position [[position]];
+    float4 color;
+};
+
+static bool clipEdgeToMetalNearPlane(thread float4 &a, thread float4 &b) {
+    if (!all(isfinite(a)) || !all(isfinite(b))) { return false; }
+    bool aBehind = a.z < 0.0;
+    bool bBehind = b.z < 0.0;
+    if (aBehind && bBehind) { return false; }
+    if (aBehind != bBehind) {
+        float denominator = b.z - a.z;
+        if (!isfinite(denominator) || abs(denominator) <= 1e-7) { return false; }
+        float t = -a.z / denominator;
+        if (!isfinite(t) || t < 0.0 || t > 1.0) { return false; }
+        float4 intersection = a + (b - a) * t;
+        if (!all(isfinite(intersection))) { return false; }
+        if (aBehind) { a = intersection; } else { b = intersection; }
+    }
+    return a.w > 1e-6 && b.w > 1e-6;
+}
+
+vertex EdgeSelectionVertexOut edgeSelectionVertex(
+    uint vertexID [[vertex_id]],
+    uint instanceID [[instance_id]],
+    constant MeshVertex *vertices [[buffer(0)]],
+    constant uint2 *edgePairs [[buffer(1)]],
+    constant EdgeSelectionUniforms &uniforms [[buffer(2)]]) {
+    uint2 pair = edgePairs[instanceID];
+    float4 clipA = uniforms.viewProjection * uniforms.model * float4(vertices[pair.x].position, 1.0);
+    float4 clipB = uniforms.viewProjection * uniforms.model * float4(vertices[pair.y].position, 1.0);
+    EdgeSelectionVertexOut out;
+    float2 drawableSize = uniforms.drawableSizePixels;
+    float thicknessPixels = uniforms.thicknessPoints * uniforms.displayScale;
+    if (!clipEdgeToMetalNearPlane(clipA, clipB)
+        || !all(isfinite(drawableSize)) || any(drawableSize <= 0.0)
+        || !isfinite(thicknessPixels) || thicknessPixels <= 0.0) {
+        out.position = float4(2.0, 2.0, 2.0, 1.0);
+        out.color = float4(0.0);
+        return out;
+    }
+    float2 ndcA = clipA.xy / clipA.w;
+    float2 ndcB = clipB.xy / clipB.w;
+    float2 pixelDirection = (ndcB - ndcA) * drawableSize * 0.5;
+    float directionLength = length(pixelDirection);
+    if (!isfinite(directionLength) || directionLength <= 1e-6) {
+        out.position = float4(2.0, 2.0, 2.0, 1.0);
+        out.color = float4(0.0);
+        return out;
+    }
+    float2 pixelNormal = float2(-pixelDirection.y, pixelDirection.x) / directionLength;
+    float2 ndcOffset = pixelNormal * thicknessPixels * 2.0 / drawableSize;
+    const uint endpointPattern[6] = {0, 1, 1, 0, 1, 0};
+    const float sidePattern[6] = {-1, -1, 1, -1, 1, 1};
+    bool useB = endpointPattern[vertexID] != 0;
+    float4 clip = useB ? clipB : clipA;
+    clip.xy += ndcOffset * sidePattern[vertexID] * clip.w;
+    out.position = clip;
+    out.color = uniforms.color;
+    return out;
+}
+
+fragment float4 edgeSelectionFragment(EdgeSelectionVertexOut in [[stage_in]]) {
+    return in.color;
+}
+
 struct GizmoVertex { float3 position; float4 color; int handle; };
 struct GizmoUniforms { float4x4 viewProjection; float3 origin; float scale; int hoverHandle; int activeHandle; };
 struct GizmoVertexOut { float4 position [[position]]; float4 color; };

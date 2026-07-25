@@ -3,6 +3,7 @@ import Foundation
 enum WorkspaceInteractionMode: String, CaseIterable, Hashable {
     case sculpt = "Sculpt"
     case faceSelect = "Face Select"
+    case edgeSelect = "Edge Select"
 }
 
 enum FaceSelectionOperation: String, CaseIterable, Hashable {

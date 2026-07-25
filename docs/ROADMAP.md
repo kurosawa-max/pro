@@ -50,6 +50,8 @@ Face Insetのplanar region安全境界を共有するFace Bevel foundationとし
 
 Face Selectionを境界とするSplit RegionとMerge Exact Seam foundationとして、selected側だけのsimple-loop seam vertex複製、全vertex exact-position/component incidence、counterpart loopと対象限定vertex fan検証、bit-exact local Float pairing、counterpart survivor、決定論的compaction、triangle／bounds不変、component／boundary公式、race-safe Preview、prepared commit、ReplaceMeshCommand 1件を追加する。Diagnostics／incidence前のcount-only conservative Stage Aとresult allocation前のactual-count refined Stage Bでworking-memoryを検査し、source／result同時保持をpeak estimateへ含める。Splitはhost外vertex-only contactを拒否してopen coincident seamを作り、Mergeは両participating componentのwhole-vertex isolationを要求してSplit由来の一意なsingle-loop seamだけを再接続する。proximity weld、Boolean、cap／wall、multiple loop、repair、multiple objectは後続範囲とする。
 
+単一objectのEdge Selection foundationとして、canonical vertex-ID pair、deterministic edge table、incident face分類、dense bitset、Replace／Add／Remove／Toggle、Clear／All／Invert、vertex-connected selection、BVH frontmost triangleからのscreen-space edge picking、hover、endpoint pair Metal overlayを追加する。selectionはruntime-onlyでvertex-only変更では維持し、topology変更でclearする。Loop／Ring、hidden／through、Box／Lasso、Vertex Selection、topology編集は後続範囲とする。
+
 ## Milestone 0 — Repository Foundation
 
 - Xcode workspace作成
@@ -113,7 +115,7 @@ Face Selectionを境界とするSplit RegionとMerge Exact Seam foundationとし
 ## Milestone 5 — Modeling Tools
 
 - Move/Rotate/Scale
-- Face/Edge/Vertex selection（triangle Face Selection foundationは実装済み。Edge／Vertexとtopology editは未実装）
+- Face/Edge/Vertex selection（triangle Face Selectionとtopological Edge Selection foundationは実装済み。Vertexとtopology editは未実装）
 - Extrude（manifold face patchの基本parallel extrusionはFoundation実装済み。open boundary、whole shell、interactive/individual modeは未実装）
 - Inset（planar convex single-loop patchのconstant-width foundationは実装済み。concave、hole、multiple loop、outsetは未実装）
 - Basic bevel（planar convex face-region chamfer foundationは実装済み。general edge、multiple segment、concave／hole／non-planar regionは未実装）

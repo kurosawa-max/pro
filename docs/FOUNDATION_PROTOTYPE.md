@@ -202,3 +202,9 @@ Face Selectの単一edge-connected regionを、selected側の境界vertexだけ�
 Split由来のselected component全体と別componentのsingle boundary loopを、`+0`／`-0`だけ正規化したbit-exact local Float positionで一対一対応させて再接続する。全vertex exact-position incidence、counterpart loop、result vertex fanを独立検証し、第三候補やcomponent共有vertexを拒否する。counterpart側をsurvivorとしてselected seam duplicateだけを決定論的にcompactする。曖昧pair、同方向winding、non-manifold／duplicate結果はrepairせず拒否する。
 
 working-memoryは、Diagnostics／incidence構築前のcount-only conservative Stage Aと、actual seam／result count確定後かつresult allocation前のrefined Stage Bで検査する。sourceとresultの同時保持、history snapshot、Renderer staging、runtime cache準備をpeak estimateへ含め、PreviewにはStage B値を表示する。result seam fanは対象vertexだけのincidenceを1回のtriangle scanで収集し、result全体のincidence再構築を避ける。PreviewはUUID identityと完全plan fingerprintへ結合し、Applyはprepared BVH後の1 install、1 ReplaceMeshCommand、1 Autosaveを使う。詳細は`EXACT_SEAM_MERGE_SPLIT.md`を参照する。
+
+## Edge Selection foundation
+
+Edgeはvertex IDのcanonical unordered pairで識別し、位置が一致しても別vertex IDなら別edgeである。mesh indicesからcanonical key順のdeterministic table、incident face分類、vertex-to-edge incidenceを構築し、topology identityへ結合したdense bitsetで選択する。Replace／Add／Remove／Toggle、Clear／All／Invert、vertex-ID-connected selectionを提供する。
+
+Pickingはcurrent BVHのnearest visible triangleを起点に、その3 edgeだけをworld Transformとcameraでscreenへ投影して14-point以内のsegment distanceを判定する。Metal overlayはselected／hoverのendpoint ID pair cacheを分離し、hover-only変更でselected staging／allocation／copyを行わず、selection-only変更でhover bufferを維持する。camera／Transformはuniformだけ、Sculptは通常mesh vertexだけを更新する。component failureは正常なpeer overlayとselectionを維持し、component別errorをdedupeして後続frameでretryする。Face Selectionとは独立し、vertex-only変更では維持、topology変更ではclearする。runtime-onlyでformatVersion 1、dirty、Autosave、Recovery、Undo／Redoへ参加しない。詳細は`EDGE_SELECTION.md`を参照する。

@@ -11,6 +11,7 @@
 - `MESH_CLEANUP.md` — preview必須の限定Cleanup、index remap、Undo、runtime再構築
 - `AUTOSAVE_RECOVERY.md` — dirty generation、debounce、atomic Recovery、起動時復旧、Save／Load整合
 - `FACE_SELECTION.md` — triangle face identity、dense bitset、BVH picking、connected selection、Metal overlay
+- `EDGE_SELECTION.md` — canonical topological edge、deterministic table、visible picking、runtime overlay
 - `FACE_EXTRUDE.md` — manifold face patchのworld-mm extrusion、preview、atomic topology install、Undo
 - `FACE_INSET.md` — planar convex single-loop face patchのconstant-width world-mm inset、preview、atomic install
 - `FACE_BEVEL.md` — planar convex single-loop face patchのworld-mm chamfer、preview、atomic install

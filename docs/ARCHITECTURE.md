@@ -561,3 +561,11 @@ vertex/triangleはcopy-majorで、copy 0を完全保持し、copy間でindexを�
 Merge Exact Seamは選択がdetached component全体であることを要求する。selected boundary loopを別componentの1本のboundary loopへbit-exact local Float positionで一意対応させる。`+0`／`-0`は同一keyだがepsilonは使わない。counterpart vertexをsurvivorにし、selected seam duplicateだけを除去してold vertex ID順にcompactする。paired edge directionが反対であり、結果がmanifold、consistent winding、nondegenerate、nonduplicateである場合だけ成功する。
 
 Previewは`TopologyPreviewRequestCoordinator`のUUID、topology／vertex revision、非巻戻しmesh／Transform version、Transform、Face Selection version／fingerprint、operation、counts、seam metrics、analysis fingerprintへ結合する。Applyはresult mesh、normal、adjacency、Diagnostics invariants、before snapshot、Picking BVHをfallible prepared phaseで完成し、nonthrowing commitでfresh topologyを1回installする。`ReplaceMeshCommand` 1件、record-only Autosave snapshot scope、selection／Preview／Diagnostics/Cleanup clear、Picking／Spatial Index再構築、通常Renderer upload経路を使用する。working-memoryはDiagnostics/incidence前のcount-only conservative Stage Aと、result allocation前のactual seam countによるrefined Stage Bに分ける。PreviewはStage B値を表示し、result fanは完全incidenceではなくtargeted triangle scanで検証する。formatVersion 1には通常meshだけを保存する。詳細は`EXACT_SEAM_MERGE_SPLIT.md`を参照する。
+
+### 17.23 Edge Selection
+
+`MeshEdgeTable`はtriangle indicesから`(minVertexID,maxVertexID)`のunique edgeを構築し、key順にedge IDを割り当て、incident face IDとvertex-to-edge incidenceを保持する。位置やTransformはidentityへ含めない。tableはtopology ID／revisionへ結合し、vertex-only revisionでは再利用する。
+
+`EdgeSelection`はtable fingerprintへ結合したruntime-only dense bitsetであり、Face Selectionと独立する。content変更ごとにUUID versionを交換し、project generation、history、Autosave、Recovery、formatVersion 1へ参加しない。topology置換ではtable再構築とselection／hover clearを行う。
+
+Pickingはcurrent CPU BVHのnearest triangleを得て、その3 edgeだけをcurrent Transform／view-projectionでscreenへ写し、14-point segment distanceとedge ID tie-breakで決める。Rendererはselected／hoverごとに独立したtopology-bound key、endpoint-pair buffer、count、upload counterを持ち、通常mesh vertex bufferから位置を読むscreen-space quadをmesh後、Diagnostics前に描画する。hover-only変更はselected IDsを列挙せず、selection-only変更は有効なhover bufferへ触れない。camera／Transformはuniformだけ、Sculptはmesh vertexだけを更新する。component単位のstaging／allocation／copy完了後にkeyとbufferをcommitし、片側failureはそのcomponentだけを非表示にしてpeerを維持し、次frameのretryを許可する。詳細は`EDGE_SELECTION.md`を参照する。
