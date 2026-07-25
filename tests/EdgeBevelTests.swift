@@ -266,7 +266,7 @@ private extension Array where Element == UInt32 {
     func containsSubsequence(_ pair: [UInt32]) -> Bool {
         guard pair.count == 2 else { return false }
         for offset in stride(from: 0, to: count, by: 3) {
-            let triangle = Array(self[offset..<min(offset + 3, count)])
+            let triangle = Array(self[offset..<Swift.min(offset + 3, count)])
             if triangle.contains(pair[0]) && triangle.contains(pair[1]) { return true }
         }
         return false

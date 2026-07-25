@@ -2,7 +2,7 @@ import SwiftUI
 
 struct EdgeSelectionPanel: View {
     @ObservedObject var model: WorkspaceModel
-    let onBevel: () -> Void
+    var onBevel: () -> Void = {}
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
