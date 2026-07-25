@@ -30,13 +30,13 @@ jobs:
           data = json.load(open(path, encoding="utf-8"))
           candidates = []
           for runtime, devices in data.get("devices", {}).items():
-              if "iOS" not in runtime:
+              if "SimRuntime.iOS-18-" not in runtime:
                   continue
               for device in devices:
-                  if device.get("isAvailable") and "iPad" in device.get("name", ""):
+                  if device.get("isAvailable") and device.get("name") == "iPad Pro 13-inch (M4)":
                       candidates.append((runtime, device["name"], device["udid"]))
           if not candidates:
-              raise SystemExit("No available iPad Simulator was found")
+              raise SystemExit("No Xcode 16.4-compatible iOS 18.x iPad Pro 13-inch (M4) Simulator was found")
           runtime, name, udid = sorted(candidates, key=lambda item: (item[0], item[1], item[2]), reverse=True)[0]
           print(f"SIMULATOR_UDID={udid}")
           print(f"SIMULATOR_RUNTIME={runtime}")
