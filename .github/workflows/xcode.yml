@@ -32,8 +32,7 @@ jobs:
           -project Forge3D.xcodeproj
           -scheme Forge3D
           -configuration Debug
-          -destination 'platform=iOS Simulator,OS=latest,name=iPad Pro 13-inch (M4),arch=x86_64'
-          -parallel-testing-enabled NO
+          -destination 'platform=iOS Simulator,OS=latest,name=iPad Pro 13-inch (M4)'
           CODE_SIGNING_ALLOWED=NO
 
       - name: Run XCTest
@@ -42,6 +41,5 @@ jobs:
           -project Forge3D.xcodeproj
           -scheme Forge3D
           -configuration Debug
-          -destination 'platform=iOS Simulator,OS=latest,name=iPad Pro 13-inch (M4),arch=x86_64'
-          -parallel-testing-enabled NO
+          -destination 'platform=iOS Simulator,OS=latest,name=iPad Pro 13-inch (M4)'
           CODE_SIGNING_ALLOWED=NO
