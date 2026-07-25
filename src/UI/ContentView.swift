@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var showFaceExtrude = false
     @State private var showFaceInset = false
     @State private var showFaceBevel = false
+    @State private var showEdgeBevel = false
     @State private var showMeshMirror = false
     @State private var showMeshLinearArray = false
     @State private var showMeshRadialArray = false
@@ -70,7 +71,7 @@ struct ContentView: View {
                         .padding(.horizontal, 8)
                         .padding(.bottom, 4)
                 } else if model.interactionMode == .edgeSelect {
-                    EdgeSelectionPanel(model: model)
+                    EdgeSelectionPanel(model: model, onBevel: beginEdgeBevel)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding(.horizontal, 8)
                         .padding(.bottom, 4)
@@ -189,6 +190,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showFaceBevel, onDismiss: { model.discardFaceBevelPreview() }) {
             FaceBevelView(model: model)
+        }
+        .sheet(isPresented: $showEdgeBevel, onDismiss: { model.discardEdgeBevelPreview() }) {
+            EdgeBevelView(model: model)
         }
         .sheet(isPresented: $showMeshMirror, onDismiss: { model.discardMeshMirrorPreview() }) {
             MeshMirrorView(model: model)
@@ -355,6 +359,14 @@ struct ContentView: View {
         }
     }
 
+    private func beginEdgeBevel() {
+        do {
+            try model.prepareForEdgeBevel()
+            showEdgeBevel = true
+        } catch {
+            model.status = "Edge Bevel unavailable: \(error.localizedDescription)"
+        }
+    }
     private func beginMeshMirror() {
         do {
             try model.prepareForMeshMirror()

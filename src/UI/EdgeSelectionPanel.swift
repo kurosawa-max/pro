@@ -2,6 +2,7 @@ import SwiftUI
 
 struct EdgeSelectionPanel: View {
     @ObservedObject var model: WorkspaceModel
+    let onBevel: () -> Void
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -48,6 +49,11 @@ struct EdgeSelectionPanel: View {
             .disabled(model.selectedEdgeCount == 0)
         }
         .buttonStyle(.bordered)
+
+        Button("Bevel Selected Edges", systemImage: "square.on.square.dashed") { onBevel() }
+            .buttonStyle(.borderedProminent)
+            .disabled(!model.canBeginEdgeBevel)
+            .accessibilityHint("Opens the mandatory preview for a one-segment isolated-edge bevel")
 
         VStack(alignment: .leading, spacing: 2) {
             Text("Picks an edge of the nearest visible triangle within 14 points.")

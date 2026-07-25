@@ -74,6 +74,9 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var isFaceBevelRunning = false
     @Published private(set) var faceBevelPreview: FaceBevelPreview? = nil
     @Published private(set) var faceBevelError: String? = nil
+    @Published private(set) var isEdgeBevelRunning = false
+    @Published private(set) var edgeBevelPreview: EdgeBevelPreview? = nil
+    @Published private(set) var edgeBevelError: String? = nil
     @Published private(set) var isMeshMirrorRunning = false
     @Published private(set) var meshMirrorPreview: MeshMirrorPreview? = nil
     @Published private(set) var meshMirrorError: String? = nil
@@ -128,10 +131,11 @@ final class WorkspaceModel: ObservableObject {
     private var faceSelectionTaskID: UUID?
     private var meshLinearArrayPreviewRequestID: UUID?
     private var meshRadialArrayPreviewRequestID: UUID?
+    private var edgeBevelPreviewRequestID: UUID?
     private var meshSeamEditPreviewRequestID: UUID?
 
     private var isFaceTopologyEditRunning: Bool {
-        isFaceExtrudeRunning || isFaceInsetRunning || isFaceBevelRunning
+        isFaceExtrudeRunning || isFaceInsetRunning || isFaceBevelRunning || isEdgeBevelRunning
     }
 
     private var isTopologyEditRunning: Bool {
@@ -154,6 +158,12 @@ final class WorkspaceModel: ObservableObject {
 
     private struct PreparedFaceBevelCommit {
         let result: FaceBevelResult
+        let before: WorkspaceMeshSnapshot
+        let pickingIndex: MeshBVH
+    }
+
+    private struct PreparedEdgeBevelCommit {
+        let result: EdgeBevelResult
         let before: WorkspaceMeshSnapshot
         let pickingIndex: MeshBVH
     }
@@ -1068,6 +1078,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         meshMirrorPreview = nil
         meshMirrorError = nil
         meshLinearArrayPreview = nil
@@ -1242,6 +1254,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         meshMirrorPreview = nil
         meshMirrorError = nil
         meshLinearArrayPreview = nil
@@ -1401,6 +1415,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         meshMirrorPreview = nil
         meshMirrorError = nil
         meshLinearArrayPreview = nil
@@ -1423,6 +1439,8 @@ final class WorkspaceModel: ObservableObject {
         }
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         isFaceBevelRunning = true
         defer { isFaceBevelRunning = false }
         do {
@@ -1535,6 +1553,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         status = "Beveled \(result.estimate.selectedFaceCount) faces: "
             + "\(options.widthMillimeters) mm width, \(options.heightMillimeters) mm height"
         return result
@@ -1551,6 +1571,8 @@ final class WorkspaceModel: ObservableObject {
         guard !isFaceBevelRunning else { return }
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
     }
 
     private func reportFaceBevelError(_ error: Error) {
@@ -1559,6 +1581,233 @@ final class WorkspaceModel: ObservableObject {
         status = "Bevel failed: \(message)"
     }
 
+    var canBeginEdgeBevel: Bool {
+        guard interactionMode == .edgeSelect,
+              let table = meshEdgeTable,
+              edgeSelection.matches(table), edgeSelection.selectedCount > 0,
+              !isTopologyEditRunning, !isStrokeActive, !isGizmoDragging,
+              !isTransformPanelEditing, !isFaceSelectionProcessing,
+              !isSTLImporting, !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else { return false }
+        #if DEBUG
+        return !isBenchmarkRunning
+        #else
+        return true
+        #endif
+    }
+
+    func prepareForEdgeBevel() throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isTopologyEditRunning else { throw EdgeBevelError.operationInProgress }
+        guard canBeginEdgeBevel else { throw EdgeBevelError.unavailable }
+        cancelStroke()
+        cancelAllGizmoDrags()
+        commitTransformPanelTransaction()
+        cancelFaceSelectionProcessing()
+        hoverLocation = nil
+        hoveredEdgeID = nil
+        discardFaceExtrudePreview()
+        discardFaceInsetPreview()
+        discardFaceBevelPreview()
+        discardEdgeBevelPreview()
+        discardMeshMirrorPreview()
+        discardMeshLinearArrayPreview()
+        discardMeshRadialArrayPreview()
+        discardMeshSeamEditPreview()
+    }
+
+    @discardableResult
+    func previewEdgeBevel(options: EdgeBevelOptions) throws -> EdgeBevelPreview {
+        let requestID = UUID()
+        try beginEdgeBevelPreviewRequest(requestID)
+        do {
+            let candidate = try makeEdgeBevelPreviewCandidate(options: options, requestID: requestID)
+            guard completeEdgeBevelPreviewRequest(requestID: requestID, candidate: candidate) else {
+                throw EdgeBevelError.stalePreview
+            }
+            return candidate
+        } catch {
+            _ = failEdgeBevelPreviewRequest(requestID: requestID, error: error)
+            throw error
+        }
+    }
+
+    func beginEdgeBevelPreviewRequest(_ requestID: UUID) throws {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isTopologyEditRunning else { throw EdgeBevelError.operationInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented,
+              interactionMode == .edgeSelect,
+              let table = meshEdgeTable, edgeSelection.matches(table),
+              edgeSelection.selectedCount > 0 else { throw EdgeBevelError.activeEdit }
+        edgeBevelPreview = nil
+        edgeBevelError = nil
+        edgeBevelPreviewRequestID = requestID
+        isEdgeBevelRunning = true
+    }
+
+    func makeEdgeBevelPreviewCandidate(
+        options: EdgeBevelOptions, requestID: UUID
+    ) throws -> EdgeBevelPreview {
+        guard isEdgeBevelRunning, edgeBevelPreviewRequestID == requestID,
+              let table = meshEdgeTable else { throw EdgeBevelError.stalePreview }
+        return try EdgeBevel.makePreview(
+            mesh: mesh, table: table, selection: edgeSelection,
+            transform: objectTransform, options: options,
+            meshChangeVersion: topologyEditMeshChangeVersion,
+            transformChangeVersion: topologyEditTransformChangeVersion)
+    }
+
+    @discardableResult
+    func completeEdgeBevelPreviewRequest(
+        requestID: UUID, candidate: EdgeBevelPreview
+    ) -> Bool {
+        guard isEdgeBevelRunning, edgeBevelPreviewRequestID == requestID else { return false }
+        edgeBevelPreviewRequestID = nil
+        isEdgeBevelRunning = false
+        guard let table = meshEdgeTable,
+              candidate.source.matchesRuntimeIdentity(
+                mesh: mesh, table: table, selection: edgeSelection,
+                transform: objectTransform,
+                meshChangeVersion: topologyEditMeshChangeVersion,
+                transformChangeVersion: topologyEditTransformChangeVersion,
+                options: candidate.options) else {
+            edgeBevelPreview = nil
+            reportEdgeBevelError(EdgeBevelError.stalePreview)
+            return false
+        }
+        edgeBevelPreview = candidate
+        edgeBevelError = nil
+        return true
+    }
+
+    @discardableResult
+    func failEdgeBevelPreviewRequest(requestID: UUID, error: Error) -> Bool {
+        guard edgeBevelPreviewRequestID == requestID else { return false }
+        edgeBevelPreviewRequestID = nil
+        isEdgeBevelRunning = false
+        edgeBevelPreview = nil
+        reportEdgeBevelError(error)
+        return true
+    }
+
+    var isEdgeBevelPreviewStale: Bool {
+        guard let preview = edgeBevelPreview else { return false }
+        return !isEdgeBevelPreviewCurrent(preview)
+    }
+
+    func isEdgeBevelPreviewCurrent(_ preview: EdgeBevelPreview) -> Bool {
+        guard let table = meshEdgeTable else { return false }
+        return edgeBevelPreview == preview && preview.source.matchesRuntimeIdentity(
+            mesh: mesh, table: table, selection: edgeSelection,
+            transform: objectTransform,
+            meshChangeVersion: topologyEditMeshChangeVersion,
+            transformChangeVersion: topologyEditTransformChangeVersion,
+            options: preview.options)
+    }
+
+    @discardableResult
+    func applyEdgeBevel(preview: EdgeBevelPreview) throws -> EdgeBevelResult {
+        #if DEBUG
+        guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
+        #endif
+        guard !isTopologyEditRunning else { throw EdgeBevelError.operationInProgress }
+        guard !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented,
+              let table = meshEdgeTable,
+              edgeBevelPreview == preview,
+              preview.source.matchesRuntimeIdentity(
+                mesh: mesh, table: table, selection: edgeSelection,
+                transform: objectTransform,
+                meshChangeVersion: topologyEditMeshChangeVersion,
+                transformChangeVersion: topologyEditTransformChangeVersion,
+                options: preview.options) else {
+            if edgeBevelPreview == preview { edgeBevelPreview = nil }
+            throw EdgeBevelError.stalePreview
+        }
+        isEdgeBevelRunning = true
+        defer { isEdgeBevelRunning = false }
+        do {
+            let prepared = try prepareEdgeBevelCommit(preview: preview, table: table)
+            return commitEdgeBevel(prepared, options: preview.options)
+        } catch {
+            if error as? EdgeBevelError == .stalePreview { edgeBevelPreview = nil }
+            reportEdgeBevelError(error)
+            throw error
+        }
+    }
+
+    private func prepareEdgeBevelCommit(
+        preview: EdgeBevelPreview, table: MeshEdgeTable
+    ) throws -> PreparedEdgeBevelCommit {
+        let result = try EdgeBevel.bevel(
+            mesh: mesh, table: table, selection: edgeSelection,
+            transform: objectTransform, options: preview.options)
+        guard result.estimate == preview.estimate,
+              result.analysisFingerprint == preview.source.analysisFingerprint else {
+            throw EdgeBevelError.stalePreview
+        }
+        return PreparedEdgeBevelCommit(
+            result: result, before: workspaceSnapshot,
+            pickingIndex: try pickingCache.makeIndex(for: result.mesh))
+    }
+
+    private func commitEdgeBevel(
+        _ prepared: PreparedEdgeBevelCommit, options: EdgeBevelOptions
+    ) -> EdgeBevelResult {
+        // Geometry, topology validation, snapshots, and BVH creation remain in
+        // the fallible prepared phase before this nonthrowing install boundary.
+        let result = prepared.result
+        mesh = result.mesh
+        hoverLocation = nil
+        hoveredEdgeID = nil
+        #if DEBUG
+        benchmarkPreset = nil
+        #endif
+        profiler?.updateMeshCounts(
+            vertexCount: mesh.vertices.count,
+            triangleCount: mesh.indices.count / 3)
+        pickingCache.install(prepared.pickingIndex, for: mesh)
+        sculptSpatialIndex.prepare(for: mesh)
+        let command = ReplaceMeshCommand(before: prepared.before, after: workspaceSnapshot)
+        recordEdgeBevelReplacement(command)
+        clearMeshDiagnostics()
+        edgeBevelPreview = nil
+        edgeBevelError = nil
+        status = "Beveled \(result.estimate.selectedEdgeCount) isolated edges at \(options.widthMillimeters) mm"
+        return result
+    }
+
+    private func recordEdgeBevelReplacement(_ command: ReplaceMeshCommand) {
+        precondition(isEdgeBevelRunning)
+        isTopologyEditSnapshotSafe = true
+        defer { isTopologyEditSnapshotSafe = false }
+        record(.replaceMesh(command))
+    }
+
+    func discardEdgeBevelPreview(requestID: UUID? = nil) {
+        if let requestID, edgeBevelPreviewRequestID != requestID { return }
+        if edgeBevelPreviewRequestID != nil {
+            edgeBevelPreviewRequestID = nil
+            isEdgeBevelRunning = false
+        }
+        edgeBevelPreview = nil
+        edgeBevelError = nil
+    }
+
+    private func reportEdgeBevelError(_ error: Error) {
+        let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        edgeBevelError = message
+        status = "Edge Bevel failed: \(message)"
+    }
     func prepareForMeshMirror() throws {
         #if DEBUG
         guard !isBenchmarkRunning else { throw WorkspaceError.benchmarkInProgress }
@@ -1579,6 +1828,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         meshMirrorPreview = nil
         meshMirrorError = nil
         meshLinearArrayPreview = nil
@@ -1709,6 +1960,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         meshMirrorPreview = nil
         meshMirrorError = nil
         meshLinearArrayPreview = nil
@@ -1758,6 +2011,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         meshMirrorPreview = nil
         meshMirrorError = nil
         meshLinearArrayPreview = nil
@@ -1954,6 +2209,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         meshMirrorPreview = nil
         meshMirrorError = nil
         meshLinearArrayPreview = nil
@@ -2007,6 +2264,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         meshMirrorPreview = nil
         meshMirrorError = nil
         meshLinearArrayPreview = nil
@@ -2191,6 +2450,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         meshMirrorPreview = nil
         meshMirrorError = nil
         meshLinearArrayPreview = nil
@@ -2384,7 +2645,9 @@ final class WorkspaceModel: ObservableObject {
         clearMeshDiagnostics()
         faceExtrudePreview = nil; faceExtrudeError = nil
         faceInsetPreview = nil; faceInsetError = nil
-        faceBevelPreview = nil; faceBevelError = nil
+        faceBevelPreview = nil faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         meshMirrorPreview = nil; meshMirrorError = nil
         meshLinearArrayPreview = nil; meshLinearArrayError = nil
         meshRadialArrayPreview = nil; meshRadialArrayError = nil
@@ -2890,6 +3153,8 @@ final class WorkspaceModel: ObservableObject {
             faceInsetError = nil
             faceBevelPreview = nil
             faceBevelError = nil
+            edgeBevelPreview = nil
+            edgeBevelError = nil
             meshMirrorPreview = nil
             meshMirrorError = nil
             meshLinearArrayPreview = nil
@@ -2962,6 +3227,8 @@ final class WorkspaceModel: ObservableObject {
         faceInsetError = nil
         faceBevelPreview = nil
         faceBevelError = nil
+        edgeBevelPreview = nil
+        edgeBevelError = nil
         meshMirrorPreview = nil
         meshMirrorError = nil
         meshLinearArrayPreview = nil
@@ -3057,6 +3324,7 @@ final class WorkspaceModel: ObservableObject {
     var isFaceExtrudeSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var isFaceInsetSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var isFaceBevelSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
+    var isEdgeBevelSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var isMeshMirrorSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var isMeshLinearArraySnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var isMeshRadialArraySnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
