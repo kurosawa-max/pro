@@ -23,11 +23,17 @@ struct MetalEdgeSelectionPairBufferAllocator: EdgeSelectionPairBufferAllocating 
     }
 }
 
-struct EdgeSelectionOverlayCacheKey: Equatable {
+struct EdgeSelectedOverlayCacheKey: Equatable {
     let topologyID: UUID
     let topologyRevision: UInt64
     let tableFingerprint: UInt64
     let selectionVersion: EdgeSelectionVersion
+}
+
+struct EdgeHoverOverlayCacheKey: Equatable {
+    let topologyID: UUID
+    let topologyRevision: UInt64
+    let tableFingerprint: UInt64
     let hoveredEdgeID: Int?
 }
 
@@ -55,10 +61,19 @@ enum EdgeSelectionOverlayError: Error, LocalizedError, Equatable {
     }
 }
 
-enum EdgeSelectionOverlayUpdateResult: Equatable {
+enum EdgeOverlayComponentUpdate: Equatable {
     case unchanged
     case updated
+    case cleared
     case unavailable(EdgeSelectionOverlayError)
+}
+
+struct EdgeSelectionOverlayUpdateSummary: Equatable {
+    let selected: EdgeOverlayComponentUpdate
+    let hover: EdgeOverlayComponentUpdate
+
+    static let unchanged = EdgeSelectionOverlayUpdateSummary(
+        selected: .unchanged, hover: .unchanged)
 }
 
 enum EdgeSelectionOverlayMetrics {
@@ -87,9 +102,17 @@ final class EdgeSelectionOverlayRenderer {
     private var hoverBuffer: MTLBuffer?
     private(set) var selectedEdgeCount = 0
     private(set) var hoverEdgeCount = 0
-    private(set) var uploadedKey: EdgeSelectionOverlayCacheKey?
+    private(set) var selectedUploadedKey: EdgeSelectedOverlayCacheKey?
+    private(set) var hoverUploadedKey: EdgeHoverOverlayCacheKey?
     #if DEBUG
-    private(set) var uploadCount = 0
+    private(set) var selectedUploadCount = 0
+    private(set) var hoverUploadCount = 0
+    private(set) var selectedPairGenerationCount = 0
+    private(set) var hoverPairGenerationCount = 0
+    private(set) var selectedAllocationCount = 0
+    private(set) var hoverAllocationCount = 0
+    private(set) var selectedCopyCount = 0
+    private(set) var hoverCopyCount = 0
     #endif
 
     init?(
@@ -127,65 +150,88 @@ final class EdgeSelectionOverlayRenderer {
         hoveredEdgeID: Int?,
         drawableSizePixels: CGSize,
         displayScale: CGFloat
-    ) -> EdgeSelectionOverlayUpdateResult {
+    ) -> EdgeSelectionOverlayUpdateSummary {
         guard drawableSizePixels.width.isFinite, drawableSizePixels.height.isFinite,
               drawableSizePixels.width > 0, drawableSizePixels.height > 0 else {
-            invalidate()
-            return .unavailable(.invalidViewport)
+            invalidateAll()
+            return unavailableSummary(.invalidViewport)
         }
         guard displayScale.isFinite, displayScale > 0 else {
-            invalidate()
-            return .unavailable(.invalidDisplayScale)
+            invalidateAll()
+            return unavailableSummary(.invalidDisplayScale)
         }
         guard let table, table.matches(mesh) else {
-            invalidate()
-            return .unavailable(.staleTable)
+            invalidateAll()
+            return unavailableSummary(.staleTable)
         }
         guard selection.matches(table) else {
-            invalidate()
-            return .unavailable(.staleSelection)
+            invalidateAll()
+            return unavailableSummary(.staleSelection)
         }
         let validHover = hoveredEdgeID.flatMap { table.edges.indices.contains($0) ? $0 : nil }
-        let key = EdgeSelectionOverlayCacheKey(
+        let selectedKey = EdgeSelectedOverlayCacheKey(
             topologyID: table.sourceTopologyID,
             topologyRevision: table.sourceTopologyRevision,
             tableFingerprint: table.fingerprint,
-            selectionVersion: selection.version,
+            selectionVersion: selection.version)
+        let hoverKey = EdgeHoverOverlayCacheKey(
+            topologyID: table.sourceTopologyID,
+            topologyRevision: table.sourceTopologyRevision,
+            tableFingerprint: table.fingerprint,
             hoveredEdgeID: validHover)
-        guard uploadedKey != key else { return .unchanged }
+        let selectedChanged = selectedUploadedKey != selectedKey
+        let hoverChanged = hoverUploadedKey != hoverKey
+        guard selectedChanged || hoverChanged else { return .unchanged }
+
+        if selectedChanged && hoverChanged {
+            do {
+                let selectedStaged = try stageSelected(
+                    selection: selection, table: table, vertexCount: mesh.vertices.count)
+                let hoverStaged: StagedComponent
+                do {
+                    hoverStaged = try stageHover(
+                        edgeID: validHover, table: table, vertexCount: mesh.vertices.count)
+                } catch {
+                    invalidateAll()
+                    return EdgeSelectionOverlayUpdateSummary(
+                        selected: .cleared, hover: .unavailable(overlayError(error)))
+                }
+                commitSelected(selectedStaged, key: selectedKey)
+                commitHover(hoverStaged, key: hoverKey)
+                return EdgeSelectionOverlayUpdateSummary(
+                    selected: componentResult(selectedStaged),
+                    hover: componentResult(hoverStaged))
+            } catch {
+                invalidateAll()
+                return EdgeSelectionOverlayUpdateSummary(
+                    selected: .unavailable(overlayError(error)), hover: .cleared)
+            }
+        }
+
+        if selectedChanged {
+            do {
+                let staged = try stageSelected(
+                    selection: selection, table: table, vertexCount: mesh.vertices.count)
+                commitSelected(staged, key: selectedKey)
+                return EdgeSelectionOverlayUpdateSummary(
+                    selected: componentResult(staged), hover: .unchanged)
+            } catch {
+                invalidateSelected()
+                return EdgeSelectionOverlayUpdateSummary(
+                    selected: .unavailable(overlayError(error)), hover: .unchanged)
+            }
+        }
+
         do {
-            let selectedPairs = try pairs(
-                edgeIDs: selection.selectedEdgeIDs(), table: table, vertexCount: mesh.vertices.count)
-            let hoverPairs = try pairs(
-                edgeIDs: validHover.map { [$0] } ?? [], table: table, vertexCount: mesh.vertices.count)
-            let selectedTarget: MTLBuffer?
-            if selectedPairs.isEmpty {
-                selectedTarget = nil
-            } else {
-                selectedTarget = try freshBuffer(for: selectedPairs)
-            }
-            let hoverTarget: MTLBuffer?
-            if hoverPairs.isEmpty {
-                hoverTarget = nil
-            } else {
-                hoverTarget = try freshBuffer(for: hoverPairs)
-            }
-            // Commit references, counts, and key only after every fallible allocation and copy.
-            selectedBuffer = selectedTarget
-            hoverBuffer = hoverTarget
-            selectedEdgeCount = selectedPairs.count
-            hoverEdgeCount = hoverPairs.count
-            uploadedKey = key
-            #if DEBUG
-            uploadCount += 1
-            #endif
-            return .updated
-        } catch let error as EdgeSelectionOverlayError {
-            invalidate()
-            return .unavailable(error)
+            let staged = try stageHover(
+                edgeID: validHover, table: table, vertexCount: mesh.vertices.count)
+            commitHover(staged, key: hoverKey)
+            return EdgeSelectionOverlayUpdateSummary(
+                selected: .unchanged, hover: componentResult(staged))
         } catch {
-            invalidate()
-            return .unavailable(.copyFailed)
+            invalidateHover()
+            return EdgeSelectionOverlayUpdateSummary(
+                selected: .unchanged, hover: .unavailable(overlayError(error)))
         }
     }
 
@@ -240,11 +286,46 @@ final class EdgeSelectionOverlayRenderer {
                                instanceCount: edgeCount)
     }
 
-    private func pairs(
-        edgeIDs: [Int],
+    private struct StagedComponent {
+        let buffer: MTLBuffer?
+        let count: Int
+    }
+
+    private enum Component { case selected, hover }
+
+    private func stageSelected(
+        selection: EdgeSelection,
         table: MeshEdgeTable,
         vertexCount: Int
-    ) throws -> [SIMD2<UInt32>] {
+    ) throws -> StagedComponent {
+        #if DEBUG
+        selectedPairGenerationCount += 1
+        #endif
+        return try stage(
+            edgeIDs: selection.selectedEdgeIDs(), table: table,
+            vertexCount: vertexCount, component: .selected)
+    }
+
+    private func stageHover(
+        edgeID: Int?,
+        table: MeshEdgeTable,
+        vertexCount: Int
+    ) throws -> StagedComponent {
+        guard let edgeID else { return StagedComponent(buffer: nil, count: 0) }
+        #if DEBUG
+        hoverPairGenerationCount += 1
+        #endif
+        return try stage(
+            edgeIDs: [edgeID], table: table,
+            vertexCount: vertexCount, component: .hover)
+    }
+
+    private func stage(
+        edgeIDs: [Int],
+        table: MeshEdgeTable,
+        vertexCount: Int,
+        component: Component
+    ) throws -> StagedComponent {
         var result: [SIMD2<UInt32>] = []
         result.reserveCapacity(edgeIDs.count)
         for edgeID in edgeIDs {
@@ -257,26 +338,77 @@ final class EdgeSelectionOverlayRenderer {
             }
             result.append(SIMD2(key.low, key.high))
         }
-        return result
-    }
-
-    private func freshBuffer(for pairs: [SIMD2<UInt32>]) throws -> MTLBuffer {
-        let (bytes, overflow) = pairs.count.multipliedReportingOverflow(
+        guard !result.isEmpty else { return StagedComponent(buffer: nil, count: 0) }
+        let (bytes, overflow) = result.count.multipliedReportingOverflow(
             by: MemoryLayout<SIMD2<UInt32>>.stride)
         guard !overflow, bytes > 0 else { throw EdgeSelectionOverlayError.arithmeticOverflow }
+        #if DEBUG
+        switch component {
+        case .selected: selectedAllocationCount += 1
+        case .hover: hoverAllocationCount += 1
+        }
+        #endif
         guard let target = allocator.makeBuffer(device: device, length: bytes) else {
             throw EdgeSelectionOverlayError.allocationFailed
         }
-        guard allocator.copy(pairs, byteCount: bytes, to: target) else {
+        #if DEBUG
+        switch component {
+        case .selected: selectedCopyCount += 1
+        case .hover: hoverCopyCount += 1
+        }
+        #endif
+        guard allocator.copy(result, byteCount: bytes, to: target) else {
             throw EdgeSelectionOverlayError.copyFailed
         }
-        return target
+        return StagedComponent(buffer: target, count: result.count)
     }
 
-    private func invalidate() {
+    private func commitSelected(_ staged: StagedComponent, key: EdgeSelectedOverlayCacheKey) {
+        selectedBuffer = staged.buffer
+        selectedEdgeCount = staged.count
+        selectedUploadedKey = key
+        #if DEBUG
+        if staged.count > 0 { selectedUploadCount += 1 }
+        #endif
+    }
+
+    private func commitHover(_ staged: StagedComponent, key: EdgeHoverOverlayCacheKey) {
+        hoverBuffer = staged.buffer
+        hoverEdgeCount = staged.count
+        hoverUploadedKey = key
+        #if DEBUG
+        if staged.count > 0 { hoverUploadCount += 1 }
+        #endif
+    }
+
+    private func componentResult(_ staged: StagedComponent) -> EdgeOverlayComponentUpdate {
+        staged.count == 0 ? .cleared : .updated
+    }
+
+    private func overlayError(_ error: Error) -> EdgeSelectionOverlayError {
+        error as? EdgeSelectionOverlayError ?? .copyFailed
+    }
+
+    private func unavailableSummary(
+        _ error: EdgeSelectionOverlayError
+    ) -> EdgeSelectionOverlayUpdateSummary {
+        EdgeSelectionOverlayUpdateSummary(
+            selected: .unavailable(error), hover: .unavailable(error))
+    }
+
+    private func invalidateSelected() {
         selectedEdgeCount = 0
+        selectedUploadedKey = nil
+    }
+
+    private func invalidateHover() {
         hoverEdgeCount = 0
-        uploadedKey = nil
+        hoverUploadedKey = nil
+    }
+
+    private func invalidateAll() {
+        invalidateSelected()
+        invalidateHover()
     }
 }
 

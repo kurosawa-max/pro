@@ -153,6 +153,9 @@ final class EdgeSelectionTests: XCTestCase {
     }
 
     func testNearPlaneProjectionClassifiesInvisibleDegenerateAndInvalidSegments() {
+        XCTAssertEqual(EdgeClipProjection.metalNearPlaneZ, 0)
+        XCTAssertEqual(EdgeClipProjection.minimumW, 1e-6)
+        XCTAssertEqual(EdgeClipProjection.clippedOutClipPosition, SIMD4(2, 2, 2, 1))
         let viewport = CGSize(width: 100, height: 100)
         XCTAssertEqual(EdgeClipProjection.projectSegment(
             SIMD4(-1, 0, -1, 1), SIMD4(1, 0, -0.1, 1), viewport: viewport), .clippedOut)
@@ -194,13 +197,38 @@ final class EdgeSelectionTests: XCTestCase {
 
     func testOverlayFailureNotificationIsDeduplicatedAndSuccessClearsIt() {
         let model = WorkspaceModel()
-        model.handleEdgeSelectionOverlayUpdate(.unavailable(.allocationFailed))
+        model.handleEdgeSelectionOverlayUpdate(EdgeSelectionOverlayUpdateSummary(
+            selected: .unavailable(.allocationFailed), hover: .unchanged))
         let firstStatus = model.status
-        model.handleEdgeSelectionOverlayUpdate(.unavailable(.allocationFailed))
+        model.handleEdgeSelectionOverlayUpdate(EdgeSelectionOverlayUpdateSummary(
+            selected: .unavailable(.allocationFailed), hover: .unchanged))
         XCTAssertEqual(model.status, firstStatus)
         XCTAssertNotNil(model.edgeSelectionError)
-        model.handleEdgeSelectionOverlayUpdate(.updated)
+        model.handleEdgeSelectionOverlayUpdate(EdgeSelectionOverlayUpdateSummary(
+            selected: .updated, hover: .unchanged))
         XCTAssertNil(model.edgeSelectionError)
+        XCTAssertEqual(model.status, "Selected 0 of \(model.totalEdgeCount) edges")
+    }
+
+    func testOverlayComponentErrorsRecoverIndependentlyWithoutClearingRegularErrors() {
+        let model = WorkspaceModel()
+        model.handleEdgeSelectionOverlayUpdate(EdgeSelectionOverlayUpdateSummary(
+            selected: .unavailable(.allocationFailed),
+            hover: .unavailable(.copyFailed)))
+        XCTAssertTrue(model.edgeSelectionError?.contains("selected") == true)
+        XCTAssertTrue(model.edgeSelectionError?.contains("hover") == true)
+        model.handleEdgeSelectionOverlayUpdate(EdgeSelectionOverlayUpdateSummary(
+            selected: .updated, hover: .unchanged))
+        XCTAssertFalse(model.edgeSelectionError?.contains("selected") == true)
+        XCTAssertTrue(model.edgeSelectionError?.contains("hover") == true)
+        model.handleEdgeSelectionOverlayUpdate(EdgeSelectionOverlayUpdateSummary(
+            selected: .unchanged, hover: .updated))
+        XCTAssertNil(model.edgeSelectionError)
+
+        model.status = "Unrelated workspace status"
+        model.handleEdgeSelectionOverlayUpdate(EdgeSelectionOverlayUpdateSummary(
+            selected: .updated, hover: .unchanged))
+        XCTAssertEqual(model.status, "Unrelated workspace status")
     }
 
     func testEdgeSelectionPanelFitsCompactRegularAndAccessibilityLayouts() {
@@ -232,18 +260,22 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertEqual(renderer.updateEdgeSelection(
             mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
             drawableSizePixels: CGSize(width: 200, height: 200), displayScale: 2),
-            .unavailable(.allocationFailed))
+            EdgeSelectionOverlayUpdateSummary(
+                selected: .cleared, hover: .unavailable(.allocationFailed)))
         XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 0)
         XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 0)
-        XCTAssertNil(renderer.edgeSelectionOverlayUploadedKey)
+        XCTAssertNil(renderer.edgeSelectionOverlaySelectedUploadedKey)
+        XCTAssertNil(renderer.edgeSelectionOverlayHoverUploadedKey)
 
         allocator.failAllocationNumber = nil
         XCTAssertEqual(renderer.updateEdgeSelection(
             mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
-            drawableSizePixels: CGSize(width: 200, height: 200), displayScale: 2), .updated)
+            drawableSizePixels: CGSize(width: 200, height: 200), displayScale: 2),
+            EdgeSelectionOverlayUpdateSummary(selected: .updated, hover: .updated))
         XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 1)
         XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 1)
-        XCTAssertNotNil(renderer.edgeSelectionOverlayUploadedKey)
+        XCTAssertNotNil(renderer.edgeSelectionOverlaySelectedUploadedKey)
+        XCTAssertNotNil(renderer.edgeSelectionOverlayHoverUploadedKey)
     }
 
     func testOverlayCopyFailureDoesNotInstallStaleKeyAndCanRetry() throws {
@@ -262,15 +294,202 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertEqual(renderer.updateEdgeSelection(
             mesh: source, table: table, selection: selection, hoveredEdgeID: nil,
             drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1),
-            .unavailable(.copyFailed))
+            EdgeSelectionOverlayUpdateSummary(
+                selected: .unavailable(.copyFailed), hover: .cleared))
         XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 0)
-        XCTAssertNil(renderer.edgeSelectionOverlayUploadedKey)
+        XCTAssertNil(renderer.edgeSelectionOverlaySelectedUploadedKey)
 
         allocator.failCopyNumber = nil
         XCTAssertEqual(renderer.updateEdgeSelection(
             mesh: source, table: table, selection: selection, hoveredEdgeID: nil,
-            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1), .updated)
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1),
+            EdgeSelectionOverlayUpdateSummary(selected: .updated, hover: .cleared))
         XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 1)
+    }
+
+    func testHoverOnlyUpdatesNeverRegenerateSelectedPairsAndNilClearsHover() throws {
+        let (renderer, source, table, allocator) = try makeInstrumentedEdgeRenderer()
+        var selection = try EdgeSelection(table: table)
+        XCTAssertTrue(try selection.apply(.add, edgeID: 0))
+        let selectionVersion = selection.version
+        _ = renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 200, height: 200), displayScale: 2)
+        let selectedCounters = (
+            renderer.edgeSelectionOverlaySelectedPairGenerationCount,
+            renderer.edgeSelectionOverlaySelectedAllocationCount,
+            renderer.edgeSelectionOverlaySelectedCopyCount,
+            renderer.edgeSelectionOverlaySelectedUploadCount)
+
+        for hoverID in [2, 3, 4] {
+            XCTAssertEqual(renderer.updateEdgeSelection(
+                mesh: source, table: table, selection: selection, hoveredEdgeID: hoverID,
+                drawableSizePixels: CGSize(width: 200, height: 200), displayScale: 2),
+                EdgeSelectionOverlayUpdateSummary(selected: .unchanged, hover: .updated))
+        }
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedPairGenerationCount, selectedCounters.0)
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedAllocationCount, selectedCounters.1)
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedCopyCount, selectedCounters.2)
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedUploadCount, selectedCounters.3)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverUploadCount, 4)
+        XCTAssertEqual(selection.version, selectionVersion)
+        XCTAssertEqual(allocator.allocationCount, 5)
+
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 200, height: 200), displayScale: 2),
+            EdgeSelectionOverlayUpdateSummary(selected: .unchanged, hover: .cleared))
+        XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 1)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 0)
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedUploadCount, 1)
+    }
+
+    func testSelectionOnlyUpdateDoesNotRegenerateHoverPairs() throws {
+        let (renderer, source, table, _) = try makeInstrumentedEdgeRenderer()
+        var selection = try EdgeSelection(table: table)
+        XCTAssertTrue(try selection.apply(.add, edgeID: 0))
+        _ = renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 200, height: 200), displayScale: 2)
+        let hoverCounters = (
+            renderer.edgeSelectionOverlayHoverPairGenerationCount,
+            renderer.edgeSelectionOverlayHoverAllocationCount,
+            renderer.edgeSelectionOverlayHoverCopyCount,
+            renderer.edgeSelectionOverlayHoverUploadCount)
+        XCTAssertTrue(try selection.apply(.add, edgeID: 2))
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 200, height: 200), displayScale: 2),
+            EdgeSelectionOverlayUpdateSummary(selected: .updated, hover: .unchanged))
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverPairGenerationCount, hoverCounters.0)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverAllocationCount, hoverCounters.1)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverCopyCount, hoverCounters.2)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverUploadCount, hoverCounters.3)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 1)
+    }
+
+    func testComponentFailurePreservesUnchangedPeerAndRetries() throws {
+        let (renderer, source, table, allocator) = try makeInstrumentedEdgeRenderer()
+        var selection = try EdgeSelection(table: table)
+        XCTAssertTrue(try selection.apply(.add, edgeID: 0))
+        _ = renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+
+        allocator.failAllocationNumber = allocator.allocationCount + 1
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 2,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1),
+            EdgeSelectionOverlayUpdateSummary(
+                selected: .unchanged, hover: .unavailable(.allocationFailed)))
+        XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 1)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 0)
+        XCTAssertNotNil(renderer.edgeSelectionOverlaySelectedUploadedKey)
+        allocator.failAllocationNumber = nil
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 2,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1),
+            EdgeSelectionOverlayUpdateSummary(selected: .unchanged, hover: .updated))
+
+        XCTAssertTrue(try selection.apply(.add, edgeID: 3))
+        allocator.failAllocationNumber = allocator.allocationCount + 1
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 2,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1),
+            EdgeSelectionOverlayUpdateSummary(
+                selected: .unavailable(.allocationFailed), hover: .unchanged))
+        XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 0)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 1)
+        allocator.failAllocationNumber = nil
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 2,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1),
+            EdgeSelectionOverlayUpdateSummary(selected: .updated, hover: .unchanged))
+    }
+
+    func testCameraTransformAndSculptReuseBothPairBuffers() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
+        let profiler = PerformanceProfiler()
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), device: device)
+        let allocator = FaultInjectingEdgePairAllocator()
+        guard let renderer = MetalRenderer(
+            view: view, profiler: profiler, edgeSelectionBufferAllocator: allocator) else {
+            throw XCTSkip("Renderer unavailable")
+        }
+        let source = twoTriangleQuad()
+        let table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table)
+        XCTAssertTrue(try selection.apply(.add, edgeID: 0))
+        renderer.update(mesh: source)
+        _ = renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        let selectedUploads = renderer.edgeSelectionOverlaySelectedUploadCount
+        let hoverUploads = renderer.edgeSelectionOverlayHoverUploadCount
+        let meshUploads = profiler.snapshot()
+
+        renderer.camera.yaw += 0.2
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1), .unchanged)
+        renderer.objectTransform = ObjectTransform(
+            translation: SIMD3(1, 2, 3), rotation: SIMD4(0, 0, 0, 1),
+            scale: SIMD3(repeating: 1))
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1), .unchanged)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount,
+                       meshUploads[.vertexUpload].sampleCount)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount,
+                       meshUploads[.indexUpload].sampleCount)
+
+        var sculpted = source
+        _ = sculpted.updatePositions([0: SIMD3(-0.1, 0, 0)])
+        renderer.update(mesh: sculpted)
+        XCTAssertEqual(renderer.updateEdgeSelection(
+            mesh: sculpted, table: table, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1), .unchanged)
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedUploadCount, selectedUploads)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverUploadCount, hoverUploads)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount,
+                       meshUploads[.vertexUpload].sampleCount + 1)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount,
+                       meshUploads[.indexUpload].sampleCount)
+        XCTAssertTrue(selection.contains(0))
+    }
+
+    func testPickerNearPlaneIntegrationSkipsOnlyClippedEdges() throws {
+        let source = mesh(
+            [SIMD3(-0.5, -0.5, -0.5), SIMD3(0.5, -0.5, 0.5), SIMD3(0, 0.5, 0.5)],
+            [0, 1, 2])
+        let table = try MeshEdgeTable.build(mesh: source)
+        let cache = MeshBVHCache()
+        let result = MeshEdgePicker.pick(
+            worldRay: Ray(origin: SIMD3(0, 0, 2), direction: SIMD3(0, 0, -1)),
+            screenPoint: CGPoint(x: 125, y: 100),
+            viewportSize: CGSize(width: 200, height: 200),
+            mesh: source, transform: .identity, viewProjection: matrix_identity_float4x4,
+            table: table, cache: cache, threshold: 80)
+        guard case .hit = result else { return XCTFail("Visible near-plane edge should remain pickable") }
+
+        let behind = mesh(
+            [SIMD3(-0.5, -0.5, -0.5), SIMD3(0.5, -0.5, -0.5), SIMD3(0, 0.5, -0.5)],
+            [0, 1, 2])
+        XCTAssertEqual(MeshEdgePicker.pick(
+            worldRay: Ray(origin: SIMD3(0, 0, 2), direction: SIMD3(0, 0, -1)),
+            screenPoint: CGPoint(x: 100, y: 100),
+            viewportSize: CGSize(width: 200, height: 200),
+            mesh: behind, transform: .identity, viewProjection: matrix_identity_float4x4,
+            table: try MeshEdgeTable.build(mesh: behind), cache: MeshBVHCache()), .miss)
+
+        var invalidMatrix = matrix_identity_float4x4
+        invalidMatrix.columns.0.x = .nan
+        XCTAssertEqual(MeshEdgePicker.pick(
+            worldRay: Ray(origin: SIMD3(0, 0, 2), direction: SIMD3(0, 0, -1)),
+            screenPoint: CGPoint(x: 100, y: 100),
+            viewportSize: CGSize(width: 200, height: 200),
+            mesh: source, transform: .identity, viewProjection: invalidMatrix,
+            table: table, cache: cache), .unavailable)
     }
 
     func testScreenDistanceAndVisibleTrianglePicking() throws {
@@ -354,6 +573,20 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertEqual(MemoryLayout<EdgeSelectionOverlayUniforms>.stride, 160)
     }
 
+    private func makeInstrumentedEdgeRenderer() throws -> (
+        MetalRenderer, EditableMesh, MeshEdgeTable, FaultInjectingEdgePairAllocator
+    ) {
+        guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), device: device)
+        let allocator = FaultInjectingEdgePairAllocator()
+        guard let renderer = MetalRenderer(
+            view: view, profiler: nil, edgeSelectionBufferAllocator: allocator) else {
+            throw XCTSkip("Renderer unavailable")
+        }
+        let source = twoTriangleQuad()
+        return (renderer, source, try MeshEdgeTable.build(mesh: source), allocator)
+    }
+
     private func twoTriangleQuad() -> EditableMesh {
         mesh([SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 1, 0), SIMD3(0, 1, 0)],
              [0, 1, 2, 0, 2, 3])
@@ -384,8 +617,8 @@ final class EdgeSelectionTests: XCTestCase {
 private final class FaultInjectingEdgePairAllocator: EdgeSelectionPairBufferAllocating {
     var failAllocationNumber: Int?
     var failCopyNumber: Int?
-    private var allocationCount = 0
-    private var copyCount = 0
+    private(set) var allocationCount = 0
+    private(set) var copyCount = 0
 
     func makeBuffer(device: MTLDevice, length: Int) -> MTLBuffer? {
         allocationCount += 1

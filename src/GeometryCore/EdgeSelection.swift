@@ -371,8 +371,10 @@ enum ProjectedEdgeSegment: Equatable {
 }
 
 enum EdgeClipProjection {
-    private static let minimumW: Float = 1e-6
-    private static let minimumScreenLengthSquared: CGFloat = 1e-12
+    static let metalNearPlaneZ: Float = 0
+    static let minimumW: Float = 1e-6
+    static let minimumScreenLengthSquared: CGFloat = 1e-12
+    static let clippedOutClipPosition = SIMD4<Float>(2, 2, 2, 1)
 
     static func projectSegment(
         _ endpointA: SIMD4<Float>,
@@ -385,8 +387,8 @@ enum EdgeClipProjection {
 
         var a = endpointA
         var b = endpointB
-        let aBehindNear = a.z < 0
-        let bBehindNear = b.z < 0
+        let aBehindNear = a.z < metalNearPlaneZ
+        let bBehindNear = b.z < metalNearPlaneZ
         if aBehindNear && bBehindNear { return .clippedOut }
         if aBehindNear != bBehindNear {
             let denominator = b.z - a.z

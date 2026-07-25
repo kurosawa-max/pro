@@ -48,6 +48,8 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var meshEdgeTable: MeshEdgeTable?
     @Published private(set) var hoveredEdgeID: Int?
     @Published private(set) var edgeSelectionError: String?
+    private var edgeOverlaySelectedError: String?
+    private var edgeOverlayHoverError: String?
     @Published var brush = BrushKind.draw
     @Published var brushSettings = BrushSettings()
     @Published var symmetry = SculptSymmetry.none
@@ -776,19 +778,52 @@ final class WorkspaceModel: ObservableObject {
         hoveredEdgeID = nil
     }
 
-    func handleEdgeSelectionOverlayUpdate(_ result: EdgeSelectionOverlayUpdateResult) {
-        switch result {
-        case .unchanged:
-            break
-        case .updated:
-            if edgeSelectionError?.hasPrefix("Edge overlay:") == true {
-                edgeSelectionError = nil
+    func handleEdgeSelectionOverlayUpdate(_ summary: EdgeSelectionOverlayUpdateSummary) {
+        let previousOverlayMessage = currentEdgeOverlayErrorMessage
+        updateOverlayComponentError(summary.selected, component: .selected)
+        updateOverlayComponentError(summary.hover, component: .hover)
+        let currentOverlayMessage = currentEdgeOverlayErrorMessage
+
+        if let currentOverlayMessage {
+            guard edgeSelectionError == nil || edgeSelectionError == previousOverlayMessage else { return }
+            guard edgeSelectionError != currentOverlayMessage else { return }
+            edgeSelectionError = currentOverlayMessage
+            status = currentOverlayMessage
+        } else if edgeSelectionError == previousOverlayMessage {
+            edgeSelectionError = nil
+            if status == previousOverlayMessage {
+                status = "Selected \(edgeSelection.selectedCount) of \(edgeSelection.edgeCount) edges"
             }
+        }
+    }
+
+    private enum EdgeOverlayComponent: Equatable {
+        case selected
+        case hover
+    }
+
+    private var currentEdgeOverlayErrorMessage: String? {
+        let messages = [edgeOverlaySelectedError, edgeOverlayHoverError].compactMap { $0 }
+        return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+
+    private func updateOverlayComponentError(
+        _ update: EdgeOverlayComponentUpdate,
+        component: EdgeOverlayComponent
+    ) {
+        let message: String?
+        switch update {
+        case .unchanged:
+            return
+        case .updated, .cleared:
+            message = nil
         case .unavailable(let error):
-            let message = "Edge overlay: \(error.localizedDescription)"
-            guard edgeSelectionError != message else { return }
-            edgeSelectionError = message
-            status = message
+            let label = component == .selected ? "selected" : "hover"
+            message = "Edge overlay \(label): \(error.localizedDescription)"
+        }
+        switch component {
+        case .selected: edgeOverlaySelectedError = message
+        case .hover: edgeOverlayHoverError = message
         }
     }
 
@@ -2902,6 +2937,8 @@ final class WorkspaceModel: ObservableObject {
 
     private func rebuildEdgeSelectionForCurrentTopology() {
         hoveredEdgeID = nil
+        edgeOverlaySelectedError = nil
+        edgeOverlayHoverError = nil
         do {
             let table = try MeshEdgeTable.build(mesh: mesh)
             let selection = try EdgeSelection(table: table)

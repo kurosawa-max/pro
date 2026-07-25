@@ -128,7 +128,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         hoveredEdgeID: Int?,
         drawableSizePixels: CGSize,
         displayScale: CGFloat
-    ) -> EdgeSelectionOverlayUpdateResult {
+    ) -> EdgeSelectionOverlayUpdateSummary {
         edgeSelectionOverlayRenderer.update(
             mesh: mesh, table: table, selection: selection, hoveredEdgeID: hoveredEdgeID,
             drawableSizePixels: drawableSizePixels, displayScale: displayScale)
@@ -253,11 +253,37 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     var faceSelectionOverlayUploadedKey: FaceSelectionOverlayCacheKey? {
         faceSelectionOverlayRenderer.uploadedKey
     }
-    var edgeSelectionOverlayUploadCount: Int { edgeSelectionOverlayRenderer.uploadCount }
+    var edgeSelectionOverlaySelectedUploadCount: Int {
+        edgeSelectionOverlayRenderer.selectedUploadCount
+    }
+    var edgeSelectionOverlayHoverUploadCount: Int {
+        edgeSelectionOverlayRenderer.hoverUploadCount
+    }
+    var edgeSelectionOverlaySelectedPairGenerationCount: Int {
+        edgeSelectionOverlayRenderer.selectedPairGenerationCount
+    }
+    var edgeSelectionOverlayHoverPairGenerationCount: Int {
+        edgeSelectionOverlayRenderer.hoverPairGenerationCount
+    }
+    var edgeSelectionOverlaySelectedAllocationCount: Int {
+        edgeSelectionOverlayRenderer.selectedAllocationCount
+    }
+    var edgeSelectionOverlayHoverAllocationCount: Int {
+        edgeSelectionOverlayRenderer.hoverAllocationCount
+    }
+    var edgeSelectionOverlaySelectedCopyCount: Int {
+        edgeSelectionOverlayRenderer.selectedCopyCount
+    }
+    var edgeSelectionOverlayHoverCopyCount: Int {
+        edgeSelectionOverlayRenderer.hoverCopyCount
+    }
     var edgeSelectionOverlayEdgeCount: Int { edgeSelectionOverlayRenderer.selectedEdgeCount }
     var edgeSelectionOverlayHoverCount: Int { edgeSelectionOverlayRenderer.hoverEdgeCount }
-    var edgeSelectionOverlayUploadedKey: EdgeSelectionOverlayCacheKey? {
-        edgeSelectionOverlayRenderer.uploadedKey
+    var edgeSelectionOverlaySelectedUploadedKey: EdgeSelectedOverlayCacheKey? {
+        edgeSelectionOverlayRenderer.selectedUploadedKey
+    }
+    var edgeSelectionOverlayHoverUploadedKey: EdgeHoverOverlayCacheKey? {
+        edgeSelectionOverlayRenderer.hoverUploadedKey
     }
     #endif
 }
