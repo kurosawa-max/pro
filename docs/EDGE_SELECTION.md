@@ -33,3 +33,5 @@ Transform and camera changes update uniforms only. Sculpt follows the normal mes
 Before allocation, checked count-only estimation includes key accumulation, incident face uses, canonical records, key lookup, vertex-to-edge incidence, selection bitset, CPU pair staging, and GPU pair storage. The guard uses the shared 768 MiB working-memory policy. No partial table is published after failure. Selection remains valid if a large overlay cannot be allocated.
 
 Project `formatVersion` remains 1. Edge Selection, hover, operation, edge table, fingerprint, cache, threshold, and overlay buffers are not serialized.
+
+- Invalidated selected or hover overlays release their Metal buffer reference before retry; the unchanged peer remains available.

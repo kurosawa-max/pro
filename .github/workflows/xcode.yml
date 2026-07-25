@@ -17,7 +17,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select and boot iPad Simulator
+      - name: Select and boot compatible iPad Simulator
         shell: bash
         run: |
           set -euo pipefail
@@ -34,10 +34,10 @@ jobs:
                   continue
               for device in devices:
                   if device.get("isAvailable") and device.get("name") == "iPad Pro 13-inch (M4)":
-                      candidates.append((runtime, device["name"], device["udid"]))
+                      candidates.append((runtime, device["udid"]))
           if not candidates:
               raise SystemExit("No Xcode 16.4-compatible iOS 18.x iPad Pro 13-inch (M4) Simulator was found")
-          runtime, name, udid = sorted(candidates, key=lambda item: (item[0], item[1], item[2]), reverse=True)[0]
+          runtime, udid = sorted(candidates, reverse=True)[0]
           print(f"SIMULATOR_UDID={udid}")
           print(f"SIMULATOR_RUNTIME={runtime}")
           PY
@@ -65,54 +65,66 @@ jobs:
           -destination-timeout 120
           CODE_SIGNING_ALLOWED=NO
 
-      - name: Diagnose existing pure test
-        run: >-
-          xcodebuild test-without-building
-          -project Forge3D.xcodeproj -scheme Forge3D -configuration Debug
-          -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -destination-timeout 120
-          -only-testing:Forge3DTests/FaceExtrudeTests/testChangeVersionAdvancesWithoutReusingOverflowIdentity
-          -resultBundlePath "$RUNNER_TEMP/existing-pure.xcresult"
-          CODE_SIGNING_ALLOWED=NO
+      - name: Run and validate XCTest
+        shell: bash
+        run: |
+          set -uo pipefail
+          RESULT_BUNDLE="$RUNNER_TEMP/Forge3DTests.xcresult"
+          RAW_LOG="$RUNNER_TEMP/Forge3DTests.log"
+          SUMMARY_JSON="$RUNNER_TEMP/Forge3DTests-summary.json"
+          rm -rf "$RESULT_BUNDLE"
+          set +e
+          xcodebuild test-without-building \
+            -project Forge3D.xcodeproj \
+            -scheme Forge3D \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -destination-timeout 120 \
+            -resultBundlePath "$RESULT_BUNDLE" \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RAW_LOG"
+          XCODE_STATUS=${PIPESTATUS[0]}
+          set -e
+          test -d "$RESULT_BUNDLE"
+          xcrun xcresulttool get test-results summary \
+            --path "$RESULT_BUNDLE" --format json > "$SUMMARY_JSON"
+          python3 - "$SUMMARY_JSON" "$RAW_LOG" "$XCODE_STATUS" <<'PY'
+          import json, pathlib, sys
+          summary_path, log_path, xcode_status = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          data = json.load(open(summary_path, encoding="utf-8"))
+          def count(name):
+              value = data.get(name, 0)
+              return len(value) if isinstance(value, list) else int(value or 0)
+          total = count("totalTestCount")
+          failed = count("failedTests")
+          skipped = count("skippedTests")
+          passed = total - failed - skipped
+          log = pathlib.Path(log_path).read_text(encoding="utf-8", errors="replace")
+          expected_bundle = "EdgeSelectionTests" in log and "Forge3D" in log
+          print(f"XCTEST_SUMMARY total={total} passed={passed} failed={failed} skipped={skipped}")
+          print(f"XCTEST_HOST_LAUNCHED={total > 0}")
+          print(f"XCTEST_EXPECTED_BUNDLE={expected_bundle}")
+          if xcode_status != 0 or total <= 0 or failed != 0 or passed < 0 or not expected_bundle:
+              raise SystemExit(1)
+          PY
 
-      - name: Diagnose Edge Selection pure test
-        run: >-
-          xcodebuild test-without-building
-          -project Forge3D.xcodeproj -scheme Forge3D -configuration Debug
-          -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -destination-timeout 120
-          -only-testing:Forge3DTests/EdgeSelectionTests/testCanonicalKeyOrderingIdentityAndSelfEdgeRejection
-          -resultBundlePath "$RUNNER_TEMP/edge-pure.xcresult"
-          CODE_SIGNING_ALLOWED=NO
-
-      - name: Diagnose Edge Selection Metal test
-        run: >-
-          xcodebuild test-without-building
-          -project Forge3D.xcodeproj -scheme Forge3D -configuration Debug
-          -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -destination-timeout 120
-          -only-testing:Forge3DTests/EdgeSelectionTests/testOverlayAllocationFailureClearsCountsAndRetriesAtomically
-          -resultBundlePath "$RUNNER_TEMP/edge-metal.xcresult"
-          CODE_SIGNING_ALLOWED=NO
-
-      - name: Diagnose suite without Edge Selection
-        run: >-
-          xcodebuild test-without-building
-          -project Forge3D.xcodeproj -scheme Forge3D -configuration Debug
-          -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -destination-timeout 120
-          -skip-testing:Forge3DTests/EdgeSelectionTests
-          -resultBundlePath "$RUNNER_TEMP/without-edge.xcresult"
-          CODE_SIGNING_ALLOWED=NO
-
-      - name: Collect simulator diagnostics
+      - name: Collect XCTest failure diagnostics
         if: failure()
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/xcode-diagnostics"
           xcrun simctl list devices > "$RUNNER_TEMP/xcode-diagnostics/devices.txt" || true
           xcrun simctl listapps "$SIMULATOR_UDID" > "$RUNNER_TEMP/xcode-diagnostics/apps.txt" || true
-          xcrun simctl diagnose -b "$RUNNER_TEMP/xcode-diagnostics/simctl-diagnose" || true
+          xcrun simctl spawn "$SIMULATOR_UDID" log show --last 20m \
+            --style compact --predicate 'process == "Forge3D" OR process == "testmanagerd"' \
+            > "$RUNNER_TEMP/xcode-diagnostics/simulator.log" 2>&1 || true
+          (cd "$RUNNER_TEMP/xcode-diagnostics" && xcrun simctl diagnose) \
+            > "$RUNNER_TEMP/xcode-diagnostics/simctl-diagnose.log" 2>&1 || true
           cp -R "$HOME/Library/Logs/DiagnosticReports" "$RUNNER_TEMP/xcode-diagnostics/DiagnosticReports" 2>/dev/null || true
-          cp -R "$RUNNER_TEMP"/*.xcresult "$RUNNER_TEMP/xcode-diagnostics/" 2>/dev/null || true
+          cp -R "$RUNNER_TEMP/Forge3DTests.xcresult" "$RUNNER_TEMP/xcode-diagnostics/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/Forge3DTests.log" "$RUNNER_TEMP/xcode-diagnostics/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/Forge3DTests-summary.json" "$RUNNER_TEMP/xcode-diagnostics/" 2>/dev/null || true
 
-      - name: Upload failure diagnostics
+      - name: Upload XCTest failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
