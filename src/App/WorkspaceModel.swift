@@ -2645,7 +2645,7 @@ final class WorkspaceModel: ObservableObject {
         clearMeshDiagnostics()
         faceExtrudePreview = nil; faceExtrudeError = nil
         faceInsetPreview = nil; faceInsetError = nil
-        faceBevelPreview = nil faceBevelError = nil
+        faceBevelPreview = nil; faceBevelError = nil
         edgeBevelPreview = nil
         edgeBevelError = nil
         meshMirrorPreview = nil; meshMirrorError = nil
