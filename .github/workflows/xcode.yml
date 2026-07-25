@@ -12,10 +12,39 @@ permissions:
 jobs:
   build-and-test:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Select and boot iPad Simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun simctl shutdown all || true
+          xcrun simctl delete unavailable || true
+          xcrun simctl list devices available --json > "$RUNNER_TEMP/simulators.json"
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json, os
+          path = os.path.join(os.environ["RUNNER_TEMP"], "simulators.json")
+          data = json.load(open(path, encoding="utf-8"))
+          candidates = []
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              for device in devices:
+                  if device.get("isAvailable") and "iPad" in device.get("name", ""):
+                      candidates.append((runtime, device["name"], device["udid"]))
+          if not candidates:
+              raise SystemExit("No available iPad Simulator was found")
+          runtime, name, udid = sorted(candidates, key=lambda item: (item[0], item[1], item[2]), reverse=True)[0]
+          print(f"SIMULATOR_UDID={udid}")
+          print(f"SIMULATOR_RUNTIME={runtime}")
+          PY
+          source "$GITHUB_ENV"
+          xcrun simctl boot "$SIMULATOR_UDID"
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+          xcrun simctl list devices available
 
       - name: Build Release without instrumentation
         run: >-
@@ -26,20 +55,72 @@ jobs:
           -destination 'generic/platform=iOS Simulator'
           CODE_SIGNING_ALLOWED=NO
 
-      - name: Build for iPad Simulator
+      - name: Build for booted iPad Simulator
         run: >-
           xcodebuild build-for-testing
           -project Forge3D.xcodeproj
           -scheme Forge3D
           -configuration Debug
-          -destination 'platform=iOS Simulator,OS=latest,name=iPad Pro 13-inch (M4)'
+          -destination "platform=iOS Simulator,id=$SIMULATOR_UDID"
+          -destination-timeout 120
           CODE_SIGNING_ALLOWED=NO
 
-      - name: Run XCTest
+      - name: Diagnose existing pure test
         run: >-
           xcodebuild test-without-building
-          -project Forge3D.xcodeproj
-          -scheme Forge3D
-          -configuration Debug
-          -destination 'platform=iOS Simulator,OS=latest,name=iPad Pro 13-inch (M4)'
+          -project Forge3D.xcodeproj -scheme Forge3D -configuration Debug
+          -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -destination-timeout 120
+          -only-testing:Forge3DTests/FaceExtrudeTests/testChangeVersionAdvancesWithoutReusingOverflowIdentity
+          -resultBundlePath "$RUNNER_TEMP/existing-pure.xcresult"
           CODE_SIGNING_ALLOWED=NO
+
+      - name: Diagnose Edge Selection pure test
+        run: >-
+          xcodebuild test-without-building
+          -project Forge3D.xcodeproj -scheme Forge3D -configuration Debug
+          -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -destination-timeout 120
+          -only-testing:Forge3DTests/EdgeSelectionTests/testCanonicalKeyOrderingIdentityAndSelfEdgeRejection
+          -resultBundlePath "$RUNNER_TEMP/edge-pure.xcresult"
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Diagnose Edge Selection Metal test
+        run: >-
+          xcodebuild test-without-building
+          -project Forge3D.xcodeproj -scheme Forge3D -configuration Debug
+          -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -destination-timeout 120
+          -only-testing:Forge3DTests/EdgeSelectionTests/testOverlayAllocationFailureClearsCountsAndRetriesAtomically
+          -resultBundlePath "$RUNNER_TEMP/edge-metal.xcresult"
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Diagnose suite without Edge Selection
+        run: >-
+          xcodebuild test-without-building
+          -project Forge3D.xcodeproj -scheme Forge3D -configuration Debug
+          -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -destination-timeout 120
+          -skip-testing:Forge3DTests/EdgeSelectionTests
+          -resultBundlePath "$RUNNER_TEMP/without-edge.xcresult"
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Collect simulator diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/xcode-diagnostics"
+          xcrun simctl list devices > "$RUNNER_TEMP/xcode-diagnostics/devices.txt" || true
+          xcrun simctl listapps "$SIMULATOR_UDID" > "$RUNNER_TEMP/xcode-diagnostics/apps.txt" || true
+          xcrun simctl diagnose -b "$RUNNER_TEMP/xcode-diagnostics/simctl-diagnose" || true
+          cp -R "$HOME/Library/Logs/DiagnosticReports" "$RUNNER_TEMP/xcode-diagnostics/DiagnosticReports" 2>/dev/null || true
+          cp -R "$RUNNER_TEMP"/*.xcresult "$RUNNER_TEMP/xcode-diagnostics/" 2>/dev/null || true
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcode-test-diagnostics
+          path: ${{ runner.temp }}/xcode-diagnostics
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Shutdown Simulator
+        if: always()
+        run: xcrun simctl shutdown "$SIMULATOR_UDID" || true

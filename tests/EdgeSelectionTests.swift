@@ -266,6 +266,8 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 0)
         XCTAssertNil(renderer.edgeSelectionOverlaySelectedUploadedKey)
         XCTAssertNil(renderer.edgeSelectionOverlayHoverUploadedKey)
+        XCTAssertFalse(renderer.edgeSelectionOverlayHasSelectedBuffer)
+        XCTAssertFalse(renderer.edgeSelectionOverlayHasHoverBuffer)
 
         allocator.failAllocationNumber = nil
         XCTAssertEqual(renderer.updateEdgeSelection(
@@ -276,6 +278,8 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 1)
         XCTAssertNotNil(renderer.edgeSelectionOverlaySelectedUploadedKey)
         XCTAssertNotNil(renderer.edgeSelectionOverlayHoverUploadedKey)
+        XCTAssertTrue(renderer.edgeSelectionOverlayHasSelectedBuffer)
+        XCTAssertTrue(renderer.edgeSelectionOverlayHasHoverBuffer)
     }
 
     func testOverlayCopyFailureDoesNotInstallStaleKeyAndCanRetry() throws {
@@ -385,6 +389,9 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 1)
         XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 0)
         XCTAssertNotNil(renderer.edgeSelectionOverlaySelectedUploadedKey)
+        XCTAssertTrue(renderer.edgeSelectionOverlayHasSelectedBuffer)
+        XCTAssertFalse(renderer.edgeSelectionOverlayHasHoverBuffer)
+        XCTAssertEqual(allocator.liveBufferCount, 1)
         allocator.failAllocationNumber = nil
         XCTAssertEqual(renderer.updateEdgeSelection(
             mesh: source, table: table, selection: selection, hoveredEdgeID: 2,
@@ -400,6 +407,11 @@ final class EdgeSelectionTests: XCTestCase {
                 selected: .unavailable(.allocationFailed), hover: .unchanged))
         XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 0)
         XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 1)
+        XCTAssertFalse(renderer.edgeSelectionOverlayHasSelectedBuffer)
+        XCTAssertTrue(renderer.edgeSelectionOverlayHasHoverBuffer)
+        XCTAssertNil(renderer.edgeSelectionOverlaySelectedUploadedKey)
+        XCTAssertNotNil(renderer.edgeSelectionOverlayHoverUploadedKey)
+        XCTAssertEqual(allocator.liveBufferCount, 1)
         allocator.failAllocationNumber = nil
         XCTAssertEqual(renderer.updateEdgeSelection(
             mesh: source, table: table, selection: selection, hoveredEdgeID: 2,
@@ -407,6 +419,59 @@ final class EdgeSelectionTests: XCTestCase {
             EdgeSelectionOverlayUpdateSummary(selected: .updated, hover: .unchanged))
     }
 
+    func testInvalidInputsReleaseBothOverlayBuffersAndCanRecover() throws {
+        let (renderer, source, table, _) = try makeInstrumentedEdgeRenderer()
+        var selection = try EdgeSelection(table: table)
+        XCTAssertTrue(try selection.apply(.add, edgeID: 0))
+
+        func install() {
+            _ = renderer.updateEdgeSelection(
+                mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
+                drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+            XCTAssertTrue(renderer.edgeSelectionOverlayHasSelectedBuffer)
+            XCTAssertTrue(renderer.edgeSelectionOverlayHasHoverBuffer)
+        }
+        func assertReleased() {
+            XCTAssertFalse(renderer.edgeSelectionOverlayHasSelectedBuffer)
+            XCTAssertFalse(renderer.edgeSelectionOverlayHasHoverBuffer)
+            XCTAssertEqual(renderer.edgeSelectionOverlayEdgeCount, 0)
+            XCTAssertEqual(renderer.edgeSelectionOverlayHoverCount, 0)
+            XCTAssertNil(renderer.edgeSelectionOverlaySelectedUploadedKey)
+            XCTAssertNil(renderer.edgeSelectionOverlayHoverUploadedKey)
+            XCTAssertTrue(selection.contains(0))
+        }
+
+        install()
+        _ = renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: .zero, displayScale: 1)
+        assertReleased()
+
+        install()
+        _ = renderer.updateEdgeSelection(
+            mesh: source, table: nil, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        assertReleased()
+
+        install()
+        let replacement = EditableMesh(vertices: source.vertices, indices: source.indices)
+        _ = renderer.updateEdgeSelection(
+            mesh: replacement, table: table, selection: selection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        assertReleased()
+
+        install()
+        let otherMesh = EditableMesh(vertices: source.vertices, indices: source.indices)
+        let otherTable = try MeshEdgeTable.build(mesh: otherMesh)
+        var staleSelection = try EdgeSelection(table: otherTable)
+        XCTAssertTrue(try staleSelection.apply(.add, edgeID: 0))
+        _ = renderer.updateEdgeSelection(
+            mesh: source, table: table, selection: staleSelection, hoveredEdgeID: 1,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        assertReleased()
+
+        install()
+    }
     func testCameraTransformAndSculptReuseBothPairBuffers() throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
         let profiler = PerformanceProfiler()
@@ -619,11 +684,15 @@ private final class FaultInjectingEdgePairAllocator: EdgeSelectionPairBufferAllo
     var failCopyNumber: Int?
     private(set) var allocationCount = 0
     private(set) var copyCount = 0
+    private var buffers: [WeakMetalBuffer] = []
+    var liveBufferCount: Int { buffers.filter { $0.value != nil }.count }
 
     func makeBuffer(device: MTLDevice, length: Int) -> MTLBuffer? {
         allocationCount += 1
         if allocationCount == failAllocationNumber { return nil }
-        return device.makeBuffer(length: length, options: .storageModeShared)
+        let buffer = device.makeBuffer(length: length, options: .storageModeShared)
+        if let buffer { buffers.append(WeakMetalBuffer(buffer)) }
+        return buffer
     }
 
     func copy(_ pairs: [SIMD2<UInt32>], byteCount: Int, to buffer: MTLBuffer) -> Bool {
@@ -635,4 +704,9 @@ private final class FaultInjectingEdgePairAllocator: EdgeSelectionPairBufferAllo
             return true
         }
     }
+}
+
+private final class WeakMetalBuffer {
+    weak var value: AnyObject?
+    init(_ value: AnyObject) { self.value = value }
 }

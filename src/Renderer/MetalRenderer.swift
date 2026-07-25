@@ -277,6 +277,12 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     var edgeSelectionOverlayHoverCopyCount: Int {
         edgeSelectionOverlayRenderer.hoverCopyCount
     }
+    var edgeSelectionOverlayHasSelectedBuffer: Bool {
+        edgeSelectionOverlayRenderer.hasSelectedBuffer
+    }
+    var edgeSelectionOverlayHasHoverBuffer: Bool {
+        edgeSelectionOverlayRenderer.hasHoverBuffer
+    }
     var edgeSelectionOverlayEdgeCount: Int { edgeSelectionOverlayRenderer.selectedEdgeCount }
     var edgeSelectionOverlayHoverCount: Int { edgeSelectionOverlayRenderer.hoverEdgeCount }
     var edgeSelectionOverlaySelectedUploadedKey: EdgeSelectedOverlayCacheKey? {

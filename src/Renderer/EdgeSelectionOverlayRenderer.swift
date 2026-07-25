@@ -105,6 +105,8 @@ final class EdgeSelectionOverlayRenderer {
     private(set) var selectedUploadedKey: EdgeSelectedOverlayCacheKey?
     private(set) var hoverUploadedKey: EdgeHoverOverlayCacheKey?
     #if DEBUG
+    var hasSelectedBuffer: Bool { selectedBuffer != nil }
+    var hasHoverBuffer: Bool { hoverBuffer != nil }
     private(set) var selectedUploadCount = 0
     private(set) var hoverUploadCount = 0
     private(set) var selectedPairGenerationCount = 0
@@ -397,11 +399,13 @@ final class EdgeSelectionOverlayRenderer {
     }
 
     private func invalidateSelected() {
+        selectedBuffer = nil
         selectedEdgeCount = 0
         selectedUploadedKey = nil
     }
 
     private func invalidateHover() {
+        hoverBuffer = nil
         hoverEdgeCount = 0
         hoverUploadedKey = nil
     }
