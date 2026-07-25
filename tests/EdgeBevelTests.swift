@@ -1,5 +1,7 @@
 import XCTest
+import SwiftUI
 import simd
+@testable import Forge3D
 #if canImport(UIKit)
 import UIKit
 #endif
