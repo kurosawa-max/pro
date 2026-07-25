@@ -789,7 +789,7 @@ final class WorkspaceModel: ObservableObject {
             guard edgeSelectionError != currentOverlayMessage else { return }
             edgeSelectionError = currentOverlayMessage
             status = currentOverlayMessage
-        } else if edgeSelectionError == previousOverlayMessage {
+        } else if let previousOverlayMessage, edgeSelectionError == previousOverlayMessage {
             edgeSelectionError = nil
             if status == previousOverlayMessage {
                 status = "Selected \(edgeSelection.selectedCount) of \(edgeSelection.edgeCount) edges"

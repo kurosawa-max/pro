@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 import MetalKit
 import SwiftUI
 @testable import Forge3D
@@ -210,6 +211,14 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertEqual(model.status, "Selected 0 of \(model.totalEdgeCount) edges")
     }
 
+    func testUnchangedOverlaySummaryDoesNotRepublishNilError() {
+        let model = WorkspaceModel()
+        var publicationCount = 0
+        let observation = model.objectWillChange.sink { publicationCount += 1 }
+        model.handleEdgeSelectionOverlayUpdate(.unchanged)
+        XCTAssertEqual(publicationCount, 0)
+        withExtendedLifetime(observation) {}
+    }
     func testOverlayComponentErrorsRecoverIndependentlyWithoutClearingRegularErrors() {
         let model = WorkspaceModel()
         model.handleEdgeSelectionOverlayUpdate(EdgeSelectionOverlayUpdateSummary(
