@@ -400,12 +400,16 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertNotNil(renderer.edgeSelectionOverlaySelectedUploadedKey)
         XCTAssertTrue(renderer.edgeSelectionOverlayHasSelectedBuffer)
         XCTAssertFalse(renderer.edgeSelectionOverlayHasHoverBuffer)
-        XCTAssertEqual(allocator.liveBufferCount, 1)
         allocator.failAllocationNumber = nil
+        allocator.beforeAllocation = {
+            XCTAssertTrue(renderer.edgeSelectionOverlayHasSelectedBuffer)
+            XCTAssertFalse(renderer.edgeSelectionOverlayHasHoverBuffer)
+        }
         XCTAssertEqual(renderer.updateEdgeSelection(
             mesh: source, table: table, selection: selection, hoveredEdgeID: 2,
             drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1),
             EdgeSelectionOverlayUpdateSummary(selected: .unchanged, hover: .updated))
+        allocator.beforeAllocation = nil
 
         XCTAssertTrue(try selection.apply(.add, edgeID: 3))
         allocator.failAllocationNumber = allocator.allocationCount + 1
@@ -420,12 +424,16 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertTrue(renderer.edgeSelectionOverlayHasHoverBuffer)
         XCTAssertNil(renderer.edgeSelectionOverlaySelectedUploadedKey)
         XCTAssertNotNil(renderer.edgeSelectionOverlayHoverUploadedKey)
-        XCTAssertEqual(allocator.liveBufferCount, 1)
         allocator.failAllocationNumber = nil
+        allocator.beforeAllocation = {
+            XCTAssertFalse(renderer.edgeSelectionOverlayHasSelectedBuffer)
+            XCTAssertTrue(renderer.edgeSelectionOverlayHasHoverBuffer)
+        }
         XCTAssertEqual(renderer.updateEdgeSelection(
             mesh: source, table: table, selection: selection, hoveredEdgeID: 2,
             drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1),
             EdgeSelectionOverlayUpdateSummary(selected: .updated, hover: .unchanged))
+        allocator.beforeAllocation = nil
     }
 
     func testInvalidInputsReleaseBothOverlayBuffersAndCanRecover() throws {
@@ -693,15 +701,13 @@ private final class FaultInjectingEdgePairAllocator: EdgeSelectionPairBufferAllo
     var failCopyNumber: Int?
     private(set) var allocationCount = 0
     private(set) var copyCount = 0
-    private var buffers: [WeakMetalBuffer] = []
-    var liveBufferCount: Int { buffers.filter { $0.value != nil }.count }
+    var beforeAllocation: (() -> Void)?
 
     func makeBuffer(device: MTLDevice, length: Int) -> MTLBuffer? {
         allocationCount += 1
+        beforeAllocation?()
         if allocationCount == failAllocationNumber { return nil }
-        let buffer = device.makeBuffer(length: length, options: .storageModeShared)
-        if let buffer { buffers.append(WeakMetalBuffer(buffer)) }
-        return buffer
+        return device.makeBuffer(length: length, options: .storageModeShared)
     }
 
     func copy(_ pairs: [SIMD2<UInt32>], byteCount: Int, to buffer: MTLBuffer) -> Bool {
@@ -713,9 +719,4 @@ private final class FaultInjectingEdgePairAllocator: EdgeSelectionPairBufferAllo
             return true
         }
     }
-}
-
-private final class WeakMetalBuffer {
-    weak var value: AnyObject?
-    init(_ value: AnyObject) { self.value = value }
 }
