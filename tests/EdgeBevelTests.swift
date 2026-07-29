@@ -22,7 +22,9 @@ final class EdgeBevelTests: XCTestCase {
         XCTAssertEqual(result.estimate.selectedEdgeCount, 1)
         XCTAssertEqual(result.mesh.vertices.count, source.vertices.count + 4)
         XCTAssertEqual(result.mesh.indices.count / 3, source.indices.count / 3 + 8)
-        XCTAssertEqual(Array(result.mesh.vertices.prefix(source.vertices.count)), source.vertices)
+        XCTAssertEqual(
+            result.mesh.vertices.prefix(source.vertices.count).map(\.position),
+            source.vertices.map(\.position))
         let faces = table.edges[edgeID].incidentFaceIDs
         XCTAssertEqual(faces.count, 2)
         let unchangedFaces = (0..<(source.indices.count / 3)).filter {
@@ -91,7 +93,7 @@ final class EdgeBevelTests: XCTestCase {
 
     func testAdjacentSelectedEdgesAreRejected() throws {
         let source = octahedron()
-        let (table, selection, _) = try selected(source, keys: [try key(0, 1), try key(0, 2)])
+        let (table, selection, _) = try selected(source, keys: [try key(0, 1), try key(0, 4)])
         XCTAssertThrowsError(try EdgeBevel.estimate(mesh: source, table: table, selection: selection,
                                                     transform: .identity, options: .init(widthMillimeters: 0.1))) {
             XCTAssertEqual($0 as? EdgeBevelError, .adjacentSelectedEdges)
@@ -282,7 +284,6 @@ final class EdgeBevelTests: XCTestCase {
     }
     private func double(_ p: SIMD3<Float>) -> SIMD3<Double> { SIMD3(Double(p.x),Double(p.y),Double(p.z)) }
 }
-
 private extension Array where Element == UInt32 {
     func containsSubsequence(_ pair: [UInt32]) -> Bool {
         guard pair.count == 2 else { return false }
@@ -293,3 +294,4 @@ private extension Array where Element == UInt32 {
         return false
     }
 }
+

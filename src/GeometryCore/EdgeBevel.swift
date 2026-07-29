@@ -7,7 +7,6 @@ struct EdgeBevelOptions: Equatable {
     static let maximumWidthMillimeters = 1_000.0
     var widthMillimeters = defaultWidthMillimeters
 }
-
 struct EdgeBevelEstimate: Equatable {
     let selectedEdgeCount: Int
     let affectedFaceCount: Int
@@ -297,7 +296,9 @@ enum EdgeBevel {
             for (side, o) in opposite.enumerated() {
                 let wc=world(mesh.vertices[Int(o)].position,transform); let rel=wc-wa; let perp=rel-u*simd_dot(rel,u); let altitude=simd_length(perp)
                 guard altitude.isFinite, altitude > 1e-9 else { throw EdgeBevelError.collapsedGeometry }
-                let tolerance=max(max(altitude, el) * 1e-6, 1e-6)
+                let coordinateTolerance = max(
+                    floatULP(at: wa), floatULP(at: wb), floatULP(at: wc)) * 4
+                let tolerance=max(max(max(altitude, el) * 1e-6, coordinateTolerance), 1e-6)
                 let candidateMaximum=altitude-tolerance
                 if candidateMaximum < edgeMax {
                     edgeMax=candidateMaximum
@@ -570,5 +571,13 @@ enum EdgeBevel {
     private static func mix(_ value: UInt64, into fingerprint: inout UInt64) {
         fingerprint = (fingerprint ^ value) &* 1099511628211
     }
+    private static func floatULP(at point: SIMD3<Double>) -> Double {
+        [point.x, point.y, point.z].reduce(0) { current, component in
+            let value = Float(component)
+            guard value.isFinite else { return .infinity }
+            return max(current, Double(abs(value.nextUp - value)))
+        }
+    }
     private static func fingerprint(_ ids:[Int])->UInt64{ids.reduce(1469598103934665603){($0 ^ UInt64($1)) &* 1099511628211}}
 }
+
