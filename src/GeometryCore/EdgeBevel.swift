@@ -580,4 +580,3 @@ enum EdgeBevel {
     }
     private static func fingerprint(_ ids:[Int])->UInt64{ids.reduce(1469598103934665603){($0 ^ UInt64($1)) &* 1099511628211}}
 }
-

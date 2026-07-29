@@ -4,6 +4,7 @@ import simd
 @testable import Forge3D
 #if canImport(UIKit)
 import UIKit
+import MetalKit
 #endif
 
 final class EdgeBevelTests: XCTestCase {
@@ -20,6 +21,9 @@ final class EdgeBevelTests: XCTestCase {
             mesh: source, table: table, selection: selection, transform: .identity,
             options: EdgeBevelOptions(widthMillimeters: 0.1))
         XCTAssertEqual(result.estimate.selectedEdgeCount, 1)
+        XCTAssertEqual(result.estimate.affectedFaceCount, 6)
+        XCTAssertEqual(result.estimate.supportFaceCount, 4)
+        XCTAssertEqual(result.estimate.selectedEndpointCount, 2)
         XCTAssertEqual(result.mesh.vertices.count, source.vertices.count + 4)
         XCTAssertEqual(result.mesh.indices.count / 3, source.indices.count / 3 + 8)
         XCTAssertEqual(
@@ -32,6 +36,10 @@ final class EdgeBevelTests: XCTestCase {
                 == Array(source.indices[($0 * 3)..<($0 * 3 + 3)])
         }
         XCTAssertEqual(unchangedFaces.count, 2)
+        let appendedStart = source.indices.count
+        XCTAssertEqual(
+            Array(result.mesh.indices[appendedStart..<(appendedStart + 12)]),
+            [6,0,3, 7,4,2, 8,5,3, 9,1,2])
         XCTAssertFalse(result.mesh.indices.containsSubsequence([UInt32(0), 1]))
         let report = MeshTopologyDiagnostics.analyze(result.mesh)
         XCTAssertEqual(report.boundaryEdgeCount, 0)
@@ -135,6 +143,33 @@ final class EdgeBevelTests: XCTestCase {
         }
     }
 
+    func testDisjointComponentsBevelTogetherAndPreserveComponents() throws {
+        let source = twoOctahedra()
+        let (table, selection, _) = try selected(
+            source, keys: [try key(0, 1), try key(6, 7)])
+        let result = try EdgeBevel.bevel(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            options: .init(widthMillimeters: 0.1))
+        XCTAssertEqual(result.mesh.vertices.count, source.vertices.count + 8)
+        XCTAssertEqual(result.mesh.indices.count / 3, source.indices.count / 3 + 16)
+        let report = MeshTopologyDiagnostics.analyze(result.mesh)
+        XCTAssertEqual(report.connectedComponentCount, 2)
+        XCTAssertEqual(report.boundaryEdgeCount, 0)
+        XCTAssertEqual(report.nonManifoldEdgeCount, 0)
+        XCTAssertEqual(report.inconsistentWindingEdgeCount, 0)
+    }
+
+    func testVertexDisjointEdgesWithTouchingOneRingsAreRejected() throws {
+        let source = octahedron()
+        let (table, selection, _) = try selected(
+            source, keys: [try key(0, 1), try key(2, 3)])
+        XCTAssertThrowsError(try EdgeBevel.estimate(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            options: .init(widthMillimeters: 0.1))) {
+            XCTAssertEqual($0 as? EdgeBevelError, .affectedNeighborhoodsOverlap)
+        }
+    }
+
     func testPreviewIdentityRejectsSelectionTransformOptionsAndVertexChange() throws {
         var source = octahedron()
         let (table, selection, _) = try selected(source, keys: [try key(0, 1)])
@@ -230,6 +265,63 @@ final class EdgeBevelTests: XCTestCase {
         XCTAssertEqual(loaded.mesh, model.mesh); XCTAssertNil(loaded.edgeBevelPreview)
     }
 
+    @MainActor
+    func testApplyUndoRedoAutosaveOrderingUsesCompletedMeshes() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("EdgeBevelAutosave-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let coordinator = ProjectAutosaveCoordinator(
+            storage: ProjectRecoveryStorage(directoryURL: directory),
+            scheduler: EdgeBevelImmediateScheduler(), debounceNanoseconds: 0)
+        let model = WorkspaceModel(autosaveCoordinator: coordinator)
+        await model.inspectRecoveryOnLaunch(force: true)
+        model.mesh = octahedron()
+        model.setInteractionMode(.edgeSelect)
+        model.setEdgeSelectionOperation(.add)
+        XCTAssertTrue(model.applyEdgeSelectionHit(
+            try selectedEdgeID(model.mesh, key: key(0, 1))))
+        let before = model.mesh
+        try model.prepareForEdgeBevel()
+        let preview = try model.previewEdgeBevel(options: .init(widthMillimeters: 0.1))
+        let after = try model.applyEdgeBevel(preview: preview).mesh
+        await waitForWriteCount(1, coordinator: coordinator)
+        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, after)
+        model.undo()
+        await waitForWriteCount(2, coordinator: coordinator)
+        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, before)
+        model.redo()
+        await waitForWriteCount(3, coordinator: coordinator)
+        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, after)
+        let writeCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(writeCount, 3)
+    }
+
+    #if canImport(UIKit)
+    @MainActor
+    func testSuccessfulInstallUploadsTopologyOnce() throws {
+        #if targetEnvironment(simulator)
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        let view = MTKView(frame: .zero, device: device)
+        let profiler = PerformanceProfiler()
+        let renderer = try XCTUnwrap(MetalRenderer(view: view, profiler: profiler))
+        let model = try configuredModel()
+        renderer.update(mesh: model.mesh)
+        profiler.reset(
+            vertexCount: model.mesh.vertices.count,
+            triangleCount: model.mesh.indices.count / 3)
+        try model.prepareForEdgeBevel()
+        let preview = try model.previewEdgeBevel(options: .init(widthMillimeters: 0.1))
+        _ = try model.applyEdgeBevel(preview: preview)
+        renderer.update(mesh: model.mesh)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 1)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 1)
+        renderer.update(mesh: model.mesh)
+        XCTAssertEqual(profiler.snapshot()[.vertexUpload].sampleCount, 1)
+        XCTAssertEqual(profiler.snapshot()[.indexUpload].sampleCount, 1)
+        #endif
+    }
+    #endif
+
     #if canImport(UIKit)
     @MainActor
     func testCompactDynamicTypeAndVoiceOverStructure() throws {
@@ -255,6 +347,14 @@ final class EdgeBevelTests: XCTestCase {
             4,1,0, 4,2,1, 4,3,2, 4,0,3,
             5,0,1, 5,1,2, 5,2,3, 5,3,0
         ])
+    }
+    private func twoOctahedra() -> EditableMesh {
+        let first = octahedron()
+        let offset = UInt32(first.vertices.count)
+        let secondPositions = first.vertices.map { $0.position + SIMD3<Float>(4, 0, 0) }
+        return mesh(
+            first.vertices.map(\.position) + secondPositions,
+            first.indices + first.indices.map { $0 + offset })
     }
     private func mesh(_ positions: [SIMD3<Float>], _ indices: [UInt32]) -> EditableMesh {
         var value = EditableMesh(vertices: positions.map { MeshVertex(position: $0, normal: .zero) }, indices: indices)
@@ -283,6 +383,18 @@ final class EdgeBevelTests: XCTestCase {
         double(transform.worldPosition(fromLocal: mesh.vertices[Int(id)].position))
     }
     private func double(_ p: SIMD3<Float>) -> SIMD3<Double> { SIMD3(Double(p.x),Double(p.y),Double(p.z)) }
+
+    private func waitForWriteCount(
+        _ expected: Int, coordinator: ProjectAutosaveCoordinator,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        for _ in 0..<10_000 {
+            if await coordinator.successfulWriteCount == expected { return }
+            await Task.yield()
+        }
+        let actual = await coordinator.successfulWriteCount
+        XCTAssertEqual(actual, expected, file: file, line: line)
+    }
 }
 private extension Array where Element == UInt32 {
     func containsSubsequence(_ pair: [UInt32]) -> Bool {
@@ -295,3 +407,6 @@ private extension Array where Element == UInt32 {
     }
 }
 
+private struct EdgeBevelImmediateScheduler: AutosaveDelayScheduler {
+    func wait(nanoseconds: UInt64) async throws { try Task.checkCancellation() }
+}
