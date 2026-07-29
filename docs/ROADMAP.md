@@ -52,6 +52,8 @@ Face Selectionを境界とするSplit RegionとMerge Exact Seam foundationとし
 
 単一objectのEdge Selection foundationとして、canonical vertex-ID pair、deterministic edge table、incident face分類、dense bitset、Replace／Add／Remove／Toggle、Clear／All／Invert、vertex-connected selection、BVH frontmost triangleからのscreen-space edge picking、hover、endpoint pair Metal overlayを追加する。selectionはruntime-onlyでvertex-only変更では維持し、topology変更でclearする。Loop／Ring、hidden／through、Box／Lasso、Vertex Selection、topology編集は後続範囲とする。
 
+Edge Selectionを入力とするEdge Bevel foundationとして、互いにvertexを共有せずone-ringも分離したmanifold interior edgeをworld-space mm幅の1-segment chamferへ置換する。valence 4以上、異なる4 support facesを要求し、各edgeへ4 vertices、support split 4／strip 2／cap 2の8 trianglesを追加する。six-edge cavity、deterministic mapping、stored Float render-space再検証、mandatory Preview、prepared commit、`ReplaceMeshCommand` 1件を使用する。boundary／adjacent／coplanar／endpoint bow-tie／valence-3 miterを拒否し、chain／cycle、general corner miter、multiple segments、collision repairは後続範囲とする。
+
 ## Milestone 0 — Repository Foundation
 
 - Xcode workspace作成

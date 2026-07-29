@@ -480,6 +480,10 @@ Filesのconfirmation sheetはformat、source triangle、welded vertex、mm dimen
 
 `MeshMetricDiagnostics`はDoubleでlocal area/signed volumeを累積し、world areaは非一様scale対応のため変換後triangleから再計算する。volumeはclosed/manifold/oriented時のみ信頼し、world値はscale determinantで変換する。world boundsは既存8-corner規則を再利用する。Subdivision/STL capabilityはそれぞれ既存validation境界を呼ぶ。
 
+`EdgeBevel`はcurrent `MeshEdgeTable`とruntime-only `EdgeSelection`を入力に、vertex-disjointかつone-ringが完全分離したmanifold interior edgeだけを1-segment chamferへ置換する。endpoint valence 4以上、4つの異なるsupport face、6つの異なるaffected faceを要求し、valence-3 cornerはmiter未実装として拒否する。source local FloatをRendererと同じ`ObjectTransform.worldPosition`でworld Floatへ変換し、その値をDouble geometry計算の起点とする。各edgeへface専用offset vertexを4個追加し、元incident face slotをtrimmed triangleへ置換する。4 support facesをdirected side edgeでsplitして追加childを作り、実測したsix-edge cavityをstrip 2 trianglesとendpoint cap 2 trianglesで閉じるため、closed triangular manifoldの結果式は`V + 4S`、`T + 8S`である。
+
+stored local Floatを再び通常Transformでworldへ戻してwidthを検証し、normal、adjacency、Diagnostics、bounds、Picking BVHをfallible prepared phaseで完成させる。UUID Preview identity、non-rewinding mesh/Transform version、edge table/selection identity、estimate/fingerprintを照合した後だけ、nonthrowing commitで`ReplaceMeshCommand` 1件を記録する。selection、Preview、optionsはformatVersion 1、history、Autosave snapshotへ含めない。詳細は`EDGE_BEVEL.md`を参照する。
+
 runtime cache keyは`topologyID/topologyRevision/revision/ObjectTransform`で、変更eventをlatched staleとして扱い、Undo/Redoで同じkeyへ戻ってもRefreshまではstale reportをUI/Rendererへ渡さない。Metal diagnostics overlayはmesh/gizmoとは別のline/point pipeline、buffer、revisionを持ち、最大1,000代表/categoryを内容変更時のみuploadする。depth compareは常時表示、depth writeなしで、picking/inputには参加しない。report/overlay設定はprojectへ永続化しない。詳細は`MESH_DIAGNOSTICS.md`を参照する。
 
 ### 17.13 Explicit limited mesh cleanup
@@ -568,4 +572,4 @@ Previewは`TopologyPreviewRequestCoordinator`のUUID、topology／vertex revisio
 
 `EdgeSelection`はtable fingerprintへ結合したruntime-only dense bitsetであり、Face Selectionと独立する。content変更ごとにUUID versionを交換し、project generation、history、Autosave、Recovery、formatVersion 1へ参加しない。topology置換ではtable再構築とselection／hover clearを行う。
 
-Pickingはcurrent CPU BVHのnearest triangleを得て、その3 edgeだけをcurrent Transform／view-projectionでscreenへ写し、14-point segment distanceとedge ID tie-breakで決める。Rendererはselected／hoverごとに独立したtopology-bound key、endpoint-pair buffer、count、upload counterを持ち、通常mesh vertex bufferから位置を読むscreen-space quadをmesh後、Diagnostics前に描画する。hover-only変更はselected IDsを列挙せず、selection-only変更は有効なhover bufferへ触れない。camera／Transformはuniformだけ、Sculptはmesh vertexだけを更新する。component単位のstaging／allocation／copy完了後にkeyとbufferをcommitし、片側failureはそのcomponentだけを非表示にしてpeerを維持し、次frameのretryを許可する。詳細は`EDGE_SELECTION.md`を参照する。
+Pickingはcurrent CPU BVHのnearest triangleを得て、その3 edgeだけをcurrent Transform／view-projectionでscreenへ写し、14-point segment distanceとedge ID tie-breakで決める。Rendererはselected／hoverごとに独立したtopology-bound key、endpoint-pair buffer、count、upload counterを持ち、通常mesh vertex bufferから位置を読むscreen-space quadをmesh後、Diagnostics前に描画する。hover-only変更はselected IDsを列挙せず、selection-only変更は有効なhover bufferへ触れない。camera／Transformはuniformだけ、Sculptは通常mesh vertexだけを更新する。component単位のstaging／allocation／copy完了後にkeyとbufferをcommitし、片側failureはそのcomponentだけを非表示にしてpeerを維持し、次frameのretryを許可する。詳細は`EDGE_SELECTION.md`を参照する。

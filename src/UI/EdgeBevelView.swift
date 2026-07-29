@@ -31,11 +31,15 @@ struct EdgeBevelView: View {
                         LabeledContent("Selected endpoints", value: count(estimate.selectedEdgeCount * 2))
                         LabeledContent("Requested width", value: millimeters(preview?.options.widthMillimeters ?? 0))
                         LabeledContent("Maximum safe width", value: millimeters(estimate.maximumSafeWidthMillimeters))
+                        LabeledContent("Limiting edge / face", value: "\(estimate.limitingEdgeID) / \(estimate.limitingFaceID)")
+                        LabeledContent("Edge length range", value: "\(millimeters(estimate.minimumSelectedEdgeLengthMillimeters)) – \(millimeters(estimate.maximumSelectedEdgeLengthMillimeters))")
+                        LabeledContent("Minimum altitude", value: millimeters(estimate.minimumIncidentAltitudeMillimeters))
+                        LabeledContent("Maximum measured error", value: millimeters(estimate.maximumMeasuredWidthErrorMillimeters))
                         transition("Vertices", estimate.originalVertexCount, estimate.resultingVertexCount)
                         transition("Triangles", estimate.originalTriangleCount, estimate.resultingTriangleCount)
-                        LabeledContent("Components", value: count(estimate.componentCount))
-                        LabeledContent("Boundary edges", value: count(estimate.boundaryEdgeCount))
-                        LabeledContent("Result world bounds", value: dimensions(estimate.resultBounds))
+                        transition("Components", estimate.sourceComponentCount, estimate.resultComponentCount)
+                        transition("Boundary edges", estimate.sourceBoundaryEdgeCount, estimate.resultBoundaryEdgeCount)
+                        LabeledContent("Result world bounds", value: dimensions(estimate.resultWorldBounds))
                         LabeledContent("Estimated working memory", value: ByteCountFormatter.string(
                             fromByteCount: Int64(estimate.estimatedWorkingByteCount), countStyle: .memory))
                     } else {

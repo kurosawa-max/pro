@@ -14,20 +14,22 @@ final class EdgeBevelTests: XCTestCase {
     }
 
     func testOneInteriorEdgeUsesDeterministicCountsSlotsAndClosedTopology() throws {
-        let source = tetrahedron()
+        let source = octahedron()
         let (table, selection, edgeID) = try selected(source, keys: [try key(0, 1)])
         let result = try EdgeBevel.bevel(
             mesh: source, table: table, selection: selection, transform: .identity,
             options: EdgeBevelOptions(widthMillimeters: 0.1))
         XCTAssertEqual(result.estimate.selectedEdgeCount, 1)
         XCTAssertEqual(result.mesh.vertices.count, source.vertices.count + 4)
-        XCTAssertEqual(result.mesh.indices.count / 3, source.indices.count / 3 + 4)
+        XCTAssertEqual(result.mesh.indices.count / 3, source.indices.count / 3 + 8)
         XCTAssertEqual(Array(result.mesh.vertices.prefix(source.vertices.count)), source.vertices)
         let faces = table.edges[edgeID].incidentFaceIDs
-        for face in 0..<(source.indices.count / 3) where !faces.contains(face) {
-            XCTAssertEqual(Array(result.mesh.indices[(face * 3)..<(face * 3 + 3)]),
-                           Array(source.indices[(face * 3)..<(face * 3 + 3)]))
+        XCTAssertEqual(faces.count, 2)
+        let unchangedFaces = (0..<(source.indices.count / 3)).filter {
+            Array(result.mesh.indices[($0 * 3)..<($0 * 3 + 3)])
+                == Array(source.indices[($0 * 3)..<($0 * 3 + 3)])
         }
+        XCTAssertEqual(unchangedFaces.count, 2)
         XCTAssertFalse(result.mesh.indices.containsSubsequence([UInt32(0), 1]))
         let report = MeshTopologyDiagnostics.analyze(result.mesh)
         XCTAssertEqual(report.boundaryEdgeCount, 0)
@@ -52,7 +54,7 @@ final class EdgeBevelTests: XCTestCase {
                             scale: SIMD3(0.5, 3, 7))
         ]
         for transform in transforms {
-            let source = tetrahedron()
+            let source = octahedron()
             let (table, selection, _) = try selected(source, keys: [try key(0, 1)])
             let width = 0.1
             let result = try EdgeBevel.bevel(mesh: source, table: table, selection: selection,
@@ -69,7 +71,7 @@ final class EdgeBevelTests: XCTestCase {
     }
 
     func testMinimumNearMaximumAndMaximumRejectionWithoutClamp() throws {
-        let source = tetrahedron()
+        let source = octahedron()
         let (table, selection, _) = try selected(source, keys: [try key(0, 1)])
         XCTAssertNoThrow(try EdgeBevel.estimate(mesh: source, table: table, selection: selection,
                                                 transform: .identity,
@@ -88,7 +90,7 @@ final class EdgeBevelTests: XCTestCase {
     }
 
     func testAdjacentSelectedEdgesAreRejected() throws {
-        let source = tetrahedron()
+        let source = octahedron()
         let (table, selection, _) = try selected(source, keys: [try key(0, 1), try key(0, 2)])
         XCTAssertThrowsError(try EdgeBevel.estimate(mesh: source, table: table, selection: selection,
                                                     transform: .identity, options: .init(widthMillimeters: 0.1))) {
@@ -121,8 +123,18 @@ final class EdgeBevelTests: XCTestCase {
         }
     }
 
+    func testTetrahedronRequiresEndpointMiter() throws {
+        let source = tetrahedron()
+        let (table, selection, _) = try selected(source, keys: [try key(0, 1)])
+        XCTAssertThrowsError(try EdgeBevel.estimate(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            options: .init(widthMillimeters: 0.1))) {
+            XCTAssertEqual($0 as? EdgeBevelError, .endpointMiterRequired)
+        }
+    }
+
     func testPreviewIdentityRejectsSelectionTransformOptionsAndVertexChange() throws {
-        var source = tetrahedron()
+        var source = octahedron()
         let (table, selection, _) = try selected(source, keys: [try key(0, 1)])
         let meshVersion = TopologyEditChangeVersion(), transformVersion = TopologyEditChangeVersion()
         let options = EdgeBevelOptions(widthMillimeters: 0.1)
@@ -180,7 +192,7 @@ final class EdgeBevelTests: XCTestCase {
         XCTAssertEqual(try model.projectData(), bytes); XCTAssertFalse(model.isEdgeBevelRunning)
 
         let failing = WorkspaceModel(pickingCache: MeshBVHCache(builder: { _ in throw MeshBVHError.invalidMesh }))
-        failing.mesh = tetrahedron(); failing.setInteractionMode(.edgeSelect)
+        failing.mesh = octahedron(); failing.setInteractionMode(.edgeSelect)
         _ = failing.applyEdgeSelectionHit(try selectedEdgeID(failing.mesh, key: key(0, 1)))
         try failing.prepareForEdgeBevel()
         let candidate = try failing.previewEdgeBevel(options: .init(widthMillimeters: 0.1))
@@ -233,6 +245,15 @@ final class EdgeBevelTests: XCTestCase {
         mesh([SIMD3(1,1,1), SIMD3(-1,-1,1), SIMD3(-1,1,-1), SIMD3(1,-1,-1)],
              [0,2,1, 0,1,3, 0,3,2, 1,2,3])
     }
+    private func octahedron() -> EditableMesh {
+        mesh([
+            SIMD3(1,0,0), SIMD3(0,0,1), SIMD3(-1,0,0), SIMD3(0,0,-1),
+            SIMD3(0,1,0), SIMD3(0,-1,0)
+        ], [
+            4,1,0, 4,2,1, 4,3,2, 4,0,3,
+            5,0,1, 5,1,2, 5,2,3, 5,3,0
+        ])
+    }
     private func mesh(_ positions: [SIMD3<Float>], _ indices: [UInt32]) -> EditableMesh {
         var value = EditableMesh(vertices: positions.map { MeshVertex(position: $0, normal: .zero) }, indices: indices)
         value.recalculateNormals(recordChange: false); _ = value.adjacency(); return value
@@ -247,7 +268,7 @@ final class EdgeBevelTests: XCTestCase {
         try XCTUnwrap(try MeshEdgeTable.build(mesh: mesh).edgeIDByKey[key])
     }
     @MainActor private func configuredModel() throws -> WorkspaceModel {
-        let model = WorkspaceModel(); model.mesh = tetrahedron(); model.setInteractionMode(.edgeSelect)
+        let model = WorkspaceModel(); model.mesh = octahedron(); model.setInteractionMode(.edgeSelect)
         model.setEdgeSelectionOperation(.add)
         XCTAssertTrue(model.applyEdgeSelectionHit(try selectedEdgeID(model.mesh, key: key(0,1))))
         return model
