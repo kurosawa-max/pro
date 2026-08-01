@@ -468,6 +468,40 @@ final class EdgeBevelTests: XCTestCase {
     }
 
     @MainActor
+    func testRenderedWorldExactCollisionFailureLeavesWorkspaceAtomic() throws {
+        let model=WorkspaceModel()
+        model.mesh=nearCoincidentLargeOctahedra()
+        model.updateTransform(ObjectTransform(translation:SIMD3(100_000_000,0,0)))
+        model.setInteractionMode(.edgeSelect)
+        model.setEdgeSelectionOperation(.add)
+        XCTAssertTrue(model.applyEdgeSelectionHit(
+            try selectedEdgeID(model.mesh,key:key(0,1))))
+        XCTAssertTrue(model.applyEdgeSelectionHit(
+            try selectedEdgeID(model.mesh,key:key(6,7))))
+        try model.prepareForEdgeBevel()
+        let beforeMesh=model.mesh, beforeTransform=model.objectTransform
+        let beforeUndo=model.undoCount, beforeGeneration=model.projectMutationGeneration
+        let beforeBytes=try model.projectData()
+        let beforeEdgeSelection=model.selectedEdgeCount
+        let beforeFaceSelection=model.selectedFaceCount
+        let beforePicking=model.pickingCacheHasIndexForTesting
+        XCTAssertThrowsError(try model.previewEdgeBevel(
+            options:.init(widthMillimeters:0.1))) {
+            XCTAssertEqual($0 as? EdgeBevelError,.affectedNeighborhoodsOverlap)
+        }
+        XCTAssertEqual(model.mesh,beforeMesh)
+        XCTAssertEqual(model.objectTransform,beforeTransform)
+        XCTAssertEqual(model.undoCount,beforeUndo)
+        XCTAssertEqual(model.projectMutationGeneration,beforeGeneration)
+        XCTAssertEqual(try model.projectData(),beforeBytes)
+        XCTAssertEqual(model.selectedEdgeCount,beforeEdgeSelection)
+        XCTAssertEqual(model.selectedFaceCount,beforeFaceSelection)
+        XCTAssertEqual(model.pickingCacheHasIndexForTesting,beforePicking)
+        XCTAssertNil(model.edgeBevelPreview)
+        XCTAssertFalse(model.isEdgeBevelRunning)
+    }
+
+    @MainActor
     func testRequestInvalidationPreventsGhostPreviewAndAllowsNextRequest() throws {
         let model = try configuredModel()
         try model.prepareForEdgeBevel()
@@ -587,6 +621,14 @@ final class EdgeBevelTests: XCTestCase {
         return mesh(
             first.vertices.map(\.position) + secondPositions,
             first.indices + first.indices.map { $0 + offset })
+    }
+    private func nearCoincidentLargeOctahedra() -> EditableMesh {
+        let first=octahedron(), offset=UInt32(first.vertices.count)
+        let firstPositions=first.vertices.map { $0.position * 10 }
+        let secondPositions=firstPositions.map { $0 + SIMD3<Float>(0.25,0,0) }
+        return mesh(
+            firstPositions+secondPositions,
+            first.indices+first.indices.map { $0+offset })
     }
     private func mesh(_ positions: [SIMD3<Float>], _ indices: [UInt32]) -> EditableMesh {
         var value = EditableMesh(vertices: positions.map { MeshVertex(position: $0, normal: .zero) }, indices: indices)
