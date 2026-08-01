@@ -147,9 +147,9 @@ final class VertexSelectionTests: XCTestCase {
         XCTAssertNil(MeshVertexPicker.nearestCandidate(
             to: .zero, candidates: [onBoundary], threshold: 4.9999))
         XCTAssertNil(MeshVertexPicker.nearestCandidate(
-            to: CGPoint(x: .nan, y: 0), candidates: [onBoundary], threshold: 5))
+            to: CGPoint(x: CGFloat.nan, y: 0), candidates: [onBoundary], threshold: 5))
         XCTAssertNil(MeshVertexPicker.nearestCandidate(
-            to: .zero, candidates: [.init(vertexID: 1, point: CGPoint(x: .infinity, y: 0))],
+            to: .zero, candidates: [.init(vertexID: 1, point: CGPoint(x: CGFloat.infinity, y: 0))],
             threshold: 5))
     }
 
@@ -616,7 +616,7 @@ private final class FaultVertexAllocator: VertexSelectionIDBufferAllocating {
     func copy(_ ids: [UInt32], byteCount: Int, to buffer: MTLBuffer) -> Bool {
         copyCount += 1
         if failCopyNumber == copyCount { return false }
-        ids.withUnsafeBufferPointer { pointer in
+        return ids.withUnsafeBufferPointer { pointer in
             guard let base = pointer.baseAddress, buffer.length >= byteCount else { return false }
             buffer.contents().copyMemory(from: base, byteCount: byteCount)
             return true
