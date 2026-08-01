@@ -830,7 +830,8 @@ final class WorkspaceModel: ObservableObject {
         let current = [vertexOverlaySelectedError, vertexOverlayHoverError].compactMap { $0 }
         if !current.isEmpty {
             let value = current.joined(separator: "\n")
-            if vertexSelectionError == nil || vertexSelectionError?.hasPrefix("Vertex overlay") == true {
+            if vertexSelectionError != value,
+               vertexSelectionError == nil || vertexSelectionError?.hasPrefix("Vertex overlay") == true {
                 vertexSelectionError = value
             }
         } else if vertexSelectionError?.hasPrefix("Vertex overlay") == true {
