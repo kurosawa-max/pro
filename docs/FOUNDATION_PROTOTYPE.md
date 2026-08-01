@@ -213,4 +213,4 @@ Edge BevelはEdge Selectionのvertex-disjointなmanifold interior edgeを、表�
 
 ## Vertex Selection foundation
 
-Vertex Select modeはcurrent mesh vertex IDのruntime-only dense bitset、Replace／Add／Remove／Toggle、Clear／All／Invert／edge-connected selection、BVH visible-triangle picking、selected／hover point overlayを提供する。project bytes、Undo／Redo、dirty、Autosave、Recoveryへ参加せず、vertex-only編集で維持しtopology置換でclearする。詳細は`VERTEX_SELECTION.md`を参照する。
+Vertex Select modeはcurrent mesh vertex IDのruntime-only dense bitset、Replace／Add／Remove／Toggle、Clear／All／Invert／edge-connected selection、BVH visible-triangle picking、selected／hover point overlayを提供する。Pickingはstrict squared-distance順で完全同距離だけIDをtie-breakに使い、selectionは完全なtriangle-index fingerprintへbindする。raw hoverを保持しつつselected vertexのeffective hover描画を抑止する。project bytes、Undo／Redo、dirty、Autosave、Recoveryへ参加せず、vertex-only編集で維持しtopology置換でclearする。詳細は`VERTEX_SELECTION.md`を参照する。

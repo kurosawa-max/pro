@@ -579,6 +579,9 @@ final class WorkspaceModel: ObservableObject {
         return vertexSelection.selectedCount
     }
     var totalVertexCount: Int { meshVertexTopologyTable?.records.count ?? 0 }
+    var effectiveVertexHoverID: MeshVertexID? {
+        vertexHover.effectiveVertexID(for: vertexSelection)
+    }
 
     var isVertexSelectionInteractionEnabled: Bool {
         guard interactionMode == .vertexSelect,
@@ -809,7 +812,7 @@ final class WorkspaceModel: ObservableObject {
         if case .hit(let id) = MeshVertexPicker.pick(
             worldRay: ray, screenPoint: screenPoint, viewportSize: viewportSize,
             mesh: mesh, transform: objectTransform, viewProjection: viewProjection,
-            table: table, cache: pickingCache), !vertexSelection.contains(id) {
+            table: table, cache: pickingCache) {
             next = id
         } else { next = nil }
         vertexHover = vertexHover.updating(next)
@@ -3466,9 +3469,6 @@ final class WorkspaceModel: ObservableObject {
 
     private func commitVertexSelection(_ updated: VertexSelection) {
         vertexSelection = updated
-        if let hover = vertexHover.vertexID, updated.contains(hover) {
-            vertexHover = vertexHover.updating(nil)
-        }
         vertexSelectionError = nil
         status = "Selected \(updated.selectedCount) of \(updated.vertexCount) vertices"
     }

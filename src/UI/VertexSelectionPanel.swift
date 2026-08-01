@@ -50,18 +50,23 @@ struct VertexSelectionPanel: View {
     @ViewBuilder private var commandButtons: some View {
         Button("Clear", systemImage: "xmark.circle") { model.clearVertexSelection() }
             .disabled(model.selectedVertexCount == 0)
+            .accessibilityIdentifier("vertex-selection-clear")
         Button("All", systemImage: "checkmark.circle") { model.selectAllVertices() }
             .disabled(model.totalVertexCount == 0 || model.selectedVertexCount == model.totalVertexCount)
+            .accessibilityIdentifier("vertex-selection-all")
         Button("Invert", systemImage: "circle.lefthalf.filled") { model.invertVertexSelection() }
             .disabled(model.totalVertexCount == 0)
+            .accessibilityIdentifier("vertex-selection-invert")
         Button("Connected", systemImage: "point.3.connected.trianglepath.dotted") {
             model.selectConnectedVertices()
         }
         .disabled(model.selectedVertexCount == 0)
+        .accessibilityIdentifier("vertex-selection-connected")
     }
 
     private var hoverDescription: String {
-        if let id = model.vertexHover.vertexID { return "Hovered vertex \(id)" }
+        if let id = model.effectiveVertexHoverID { return "Hovered vertex \(id)" }
+        if let id = model.vertexHover.vertexID { return "Vertex \(id) is selected" }
         return "No hovered vertex"
     }
 }

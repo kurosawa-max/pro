@@ -38,7 +38,8 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     init?(view: MTKView, profiler: PerformanceProfiler?,
           faceSelectionBufferAllocator: FaceSelectionIndexBufferAllocating = MetalFaceSelectionIndexBufferAllocator(),
           edgeSelectionBufferAllocator: EdgeSelectionPairBufferAllocating = MetalEdgeSelectionPairBufferAllocator(),
-          vertexSelectionBufferAllocator: VertexSelectionIDBufferAllocating = MetalVertexSelectionIDBufferAllocator()) {
+          vertexSelectionBufferAllocator: VertexSelectionIDBufferAllocating = MetalVertexSelectionIDBufferAllocator(),
+          vertexSelectionMemoryLimit: Int = MeshVertexTopologyTable.maximumWorkingBytes) {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
         self.device = device; self.queue = queue; self.profiler = profiler
         view.device = device; view.depthStencilPixelFormat = .depth32Float; view.colorPixelFormat = .bgra8Unorm_srgb
@@ -71,7 +72,8 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
               let vertexSelectionOverlayRenderer = VertexSelectionOverlayRenderer(
                 device: device, library: library, colorPixelFormat: view.colorPixelFormat,
                 depthPixelFormat: view.depthStencilPixelFormat,
-                allocator: vertexSelectionBufferAllocator),
+                allocator: vertexSelectionBufferAllocator,
+                memoryLimit: vertexSelectionMemoryLimit),
               let diagnosticsOverlayRenderer = MeshDiagnosticsOverlayRenderer(
                 device: device, library: library, colorPixelFormat: view.colorPixelFormat,
                 depthPixelFormat: view.depthStencilPixelFormat) else { return nil }

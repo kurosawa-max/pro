@@ -33,6 +33,7 @@ struct MeshVertexTopologyTable: Equatable {
               mesh.indices.count.isMultiple(of: 3),
               mesh.vertices.allSatisfy({ $0.position.allFinite })
         else { throw VertexSelectionError.invalidMesh }
+        let fingerprint = try topologyFingerprint(mesh: mesh)
 
         var facesByVertex = Array(repeating: Set<Int>(), count: mesh.vertices.count)
         var neighborsByVertex = Array(repeating: Set<MeshVertexID>(), count: mesh.vertices.count)
@@ -57,12 +58,6 @@ struct MeshVertexTopologyTable: Equatable {
         for (edgeID, key) in edgeKeys.enumerated() {
             edgeIDsByVertex[Int(key.low)].append(edgeID)
             edgeIDsByVertex[Int(key.high)].append(edgeID)
-        }
-        var fingerprint: UInt64 = 0xcbf29ce484222325
-        func mix(_ value: UInt64) { fingerprint = (fingerprint ^ value) &* 0x100000001b3 }
-        edgeKeys.enumerated().forEach { edgeID, key in
-            mix(UInt64(edgeID)); mix(UInt64(key.low)); mix(UInt64(key.high))
-            facesByEdge[key]!.sorted().forEach { mix(UInt64($0)) }
         }
         var records: [MeshVertexTopologyRecord] = []
         records.reserveCapacity(mesh.vertices.count)
@@ -97,9 +92,6 @@ struct MeshVertexTopologyTable: Equatable {
                 incidentFaceIDs: faceIDs, neighboringVertexIDs: neighbors,
                 isBoundary: isBoundary, isIsolated: faceIDs.isEmpty,
                 hasNonManifoldNeighborhood: nonManifold))
-            mix(UInt64(vertexID)); mix(isBoundary ? 1 : 0); mix(nonManifold ? 1 : 0)
-            neighbors.forEach { mix(UInt64($0)) }
-            faceIDs.forEach { mix(UInt64($0)) }
         }
         return Self(
             sourceTopologyID: mesh.runtime.topologyID,
@@ -113,6 +105,23 @@ struct MeshVertexTopologyTable: Equatable {
             && sourceTopologyRevision == mesh.runtime.topologyRevision
             && sourceVertexCount == mesh.vertices.count
             && sourceIndexCount == mesh.indices.count
+            && (try? Self.topologyFingerprint(mesh: mesh)) == fingerprint
+    }
+
+    static func topologyFingerprint(mesh: EditableMesh) throws -> UInt64 {
+        guard mesh.vertices.count <= maximumVertexCount,
+              mesh.indices.count.isMultiple(of: 3) else {
+            throw VertexSelectionError.invalidMesh
+        }
+        var value: UInt64 = 0xcbf29ce484222325
+        func mix(_ input: UInt64) { value = (value ^ input) &* 0x100000001b3 }
+        mix(UInt64(mesh.vertices.count))
+        mix(UInt64(mesh.indices.count))
+        for index in mesh.indices {
+            guard Int(index) < mesh.vertices.count else { throw VertexSelectionError.invalidMesh }
+            mix(UInt64(index))
+        }
+        return value
     }
 
     static func estimatedPeakBytes(vertexCount: Int, indexCount: Int) throws -> Int {
@@ -147,6 +156,7 @@ struct VertexSelection: Equatable {
     let topologyID: UUID
     let topologyRevision: UInt64
     let vertexCount: Int
+    let indexCount: Int
     let topologyFingerprint: UInt64
     private var bits: [UInt64]
     private(set) var selectedCount = 0
@@ -161,6 +171,7 @@ struct VertexSelection: Equatable {
         topologyID = table.sourceTopologyID
         topologyRevision = table.sourceTopologyRevision
         vertexCount = table.sourceVertexCount
+        indexCount = table.sourceIndexCount
         topologyFingerprint = table.fingerprint
         bits = Array(repeating: 0, count: adjusted / 64)
         version = VertexSelectionVersion(id: versionID)
@@ -172,7 +183,7 @@ struct VertexSelection: Equatable {
 
     private init(topologyID: UUID, topologyRevision: UInt64) {
         self.topologyID = topologyID; self.topologyRevision = topologyRevision
-        vertexCount = 0; topologyFingerprint = 0; bits = []
+        vertexCount = 0; indexCount = 0; topologyFingerprint = 0; bits = []
         version = VertexSelectionVersion(id: UUID())
     }
 
@@ -180,6 +191,7 @@ struct VertexSelection: Equatable {
         topologyID == table.sourceTopologyID
             && topologyRevision == table.sourceTopologyRevision
             && vertexCount == table.sourceVertexCount
+            && indexCount == table.sourceIndexCount
             && topologyFingerprint == table.fingerprint
     }
 
@@ -284,6 +296,9 @@ struct VertexHoverState: Equatable {
     func updating(_ value: MeshVertexID?) -> Self {
         value == vertexID ? self : Self(vertexID: value)
     }
+    func effectiveVertexID(for selection: VertexSelection) -> MeshVertexID? {
+        vertexID.flatMap { selection.contains($0) ? nil : $0 }
+    }
 }
 
 enum IndexedMeshVertexPickResult: Equatable {
@@ -295,6 +310,34 @@ enum IndexedMeshVertexPickResult: Equatable {
 enum MeshVertexPicker {
     static let pickRadiusPoints: CGFloat = 16
 
+    struct ScreenCandidate: Equatable {
+        let vertexID: MeshVertexID
+        let point: CGPoint
+    }
+
+    static func nearestCandidate(
+        to screenPoint: CGPoint, candidates: [ScreenCandidate], threshold: CGFloat
+    ) -> MeshVertexID? {
+        guard screenPoint.x.isFinite, screenPoint.y.isFinite,
+              threshold.isFinite, threshold >= 0 else { return nil }
+        let thresholdSquared = threshold * threshold
+        guard thresholdSquared.isFinite else { return nil }
+        var best: (distanceSquared: CGFloat, vertexID: MeshVertexID)?
+        for candidate in candidates {
+            guard candidate.point.x.isFinite, candidate.point.y.isFinite else { continue }
+            let dx = candidate.point.x - screenPoint.x
+            let dy = candidate.point.y - screenPoint.y
+            let distanceSquared = dx * dx + dy * dy
+            guard distanceSquared.isFinite, distanceSquared <= thresholdSquared else { continue }
+            if best == nil
+                || distanceSquared < best!.distanceSquared
+                || (distanceSquared == best!.distanceSquared && candidate.vertexID < best!.vertexID) {
+                best = (distanceSquared, candidate.vertexID)
+            }
+        }
+        return best?.vertexID
+    }
+
     static func pick(
         worldRay: Ray, screenPoint: CGPoint, viewportSize: CGSize,
         mesh: EditableMesh, transform: ObjectTransform,
@@ -303,6 +346,7 @@ enum MeshVertexPicker {
     ) -> IndexedMeshVertexPickResult {
         guard worldRay.origin.allFinite, worldRay.direction.allFinite,
               simd_length_squared(worldRay.direction) > 1e-12,
+              screenPoint.x.isFinite, screenPoint.y.isFinite,
               table.matches(mesh), threshold.isFinite, threshold >= 0,
               viewportSize.width.isFinite, viewportSize.height.isFinite,
               viewportSize.width > 0, viewportSize.height > 0,
@@ -320,7 +364,7 @@ enum MeshVertexPicker {
         guard Set(ids).count == 3, ids.allSatisfy({ Int($0) < mesh.vertices.count }) else {
             return .unavailable
         }
-        var candidates: [(CGFloat, MeshVertexID)] = []
+        var candidates: [ScreenCandidate] = []
         for id in ids {
             let world = transform.modelMatrix * SIMD4<Float>(mesh.vertices[Int(id)].position, 1)
             let clip = viewProjection * world
@@ -331,13 +375,11 @@ enum MeshVertexPicker {
             let point = CGPoint(
                 x: (CGFloat(ndc.x) + 1) * 0.5 * viewportSize.width,
                 y: (1 - CGFloat(ndc.y)) * 0.5 * viewportSize.height)
-            let distance = hypot(point.x - screenPoint.x, point.y - screenPoint.y)
-            if distance.isFinite { candidates.append((distance, id)) }
+            candidates.append(ScreenCandidate(vertexID: id, point: point))
         }
-        guard let nearest = candidates.min(by: {
-            abs($0.0 - $1.0) > 0.0001 ? $0.0 < $1.0 : $0.1 < $1.1
-        }), nearest.0 <= threshold else { return .miss }
-        return .hit(vertexID: nearest.1)
+        guard let nearest = nearestCandidate(
+            to: screenPoint, candidates: candidates, threshold: threshold) else { return .miss }
+        return .hit(vertexID: nearest)
     }
 }
 

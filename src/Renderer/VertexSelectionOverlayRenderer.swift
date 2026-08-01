@@ -32,11 +32,26 @@ struct VertexHoverOverlayCacheKey: Equatable {
     let topologyID: UUID
     let topologyRevision: UInt64
     let topologyFingerprint: UInt64
-    let hoverVersion: VertexSelectionVersion
+    let effectiveVertexID: MeshVertexID?
 }
 
 enum VertexSelectionOverlayError: Error, Equatable {
-    case staleTopology, staleSelection, invalidVertexID, arithmeticOverflow, allocationFailed, copyFailed
+    case staleTopology, staleSelection, invalidVertexID, arithmeticOverflow
+    case workingMemoryLimitExceeded, allocationFailed, copyFailed
+}
+
+enum VertexOverlayMemory {
+    static func peakBytes(activeBytes: Int, candidateCount: Int) -> Result<Int, VertexSelectionOverlayError> {
+        guard activeBytes >= 0, candidateCount >= 0 else { return .failure(.arithmeticOverflow) }
+        let (candidateBytes, multiplyOverflow) = candidateCount.multipliedReportingOverflow(
+            by: MemoryLayout<MeshVertexID>.stride)
+        let (activeAndCandidate, firstOverflow) = activeBytes.addingReportingOverflow(candidateBytes)
+        let (peak, secondOverflow) = activeAndCandidate.addingReportingOverflow(candidateBytes)
+        guard !multiplyOverflow, !firstOverflow, !secondOverflow else {
+            return .failure(.arithmeticOverflow)
+        }
+        return .success(peak)
+    }
 }
 
 enum VertexOverlayComponentUpdate: Equatable {
@@ -53,6 +68,7 @@ struct VertexSelectionOverlayUpdateSummary: Equatable {
 final class VertexSelectionOverlayRenderer {
     private let device: MTLDevice
     private let allocator: VertexSelectionIDBufferAllocating
+    private let memoryLimit: Int
     private let pipeline: MTLRenderPipelineState
     private let depthState: MTLDepthStencilState
     private var selectedBuffer: MTLBuffer?
@@ -70,11 +86,13 @@ final class VertexSelectionOverlayRenderer {
 
     init?(device: MTLDevice, library: MTLLibrary, colorPixelFormat: MTLPixelFormat,
           depthPixelFormat: MTLPixelFormat,
-          allocator: VertexSelectionIDBufferAllocating = MetalVertexSelectionIDBufferAllocator()) {
+          allocator: VertexSelectionIDBufferAllocating = MetalVertexSelectionIDBufferAllocator(),
+          memoryLimit: Int = MeshVertexTopologyTable.maximumWorkingBytes) {
         guard let vertex = library.makeFunction(name: "vertexSelectionVertex"),
               let fragment = library.makeFunction(name: "vertexSelectionFragment") else { return nil }
         self.device = device
         self.allocator = allocator
+        self.memoryLimit = memoryLimit
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
@@ -105,13 +123,19 @@ final class VertexSelectionOverlayRenderer {
             topologyFingerprint: table.fingerprint, selectionVersion: selection.version)
         let hoverKey = VertexHoverOverlayCacheKey(
             topologyID: table.sourceTopologyID, topologyRevision: table.sourceTopologyRevision,
-            topologyFingerprint: table.fingerprint, hoverVersion: hover.version)
+            topologyFingerprint: table.fingerprint,
+            effectiveVertexID: hover.effectiveVertexID(for: selection))
         let selectedChanged = selectedUploadedKey != selectedKey
         let hoverChanged = hoverUploadedKey != hoverKey
         guard selectedChanged || hoverChanged else { return .unchanged }
 
-        let selectedResult = selectedChanged ? stageResult(selection.selectedVertexIDs(), vertexCount: mesh.vertices.count) : nil
-        let hoverResult = hoverChanged ? stageResult(hover.vertexID.map { [$0] } ?? [], vertexCount: mesh.vertices.count) : nil
+        let selectedResult = selectedChanged ? stageResult(
+            selection.selectedVertexIDs(), vertexCount: mesh.vertices.count,
+            activeBytes: selectedBuffer?.length ?? 0) : nil
+        let effectiveHover = hover.effectiveVertexID(for: selection)
+        let hoverResult = hoverChanged ? stageResult(
+            effectiveHover.map { [$0] } ?? [], vertexCount: mesh.vertices.count,
+            activeBytes: hoverBuffer?.length ?? 0) : nil
         let selectedUpdate: VertexOverlayComponentUpdate
         switch selectedResult {
         case .success(let staged):
@@ -154,16 +178,23 @@ final class VertexSelectionOverlayRenderer {
     }
 
     private struct Staged { let buffer: MTLBuffer?; let count: Int }
-    private func stageResult(_ ids: [UInt32], vertexCount: Int) -> Result<Staged, VertexSelectionOverlayError> {
-        do { return .success(try stage(ids, vertexCount: vertexCount)) }
+    private func stageResult(
+        _ ids: [UInt32], vertexCount: Int, activeBytes: Int
+    ) -> Result<Staged, VertexSelectionOverlayError> {
+        do { return .success(try stage(ids, vertexCount: vertexCount, activeBytes: activeBytes)) }
         catch let error as VertexSelectionOverlayError { return .failure(error) }
         catch { return .failure(.copyFailed) }
     }
-    private func stage(_ ids: [UInt32], vertexCount: Int) throws -> Staged {
+    private func stage(_ ids: [UInt32], vertexCount: Int, activeBytes: Int) throws -> Staged {
         guard ids.allSatisfy({ Int($0) < vertexCount }) else { throw VertexSelectionOverlayError.invalidVertexID }
         guard !ids.isEmpty else { return Staged(buffer: nil, count: 0) }
         let (bytes, overflow) = ids.count.multipliedReportingOverflow(by: MemoryLayout<UInt32>.stride)
         guard !overflow, bytes > 0 else { throw VertexSelectionOverlayError.arithmeticOverflow }
+        switch VertexOverlayMemory.peakBytes(activeBytes: activeBytes, candidateCount: ids.count) {
+        case .success(let peak) where peak <= memoryLimit: break
+        case .success: throw VertexSelectionOverlayError.workingMemoryLimitExceeded
+        case .failure(let error): throw error
+        }
         guard let buffer = allocator.makeBuffer(device: device, length: bytes) else { throw VertexSelectionOverlayError.allocationFailed }
         guard allocator.copy(ids, byteCount: bytes, to: buffer) else { throw VertexSelectionOverlayError.copyFailed }
         return Staged(buffer: buffer, count: ids.count)
