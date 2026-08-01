@@ -651,7 +651,7 @@ final class EdgeSelectionTests: XCTestCase {
 
     func testRendererDrawOrderPlacesEdgeBeforeDiagnostics() {
         XCTAssertEqual(MetalRenderer.drawOrder,
-                       [.mesh, .faceSelection, .edgeSelection, .diagnostics, .gizmo])
+                       [.mesh, .faceSelection, .edgeSelection, .vertexSelection, .diagnostics, .gizmo])
         XCTAssertEqual(MemoryLayout<EdgeSelectionOverlayUniforms>.stride, 160)
     }
 

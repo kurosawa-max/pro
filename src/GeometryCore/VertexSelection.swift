@@ -301,7 +301,9 @@ enum MeshVertexPicker {
         viewProjection: simd_float4x4, table: MeshVertexTopologyTable,
         cache: MeshBVHCache, threshold: CGFloat = pickRadiusPoints
     ) -> IndexedMeshVertexPickResult {
-        guard table.matches(mesh), threshold.isFinite, threshold >= 0,
+        guard worldRay.origin.allFinite, worldRay.direction.allFinite,
+              simd_length_squared(worldRay.direction) > 1e-12,
+              table.matches(mesh), threshold.isFinite, threshold >= 0,
               viewportSize.width.isFinite, viewportSize.height.isFinite,
               viewportSize.width > 0, viewportSize.height > 0,
               let localRay = transform.localRay(fromWorld: worldRay)

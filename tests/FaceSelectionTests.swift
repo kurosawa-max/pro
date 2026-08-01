@@ -556,7 +556,7 @@ final class FaceSelectionTests: XCTestCase {
                                                                   current: topologyRevisionKey))
         XCTAssertEqual(MemoryLayout<FaceSelectionOverlayUniforms>.stride, 128)
         XCTAssertEqual(MetalRenderer.drawOrder,
-                       [.mesh, .faceSelection, .edgeSelection, .diagnostics, .gizmo])
+                       [.mesh, .faceSelection, .edgeSelection, .vertexSelection, .diagnostics, .gizmo])
     }
 
     func testOverlayReuploadsAfterSelectionVersionIdentityChanges() throws {
