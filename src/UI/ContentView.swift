@@ -75,6 +75,11 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding(.horizontal, 8)
                         .padding(.bottom, 4)
+                } else if model.interactionMode == .vertexSelect {
+                    VertexSelectionPanel(model: model)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 4)
                 }
             }
             .navigationTitle("Forge3D")
@@ -122,7 +127,7 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    .accessibilityHint("Switch between sculpting, triangle face selection, and topological edge selection")
+                    .accessibilityHint("Switch between sculpting, face, edge, and vertex selection")
                     #if DEBUG
                     .disabled(model.isBenchmarkRunning)
                     #endif

@@ -164,3 +164,7 @@ Edge Selectionを入力とするEdge Bevel foundationとして、互いにvertex
 - 寸法拘束、スイープ、ロフト、精密ブーリアン
 
 この段階までは、特定CADカーネルを製品必須依存にしない。
+
+## Vertex Selection foundation
+
+Mesh vertex IDによるruntime-only選択、topology-bound dense bitset、BVH nearest triangleからのvisible vertex picking、edge-connected selection、selected／hover Metal point overlayを追加した。vertex-only変更で選択を維持し、topology置換でclearする。選択頂点のTransform／dissolve／weld、box／lasso、through selectionは後続範囲とする。

@@ -575,3 +575,9 @@ Previewは`TopologyPreviewRequestCoordinator`のUUID、topology／vertex revisio
 `EdgeSelection`はtable fingerprintへ結合したruntime-only dense bitsetであり、Face Selectionと独立する。content変更ごとにUUID versionを交換し、project generation、history、Autosave、Recovery、formatVersion 1へ参加しない。topology置換ではtable再構築とselection／hover clearを行う。
 
 Pickingはcurrent CPU BVHのnearest triangleを得て、その3 edgeだけをcurrent Transform／view-projectionでscreenへ写し、14-point segment distanceとedge ID tie-breakで決める。Rendererはselected／hoverごとに独立したtopology-bound key、endpoint-pair buffer、count、upload counterを持ち、通常mesh vertex bufferから位置を読むscreen-space quadをmesh後、Diagnostics前に描画する。hover-only変更はselected IDsを列挙せず、selection-only変更は有効なhover bufferへ触れない。camera／Transformはuniformだけ、Sculptは通常mesh vertexだけを更新する。component単位のstaging／allocation／copy完了後にkeyとbufferをcommitし、片側failureはそのcomponentだけを非表示にしてpeerを維持し、次frameのretryを許可する。詳細は`EDGE_SELECTION.md`を参照する。
+
+### 17.24 Vertex Selection
+
+`MeshVertexTopologyTable`はvertex ID順にincident edge／faceとneighbor vertex IDを保持し、topology identityとdeterministic fingerprintへ結合する。`VertexSelection`は1 bit per vertexのdense runtime stateで、Face／Edge Selectionと独立し、project、history、Autosave、Recovery、formatVersion 1へ参加しない。
+
+Pickingはworld Rayをobject-localへ変換し、current CPU BVHのnearest visible triangleの3頂点だけをscreenへ投影する。16-point以内のdistanceとlower vertex IDで決定し、linear triangle scanを行わない。Metal overlayはmesh vertex bufferを再利用してselected／hover ID bufferを独立cacheし、mesh→face→edge→vertex→Diagnostics→Gizmoの順でdepth-tested pointsを描画する。詳細は`VERTEX_SELECTION.md`を参照する。

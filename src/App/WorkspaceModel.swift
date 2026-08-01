@@ -20,6 +20,7 @@ final class WorkspaceModel: ObservableObject {
             }
             reconcileFaceSelection(previousMesh: oldValue)
             reconcileEdgeSelection(previousMesh: oldValue)
+            reconcileVertexSelection(previousMesh: oldValue)
         }
     }
     @Published var camera = CameraState()
@@ -48,6 +49,13 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var meshEdgeTable: MeshEdgeTable?
     @Published private(set) var hoveredEdgeID: Int?
     @Published private(set) var edgeSelectionError: String?
+    @Published private(set) var vertexSelectionOperation = VertexSelectionOperation.replace
+    @Published private(set) var vertexSelection = VertexSelection.unavailable(mesh: .icosphere())
+    @Published private(set) var meshVertexTopologyTable: MeshVertexTopologyTable?
+    @Published private(set) var vertexHover = VertexHoverState()
+    @Published private(set) var vertexSelectionError: String?
+    private var vertexOverlaySelectedError: String?
+    private var vertexOverlayHoverError: String?
     private var edgeOverlaySelectedError: String?
     private var edgeOverlayHoverError: String?
     @Published var brush = BrushKind.draw
@@ -199,6 +207,7 @@ final class WorkspaceModel: ObservableObject {
         self.lastSavedGeneration = projectMutationGeneration
         rebuildFaceSelectionForCurrentTopology()
         rebuildEdgeSelectionForCurrentTopology()
+        rebuildVertexSelectionForCurrentTopology()
         profiler?.updateMeshCounts(vertexCount: mesh.vertices.count, triangleCount: mesh.indices.count / 3)
     }
 
@@ -565,6 +574,26 @@ final class WorkspaceModel: ObservableObject {
         return edgeSelection.selectedCount
     }
     var totalEdgeCount: Int { meshEdgeTable?.edges.count ?? 0 }
+    var selectedVertexCount: Int {
+        guard let table = meshVertexTopologyTable, vertexSelection.matches(table) else { return 0 }
+        return vertexSelection.selectedCount
+    }
+    var totalVertexCount: Int { meshVertexTopologyTable?.records.count ?? 0 }
+
+    var isVertexSelectionInteractionEnabled: Bool {
+        guard interactionMode == .vertexSelect,
+              let table = meshVertexTopologyTable, table.matches(mesh),
+              vertexSelection.matches(table), !isFaceSelectionProcessing,
+              !isStrokeActive, !isGizmoDragging, !isTransformPanelEditing,
+              !isSTLImporting, !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isTopologyEditRunning, !isRecoveryOperationInProgress,
+              !isRecoveryPromptPresented else { return false }
+        #if DEBUG
+        return !isBenchmarkRunning
+        #else
+        return true
+        #endif
+    }
 
     var isEdgeSelectionInteractionEnabled: Bool {
         guard interactionMode == .edgeSelect,
@@ -711,11 +740,14 @@ final class WorkspaceModel: ObservableObject {
         interactionMode = mode
         faceSelectionError = nil
         edgeSelectionError = nil
+        vertexSelectionError = nil
         hoveredEdgeID = nil
+        vertexHover = vertexHover.updating(nil)
         switch mode {
         case .sculpt: status = "Sculpt mode"
         case .faceSelect: status = "Face Select mode"
         case .edgeSelect: status = "Edge Select mode"
+        case .vertexSelect: status = "Vertex Select mode"
         }
     }
 
@@ -735,6 +767,105 @@ final class WorkspaceModel: ObservableObject {
         #endif
         edgeSelectionOperation = operation
         edgeSelectionError = nil
+    }
+
+    func setVertexSelectionOperation(_ operation: VertexSelectionOperation) {
+        guard operation != vertexSelectionOperation else { return }
+        #if DEBUG
+        guard !isBenchmarkRunning else { return }
+        #endif
+        vertexSelectionOperation = operation
+        vertexSelectionError = nil
+    }
+
+    @discardableResult
+    func selectVertex(
+        fromWorldRay ray: Ray, screenPoint: CGPoint, viewportSize: CGSize,
+        viewProjection: simd_float4x4
+    ) -> Bool {
+        guard isVertexSelectionInteractionEnabled, let table = meshVertexTopologyTable else {
+            reportVertexSelectionError(VertexSelectionError.unavailable); return false
+        }
+        switch MeshVertexPicker.pick(
+            worldRay: ray, screenPoint: screenPoint, viewportSize: viewportSize,
+            mesh: mesh, transform: objectTransform, viewProjection: viewProjection,
+            table: table, cache: pickingCache) {
+        case .hit(let vertexID): return applyVertexSelectionHit(vertexID)
+        case .miss: vertexSelectionError = nil; return false
+        case .unavailable:
+            reportVertexSelectionError(VertexSelectionError.unavailable); return false
+        }
+    }
+
+    func updateVertexHover(
+        fromWorldRay ray: Ray?, screenPoint: CGPoint?, viewportSize: CGSize,
+        viewProjection: simd_float4x4
+    ) {
+        guard let ray, let screenPoint, isVertexSelectionInteractionEnabled,
+              let table = meshVertexTopologyTable else {
+            vertexHover = vertexHover.updating(nil); return
+        }
+        let next: MeshVertexID?
+        if case .hit(let id) = MeshVertexPicker.pick(
+            worldRay: ray, screenPoint: screenPoint, viewportSize: viewportSize,
+            mesh: mesh, transform: objectTransform, viewProjection: viewProjection,
+            table: table, cache: pickingCache), !vertexSelection.contains(id) {
+            next = id
+        } else { next = nil }
+        vertexHover = vertexHover.updating(next)
+    }
+
+    func clearVertexHover() { vertexHover = vertexHover.updating(nil) }
+
+    func handleVertexSelectionOverlayUpdate(_ summary: VertexSelectionOverlayUpdateSummary) {
+        func message(_ update: VertexOverlayComponentUpdate, label: String) -> String? {
+            switch update {
+            case .unchanged: return label == "selected" ? vertexOverlaySelectedError : vertexOverlayHoverError
+            case .updated, .cleared: return nil
+            case .unavailable(let error): return "Vertex overlay \(label): \(error)"
+            }
+        }
+        vertexOverlaySelectedError = message(summary.selected, label: "selected")
+        vertexOverlayHoverError = message(summary.hover, label: "hover")
+        let current = [vertexOverlaySelectedError, vertexOverlayHoverError].compactMap { $0 }
+        if !current.isEmpty {
+            let value = current.joined(separator: "\n")
+            if vertexSelectionError == nil || vertexSelectionError?.hasPrefix("Vertex overlay") == true {
+                vertexSelectionError = value
+            }
+        } else if vertexSelectionError?.hasPrefix("Vertex overlay") == true {
+            vertexSelectionError = nil
+        }
+    }
+
+    @discardableResult
+    func applyVertexSelectionHit(_ vertexID: MeshVertexID) -> Bool {
+        guard isVertexSelectionInteractionEnabled, let table = meshVertexTopologyTable,
+              vertexSelection.matches(table) else {
+            reportVertexSelectionError(VertexSelectionError.unavailable); return false
+        }
+        do {
+            var updated = vertexSelection
+            guard try updated.apply(vertexSelectionOperation, vertexID: vertexID) else { return false }
+            commitVertexSelection(updated); return true
+        } catch { reportVertexSelectionError(error); return false }
+    }
+
+    func clearVertexSelection() { mutateVertexSelection { $0.clear() } }
+    func selectAllVertices() { mutateVertexSelection { $0.selectAll() } }
+    func invertVertexSelection() { mutateVertexSelection { $0.invert() } }
+
+    func selectConnectedVertices() {
+        guard isVertexSelectionInteractionEnabled, let table = meshVertexTopologyTable,
+              vertexSelection.matches(table), vertexSelection.selectedCount > 0 else { return }
+        do {
+            let ids = try VertexSelectionConnectivity.connectedVertexIDs(
+                table: table, seeds: vertexSelection.selectedVertexIDs())
+            var updated = vertexSelection
+            if try updated.apply(vertexSelectionOperation, vertexIDs: ids) {
+                commitVertexSelection(updated)
+            }
+        } catch { reportVertexSelectionError(error) }
     }
 
     @discardableResult
@@ -3200,6 +3331,31 @@ final class WorkspaceModel: ObservableObject {
         rebuildEdgeSelectionForCurrentTopology()
     }
 
+    private func reconcileVertexSelection(previousMesh: EditableMesh) {
+        let topologyChanged = previousMesh.runtime.topologyID != mesh.runtime.topologyID
+            || previousMesh.runtime.topologyRevision != mesh.runtime.topologyRevision
+            || previousMesh.vertices.count != mesh.vertices.count
+            || previousMesh.indices.count != mesh.indices.count
+        guard topologyChanged else { return }
+        rebuildVertexSelectionForCurrentTopology()
+    }
+
+    private func rebuildVertexSelectionForCurrentTopology() {
+        vertexHover = vertexHover.updating(nil)
+        vertexOverlaySelectedError = nil
+        vertexOverlayHoverError = nil
+        do {
+            let table = try MeshVertexTopologyTable.build(mesh: mesh)
+            meshVertexTopologyTable = table
+            vertexSelection = try VertexSelection(table: table)
+            vertexSelectionError = nil
+        } catch {
+            meshVertexTopologyTable = nil
+            vertexSelection = VertexSelection.unavailable(mesh: mesh)
+            reportVertexSelectionError(error)
+        }
+    }
+
     private func rebuildEdgeSelectionForCurrentTopology() {
         hoveredEdgeID = nil
         edgeOverlaySelectedError = nil
@@ -3293,6 +3449,33 @@ final class WorkspaceModel: ObservableObject {
         edgeSelection = updated
         edgeSelectionError = nil
         status = "Selected \(updated.selectedCount) of \(updated.edgeCount) edges"
+    }
+
+    private func mutateVertexSelection(_ operation: (inout VertexSelection) throws -> Bool) {
+        guard isVertexSelectionInteractionEnabled, let table = meshVertexTopologyTable,
+              vertexSelection.matches(table) else {
+            reportVertexSelectionError(VertexSelectionError.unavailable); return
+        }
+        do {
+            var updated = vertexSelection
+            if try operation(&updated) { commitVertexSelection(updated) }
+            else { vertexSelectionError = nil }
+        } catch { reportVertexSelectionError(error) }
+    }
+
+    private func commitVertexSelection(_ updated: VertexSelection) {
+        vertexSelection = updated
+        if let hover = vertexHover.vertexID, updated.contains(hover) {
+            vertexHover = vertexHover.updating(nil)
+        }
+        vertexSelectionError = nil
+        status = "Selected \(updated.selectedCount) of \(updated.vertexCount) vertices"
+    }
+
+    private func reportVertexSelectionError(_ error: Error) {
+        let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        vertexSelectionError = message
+        status = "Vertex selection: \(message)"
     }
 
     private func reportEdgeSelectionError(_ error: Error) {
