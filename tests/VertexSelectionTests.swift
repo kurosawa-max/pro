@@ -254,12 +254,12 @@ final class VertexSelectionTests: XCTestCase {
                             scale: SIMD3(2,0.5,1.5))
         ]
         for transform in transforms {
-            let localTarget = SIMD3<Float>(0, 0, 0)
+            let localTarget = SIMD3<Float>(-0.25, -0.25, 0)
             let worldTarget = transform.worldPosition(fromLocal: localTarget)
             let worldDirection = transform.worldDirection(fromLocal: SIMD3(0,0,-1))
             let ray = Ray(origin: worldTarget - worldDirection, direction: worldDirection)
             XCTAssertEqual(MeshVertexPicker.pick(
-                worldRay: ray, screenPoint: CGPoint(x: 50, y: 75),
+                worldRay: ray, screenPoint: CGPoint(x: 37.5, y: 62.5),
                 viewportSize: CGSize(width: 100, height: 100), mesh: source,
                 transform: transform, viewProjection: transform.inverseModelMatrix,
                 table: table, cache: MeshBVHCache(), threshold: 30), .hit(vertexID: 0))
