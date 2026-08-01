@@ -161,7 +161,10 @@ final class VertexSelectionTests: XCTestCase {
         model.setInteractionMode(.vertexSelect)
         XCTAssertTrue(model.applyVertexSelectionHit(0))
         let selected = model.vertexSelection
-        model.mesh.vertices[0].position.x += 0.01
+        var changed = model.mesh
+        let position = changed.vertices[0].position + SIMD3<Float>(0.01, 0, 0)
+        XCTAssertEqual(changed.updatePositions([0: position]).count, 1)
+        model.mesh = changed
         XCTAssertEqual(model.vertexSelection, selected)
     }
 
