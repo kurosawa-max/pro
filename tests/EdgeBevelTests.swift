@@ -204,6 +204,114 @@ final class EdgeBevelTests: XCTestCase {
             memoryLimit:full.estimatedWorkingByteCount))
     }
 
+    func testStageABoundariesAndArithmeticOverflowWithoutLargeAllocation() throws {
+        let counts=try EdgeBevel.stageAWorkingCountsForTesting(
+            sourceVertexCount:6,sourceIndexCount:24,edgeCount:12,selectedEdgeCount:1)
+        XCTAssertNoThrow(try EdgeBevel.stageAWorkingCountsForTesting(
+            sourceVertexCount:6,sourceIndexCount:24,edgeCount:12,selectedEdgeCount:1,
+            memoryLimit:counts.bytes))
+        XCTAssertThrowsError(try EdgeBevel.stageAWorkingCountsForTesting(
+            sourceVertexCount:6,sourceIndexCount:24,edgeCount:12,selectedEdgeCount:1,
+            memoryLimit:counts.bytes-1)) {
+            XCTAssertEqual($0 as? EdgeBevelError,.workingMemoryLimitExceeded)
+        }
+        XCTAssertThrowsError(try EdgeBevel.stageAWorkingCountsForTesting(
+            sourceVertexCount:0,sourceIndexCount:0,edgeCount:0,
+            selectedEdgeCount:Int.max)) {
+            XCTAssertEqual($0 as? EdgeBevelError,.arithmeticOverflow)
+        }
+        XCTAssertThrowsError(try EdgeBevel.stageAWorkingCountsForTesting(
+            sourceVertexCount:Int.max,sourceIndexCount:0,edgeCount:0,
+            selectedEdgeCount:1)) {
+            XCTAssertEqual($0 as? EdgeBevelError,.arithmeticOverflow)
+        }
+    }
+
+    func testExactAffectedPositionRegistryClassifiesLocalCollisions() throws {
+        let sourceA=EdgeBevelAffectedPosition(
+            edgeID:1,kind:.source(vertexID:10),localPosition:SIMD3(1,2,3))
+        let sourceB=EdgeBevelAffectedPosition(
+            edgeID:1,kind:.source(vertexID:11),localPosition:SIMD3(1,2,3))
+        XCTAssertThrowsError(try EdgeBevel.validateExactAffectedPositions(
+            [sourceA,sourceB],transform:.identity)) {
+            XCTAssertEqual($0 as? EdgeBevelError,.collapsedGeometry)
+        }
+        let crossSource=EdgeBevelAffectedPosition(
+            edgeID:2,kind:.source(vertexID:20),localPosition:SIMD3(1,2,3))
+        XCTAssertThrowsError(try EdgeBevel.validateExactAffectedPositions(
+            [sourceA,crossSource],transform:.identity)) {
+            XCTAssertEqual($0 as? EdgeBevelError,.affectedNeighborhoodsOverlap)
+        }
+        let sameOffset=EdgeBevelAffectedPosition(
+            edgeID:1,kind:.offset(edgeID:1,slot:0),localPosition:SIMD3(1,2,3))
+        XCTAssertThrowsError(try EdgeBevel.validateExactAffectedPositions(
+            [sourceA,sameOffset],transform:.identity)) {
+            XCTAssertEqual($0 as? EdgeBevelError,.collapsedGeometry)
+        }
+        let crossOffset=EdgeBevelAffectedPosition(
+            edgeID:2,kind:.offset(edgeID:2,slot:0),localPosition:SIMD3(1,2,3))
+        XCTAssertThrowsError(try EdgeBevel.validateExactAffectedPositions(
+            [sameOffset,crossOffset],transform:.identity)) {
+            XCTAssertEqual($0 as? EdgeBevelError,.affectedNeighborhoodsOverlap)
+        }
+    }
+
+    func testExactAffectedPositionRegistryCanonicalizesSignedZeroAndRenderedWorld() throws {
+        for axis in 0..<3 {
+            var positive=SIMD3<Float>(1,2,3), negative=positive
+            positive[axis]=0
+            negative[axis] = -0.0
+            let first=EdgeBevelAffectedPosition(
+                edgeID:1,kind:.source(vertexID:1),localPosition:positive)
+            XCTAssertNoThrow(try EdgeBevel.validateExactAffectedPositions(
+                [first],transform:.identity))
+            let second=EdgeBevelAffectedPosition(
+                edgeID:2,kind:.source(vertexID:2),localPosition:negative)
+            XCTAssertThrowsError(try EdgeBevel.validateExactAffectedPositions(
+                [first,second],transform:.identity)) {
+                XCTAssertEqual($0 as? EdgeBevelError,.affectedNeighborhoodsOverlap)
+            }
+        }
+        let first=EdgeBevelAffectedPosition(
+            edgeID:1,kind:.offset(edgeID:1,slot:0),localPosition:SIMD3(0,0,0))
+        let second=EdgeBevelAffectedPosition(
+            edgeID:2,kind:.offset(edgeID:2,slot:0),localPosition:SIMD3(1,0,0))
+        XCTAssertThrowsError(try EdgeBevel.validateExactAffectedPositions(
+            [first,second],transform:ObjectTransform(translation:SIMD3(100_000_000,0,0)))) {
+            XCTAssertEqual($0 as? EdgeBevelError,.affectedNeighborhoodsOverlap)
+        }
+    }
+
+    func testAffectedVertexFanValidatorAcceptsCycleAndRejectsDisconnectedAndOpenFans() throws {
+        let healthy=octahedron()
+        XCTAssertNoThrow(try EdgeBevel.validateAffectedVertexFans(
+            mesh:healthy,affectedVertexIDs:[0]))
+
+        let first=tetrahedron(), offset=UInt32(first.vertices.count-1)
+        let secondPositions=Array(first.vertices.dropFirst().map(\.position))
+        let bowTie=mesh(
+            first.vertices.map(\.position)+secondPositions,
+            first.indices+first.indices.map { $0 == 0 ? 0 : $0+offset })
+        XCTAssertThrowsError(try EdgeBevel.validateAffectedVertexFans(
+            mesh:bowTie,affectedVertexIDs:[0])) {
+            XCTAssertEqual($0 as? EdgeBevelError,.validationFailed)
+        }
+
+        let open=mesh([SIMD3(0,0,0),SIMD3(1,0,0),SIMD3(0,1,0)],[0,1,2])
+        XCTAssertThrowsError(try EdgeBevel.validateAffectedVertexFans(
+            mesh:open,affectedVertexIDs:[0])) {
+            XCTAssertEqual($0 as? EdgeBevelError,.validationFailed)
+        }
+
+        let nonManifold=mesh(
+            [SIMD3(0,0,0),SIMD3(1,0,0),SIMD3(0,1,0),SIMD3(0,-1,0),SIMD3(0,0,1)],
+            [0,1,2, 1,0,3, 0,1,4])
+        XCTAssertThrowsError(try EdgeBevel.validateAffectedVertexFans(
+            mesh:nonManifold,affectedVertexIDs:[0])) {
+            XCTAssertEqual($0 as? EdgeBevelError,.validationFailed)
+        }
+    }
+
     func testRefinedMemoryAndFingerprintGrowDeterministically() throws {
         let source=octahedron()
         let (table,selection,_)=try selected(source,keys:[try key(0,1)])
@@ -227,6 +335,52 @@ final class EdgeBevelTests: XCTestCase {
         XCTAssertGreaterThan(
             multipleEstimate.estimatedWorkingByteCount,
             first.estimate.estimatedWorkingByteCount)
+    }
+
+    func testFingerprintTracksGeometryAndCanonicalizesSelectionOrderAndSignedZero() throws {
+        let source=octahedron()
+        let (table,selection,_)=try selected(source,keys:[try key(0,1)])
+        let original=try EdgeBevel.makePreview(
+            mesh:source,table:table,selection:selection,transform:.identity,
+            options:.init(widthMillimeters:0.1),
+            meshChangeVersion:.init(),transformChangeVersion:.init())
+
+        var changedPositions=source.vertices.map(\.position)
+        changedPositions[2].x = -1.25
+        let changed=mesh(changedPositions,source.indices)
+        let (changedTable,changedSelection,_)=try selected(changed,keys:[try key(0,1)])
+        let changedPreview=try EdgeBevel.makePreview(
+            mesh:changed,table:changedTable,selection:changedSelection,transform:.identity,
+            options:.init(widthMillimeters:0.1),
+            meshChangeVersion:.init(),transformChangeVersion:.init())
+        XCTAssertNotEqual(
+            original.source.analysisFingerprint,
+            changedPreview.source.analysisFingerprint)
+
+        var signedZeroPositions=source.vertices.map(\.position)
+        signedZeroPositions[0].y = -0.0
+        let signedZero=mesh(signedZeroPositions,source.indices)
+        let (zeroTable,zeroSelection,_)=try selected(signedZero,keys:[try key(0,1)])
+        let zeroPreview=try EdgeBevel.makePreview(
+            mesh:signedZero,table:zeroTable,selection:zeroSelection,transform:.identity,
+            options:.init(widthMillimeters:0.1),
+            meshChangeVersion:.init(),transformChangeVersion:.init())
+        XCTAssertEqual(original.source.analysisFingerprint,zeroPreview.source.analysisFingerprint)
+
+        let multiple=twoOctahedra()
+        let (forwardTable,forwardSelection,_)=try selected(
+            multiple,keys:[try key(0,1),try key(6,7)])
+        let (reverseTable,reverseSelection,_)=try selected(
+            multiple,keys:[try key(6,7),try key(0,1)])
+        let forward=try EdgeBevel.makePreview(
+            mesh:multiple,table:forwardTable,selection:forwardSelection,transform:.identity,
+            options:.init(widthMillimeters:0.1),
+            meshChangeVersion:.init(),transformChangeVersion:.init())
+        let reverse=try EdgeBevel.makePreview(
+            mesh:multiple,table:reverseTable,selection:reverseSelection,transform:.identity,
+            options:.init(widthMillimeters:0.1),
+            meshChangeVersion:.init(),transformChangeVersion:.init())
+        XCTAssertEqual(forward.source.analysisFingerprint,reverse.source.analysisFingerprint)
     }
 
     func testNonFiniteSourceNormalIsRejectedBeforePlanning() throws {

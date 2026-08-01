@@ -1,6 +1,10 @@
 import Foundation
 import simd
 
+private func canonicalFloatBitPattern(_ value: Float) -> UInt32 {
+    value == 0 ? 0 : value.bitPattern
+}
+
 struct EdgeBevelOptions: Equatable {
     static let defaultWidthMillimeters = 0.5
     static let minimumWidthMillimeters = 0.001
@@ -22,9 +26,21 @@ private struct ExactPositionKey: Hashable {
     let y: UInt32
     let z: UInt32
     init(_ position: SIMD3<Float>) {
-        func canonical(_ value: Float) -> UInt32 { value == 0 ? 0 : value.bitPattern }
-        x=canonical(position.x); y=canonical(position.y); z=canonical(position.z)
+        x=canonicalFloatBitPattern(position.x)
+        y=canonicalFloatBitPattern(position.y)
+        z=canonicalFloatBitPattern(position.z)
     }
+}
+
+enum EdgeBevelAffectedPositionKind: Equatable {
+    case source(vertexID: UInt32)
+    case offset(edgeID: Int, slot: Int)
+}
+
+struct EdgeBevelAffectedPosition: Equatable {
+    let edgeID: Int
+    let kind: EdgeBevelAffectedPositionKind
+    let localPosition: SIMD3<Float>
 }
 struct EdgeBevelEstimate: Equatable {
     let selectedEdgeCount: Int
@@ -194,11 +210,23 @@ enum EdgeBevel {
               MeshTopologyDiagnostics.hasGeometricDuplicateTriangles(result) == false
         else { throw EdgeBevelError.validationFailed }
         var affected = Set<UInt32>()
+        var affectedPositions: [EdgeBevelAffectedPosition] = []
         for (itemIndex, item) in plan.items.enumerated() {
             affected.formUnion(item.affectedSourceVertices)
             let base = UInt32(mesh.vertices.count + itemIndex * 4)
             affected.formUnion([base, base + 1, base + 2, base + 3])
+            for vertexID in item.affectedSourceVertices.sorted() {
+                affectedPositions.append(EdgeBevelAffectedPosition(
+                    edgeID: item.record.id, kind: .source(vertexID: vertexID),
+                    localPosition: result.vertices[Int(vertexID)].position))
+            }
+            for slot in 0..<4 {
+                affectedPositions.append(EdgeBevelAffectedPosition(
+                    edgeID: item.record.id, kind: .offset(edgeID: item.record.id, slot: slot),
+                    localPosition: result.vertices[Int(base) + slot].position))
+            }
         }
+        try validateExactAffectedPositions(affectedPositions, transform: transform)
         try validateAffectedVertexFans(mesh: result, affectedVertexIDs: affected)
         return EdgeBevelResult(mesh: result, estimate: plan.estimate, analysisFingerprint: plan.fingerprint)
     }
@@ -345,15 +373,6 @@ enum EdgeBevel {
                 }
             }
             guard abs(simd_dot(normals[0],normals[1])) < 0.999_9 else { throw EdgeBevelError.coplanarEdge }
-            var positionKeys = Set<ExactPositionKey>()
-            for vertexID in localAffectedVertices {
-                positionKeys.insert(ExactPositionKey(mesh.vertices[Int(vertexID)].position))
-            }
-            for stored in local {
-                guard positionKeys.insert(ExactPositionKey(stored)).inserted else {
-                    throw EdgeBevelError.collapsedGeometry
-                }
-            }
             if edgeMax < maxWidth { maxWidth=edgeMax; limitingEdge=id }
             minAltitude=min(minAltitude,edgeMinimumAltitude)
             sharedTolerance=max(sharedTolerance,edgeTolerance)
@@ -365,6 +384,20 @@ enum EdgeBevel {
                 maximumWidthError: edgeMaximumError,
                 affectedSourceVertices: localAffectedVertices.sorted()))
         }
+        var affectedPositions: [EdgeBevelAffectedPosition] = []
+        for item in items.sorted(by: { $0.record.id < $1.record.id }) {
+            for vertexID in item.affectedSourceVertices.sorted() {
+                affectedPositions.append(EdgeBevelAffectedPosition(
+                    edgeID: item.record.id, kind: .source(vertexID: vertexID),
+                    localPosition: mesh.vertices[Int(vertexID)].position))
+            }
+            for (slot, position) in item.local.enumerated() {
+                affectedPositions.append(EdgeBevelAffectedPosition(
+                    edgeID: item.record.id, kind: .offset(edgeID: item.record.id, slot: slot),
+                    localPosition: position))
+            }
+        }
+        try validateExactAffectedPositions(affectedPositions, transform: transform)
         guard options.widthMillimeters < maxWidth else { throw EdgeBevelError.widthExceedsSafeMaximum }
         instrumentation?.recordStageB()
         let refinedBytes = try refinedWorkingByteCount(
@@ -396,14 +429,14 @@ enum EdgeBevel {
             item.affectedSourceVertices.forEach {
                 mix(UInt64($0), into: &fp)
                 let actual = transform.worldPosition(fromLocal: mesh.vertices[Int($0)].position)
-                mix(UInt64(actual.x.bitPattern), into: &fp)
-                mix(UInt64(actual.y.bitPattern), into: &fp)
-                mix(UInt64(actual.z.bitPattern), into: &fp)
+                mix(UInt64(canonicalFloatBitPattern(actual.x)), into: &fp)
+                mix(UInt64(canonicalFloatBitPattern(actual.y)), into: &fp)
+                mix(UInt64(canonicalFloatBitPattern(actual.z)), into: &fp)
             }
             item.local.forEach {
-                mix(UInt64($0.x.bitPattern), into: &fp)
-                mix(UInt64($0.y.bitPattern), into: &fp)
-                mix(UInt64($0.z.bitPattern), into: &fp)
+                mix(UInt64(canonicalFloatBitPattern($0.x)), into: &fp)
+                mix(UInt64(canonicalFloatBitPattern($0.y)), into: &fp)
+                mix(UInt64(canonicalFloatBitPattern($0.z)), into: &fp)
             }
             mix(item.maxWidth.bitPattern, into: &fp)
             mix(item.widthTolerance.bitPattern, into: &fp)
@@ -643,7 +676,35 @@ enum EdgeBevel {
         throw EdgeBevelError.invalidBevelCavity
     }
 
-    private static func validateAffectedVertexFans(
+    static func validateExactAffectedPositions(
+        _ owners: [EdgeBevelAffectedPosition], transform: ObjectTransform
+    ) throws {
+        var localOwners: [ExactPositionKey: EdgeBevelAffectedPosition] = [:]
+        var worldOwners: [ExactPositionKey: EdgeBevelAffectedPosition] = [:]
+        func register(
+            _ owner: EdgeBevelAffectedPosition, key: ExactPositionKey,
+            in registry: inout [ExactPositionKey: EdgeBevelAffectedPosition]
+        ) throws {
+            if let existing = registry[key] {
+                throw existing.edgeID == owner.edgeID
+                    ? EdgeBevelError.collapsedGeometry
+                    : EdgeBevelError.affectedNeighborhoodsOverlap
+            }
+            registry[key] = owner
+        }
+        for owner in owners {
+            guard owner.localPosition.allFinite else { throw EdgeBevelError.nonFiniteValue }
+            let worldPosition = transform.worldPosition(fromLocal: owner.localPosition)
+            guard worldPosition.allFinite else { throw EdgeBevelError.nonFiniteValue }
+            try register(owner, key: ExactPositionKey(owner.localPosition), in: &localOwners)
+            try register(owner, key: ExactPositionKey(worldPosition), in: &worldOwners)
+        }
+        guard localOwners.count == owners.count, worldOwners.count == owners.count else {
+            throw EdgeBevelError.collapsedGeometry
+        }
+    }
+
+    static func validateAffectedVertexFans(
         mesh: EditableMesh, affectedVertexIDs: Set<UInt32>
     ) throws {
         guard !affectedVertexIDs.isEmpty else { throw EdgeBevelError.validationFailed }
@@ -688,10 +749,33 @@ enum EdgeBevel {
         mesh: EditableMesh, table: MeshEdgeTable, selectedEdgeCount: Int,
         memoryLimit: Int = maximumWorkingBytes
     ) throws -> (vertices: Int, triangles: Int, bytes: Int) {
+        try stageAWorkingCounts(
+            sourceVertexCount: mesh.vertices.count, sourceIndexCount: mesh.indices.count,
+            edgeCount: table.edges.count, selectedEdgeCount: selectedEdgeCount,
+            memoryLimit: memoryLimit)
+    }
+
+    static func stageAWorkingCountsForTesting(
+        sourceVertexCount: Int, sourceIndexCount: Int, edgeCount: Int,
+        selectedEdgeCount: Int, memoryLimit: Int = Int.max
+    ) throws -> (vertices: Int, triangles: Int, bytes: Int) {
+        try stageAWorkingCounts(
+            sourceVertexCount: sourceVertexCount, sourceIndexCount: sourceIndexCount,
+            edgeCount: edgeCount, selectedEdgeCount: selectedEdgeCount,
+            memoryLimit: memoryLimit)
+    }
+
+    private static func stageAWorkingCounts(
+        sourceVertexCount: Int, sourceIndexCount: Int, edgeCount: Int,
+        selectedEdgeCount: Int, memoryLimit: Int
+    ) throws -> (vertices: Int, triangles: Int, bytes: Int) {
+        guard sourceVertexCount >= 0, sourceIndexCount >= 0, edgeCount >= 0,
+              selectedEdgeCount >= 0, sourceIndexCount.isMultiple(of: 3)
+        else { throw EdgeBevelError.arithmeticOverflow }
         let (addVertices, overflow1)=selectedEdgeCount.multipliedReportingOverflow(by:4)
         let (addTriangles, overflow2)=selectedEdgeCount.multipliedReportingOverflow(by:8)
-        let (vertices, overflow3)=mesh.vertices.count.addingReportingOverflow(addVertices)
-        let (triangles, overflow4)=(mesh.indices.count/3).addingReportingOverflow(addTriangles)
+        let (vertices, overflow3)=sourceVertexCount.addingReportingOverflow(addVertices)
+        let (triangles, overflow4)=(sourceIndexCount/3).addingReportingOverflow(addTriangles)
         guard !overflow1,!overflow2,!overflow3,!overflow4 else { throw EdgeBevelError.arithmeticOverflow }
         guard vertices<=maximumVertices else { throw EdgeBevelError.vertexLimitExceeded }
         guard triangles<=maximumTriangles else { throw EdgeBevelError.triangleLimitExceeded }
@@ -702,11 +786,11 @@ enum EdgeBevel {
             guard !o1,!o2 else { throw EdgeBevelError.arithmeticOverflow }
             bytes=sum
         }
-        try account(mesh.vertices.count,64)       // source mesh and history snapshot
-        try account(mesh.indices.count,16)        // source indices and diagnostics
+        try account(sourceVertexCount,64)         // source mesh and history snapshot
+        try account(sourceIndexCount,16)          // source indices and diagnostics
         try account(vertices,96)                  // result, normals, bounds, BVH, spatial staging
         try account(triangles,120)                // result indices, adjacency, duplicate/fan diagnostics
-        try account(table.edges.count,64)          // current table and incidence staging
+        try account(edgeCount,64)                 // current table and incidence staging
         try account(selectedEdgeCount,1_536)       // plans, world Double geometry, cavities, Preview
         guard bytes<=memoryLimit else { throw EdgeBevelError.workingMemoryLimitExceeded }
         return (vertices,triangles,bytes)

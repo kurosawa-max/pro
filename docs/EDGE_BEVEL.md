@@ -14,7 +14,9 @@ edge ID昇順に、`low/face0`、`high/face0`、`low/face1`、`high/face1`の4�
 
 生成後はnormal、adjacency、Diagnosticsを再構築し、component／boundary不変、non-manifold／winding conflict／degenerate／duplicateが0であることをcommit前に検証する。一般collisionとself-intersectionは検出しない。
 
-resultではsource endpoints、4 offsets、support third verticesを含むaffected verticesだけのface／edge incidenceを1回のtriangle scanで構築する。各closed vertexはincident edge use 2、face-link degree 2、single cycleを満たすことを要求し、bow-tie、branch、multiple fanを拒否する。stored Float positionsは`-0`を`+0`へcanonicalizeしたexact bit keyでaffected sourceと4 offsetsを照合し、一般的なepsilon weldは行わない。
+resultではsource endpoints、4 offsets、support third verticesを含むaffected verticesだけのface／edge incidenceを1回のtriangle scanで構築する。各closed vertexはincident edge use 2、face-link degree 2、single cycleを満たすことを要求し、bow-tie、branch、multiple fanを拒否する。
+
+Exact collision validationはoperation全体で行う。全selected edgeのaffected source verticesとgenerated offset verticesをedge ID、source vertex ID、offset slotのcanonical orderで登録し、stored local Float位置と通常Transform経路のrendered world Float位置をそれぞれ検査する。異なるownerの`-0.0`と`+0.0`は同一点として扱う。同一neighborhood内の一致はcollapsed geometry、異なるneighborhood間の一致はaffected-neighborhood overlapとしてmutation前に拒否する。result構築後も同じ共通validatorで再検証し、owner数とexact key数の一致を要求する。一般的なepsilon collision detection、collision repair、automatic weldは対象外である。
 
 ## Previewとcommit
 
