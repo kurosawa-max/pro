@@ -230,8 +230,10 @@ final class EdgeBevelTests: XCTestCase {
     }
 
     func testNonFiniteSourceNormalIsRejectedBeforePlanning() throws {
-        var source=octahedron()
-        source.vertices[0].normal.x = .nan
+        let healthy=octahedron()
+        var vertices=healthy.vertices
+        vertices[0]=MeshVertex(position:vertices[0].position,normal:SIMD3(.nan,0,0))
+        let source=EditableMesh(vertices:vertices,indices:healthy.indices)
         let table=try MeshEdgeTable.build(mesh:source)
         var selection=try EdgeSelection(table:table)
         let edgeID=try XCTUnwrap(table.edgeIDByKey[try key(0,1)])
