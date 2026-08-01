@@ -14,9 +14,13 @@ edge ID昇順に、`low/face0`、`high/face0`、`low/face1`、`high/face1`の4�
 
 生成後はnormal、adjacency、Diagnosticsを再構築し、component／boundary不変、non-manifold／winding conflict／degenerate／duplicateが0であることをcommit前に検証する。一般collisionとself-intersectionは検出しない。
 
+resultではsource endpoints、4 offsets、support third verticesを含むaffected verticesだけのface／edge incidenceを1回のtriangle scanで構築する。各closed vertexはincident edge use 2、face-link degree 2、single cycleを満たすことを要求し、bow-tie、branch、multiple fanを拒否する。stored Float positionsは`-0`を`+0`へcanonicalizeしたexact bit keyでaffected sourceと4 offsetsを照合し、一般的なepsilon weldは行わない。
+
 ## Previewとcommit
 
 PreviewはUUID request identityを使用し、width、selection、mesh、Transform、dismissalでstale化する。Applyはruntime identityを軽量確認した後、estimateとanalysis fingerprintを再計算して一致を要求する。result mesh、Workspace snapshot、Picking BVHまでをfallible prepared phaseで完成させ、nonthrowing commitでfresh topologyを1回installし、`ReplaceMeshCommand` 1件を記録する。
+
+memory guardは2段階である。Stage AはDiagnosticsやfan/support解析より前に`V + 4S`と`T + 8S`のconservative peakをchecked arithmeticで検査する。Stage Bは6 affected faces、affected vertices、endpoint incidence、support/cavity plan、source/result diagnostics、history snapshots、BVH／Spatial Index／Renderer stagingを加えたrefined peakをresult allocation前に検査し、PreviewはStage B値を表示する。上限は768 MiBである。
 
 Preview、Cancel、failureはproject、history、dirty、Autosave、Recoveryを変更しない。Apply／Undo／Redoはそれぞれgenerationを1回進め、完成meshだけをformatVersion 1へ保存する。selectionとPreviewは永続化・Undo対象ではない。
 

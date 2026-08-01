@@ -484,6 +484,8 @@ Filesのconfirmation sheetはformat、source triangle、welded vertex、mm dimen
 
 stored local Floatを再び通常Transformでworldへ戻してwidthを検証し、normal、adjacency、Diagnostics、bounds、Picking BVHをfallible prepared phaseで完成させる。UUID Preview identity、non-rewinding mesh/Transform version、edge table/selection identity、estimate/fingerprintを照合した後だけ、nonthrowing commitで`ReplaceMeshCommand` 1件を記録する。selection、Preview、optionsはformatVersion 1、history、Autosave snapshotへ含めない。詳細は`EDGE_BEVEL.md`を参照する。
 
+Edge Bevel memory preflightはDiagnostics前のStage Aとsupport/fan/cavity確定後のresult allocation前Stage Bに分ける。Stage B値がPreviewのworking-memory estimateである。resultはaffected vertexのclosed face-link single cycleを独立検証し、stored positionsはsigned zeroを正規化したexact keyで意図しないcoincidenceを拒否する。analysis fingerprintはcanonicalなaffected IDs、world Float bits、support plan、stored positions、result indices、tolerances、metrics、Stage B bytesを含む。
+
 runtime cache keyは`topologyID/topologyRevision/revision/ObjectTransform`で、変更eventをlatched staleとして扱い、Undo/Redoで同じkeyへ戻ってもRefreshまではstale reportをUI/Rendererへ渡さない。Metal diagnostics overlayはmesh/gizmoとは別のline/point pipeline、buffer、revisionを持ち、最大1,000代表/categoryを内容変更時のみuploadする。depth compareは常時表示、depth writeなしで、picking/inputには参加しない。report/overlay設定はprojectへ永続化しない。詳細は`MESH_DIAGNOSTICS.md`を参照する。
 
 ### 17.13 Explicit limited mesh cleanup

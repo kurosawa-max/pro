@@ -170,6 +170,79 @@ final class EdgeBevelTests: XCTestCase {
         }
     }
 
+    func testMemoryStageAAndStageBUseIndependentCheckedLimits() throws {
+        let source=octahedron()
+        let (table,selection,_)=try selected(source,keys:[try key(0,1)])
+        let stageA=EdgeBevelMemoryInstrumentation()
+        XCTAssertThrowsError(try EdgeBevel.estimate(
+            mesh:source,table:table,selection:selection,transform:.identity,
+            options:.init(widthMillimeters:0.1),memoryLimit:1,
+            instrumentation:stageA)) {
+            XCTAssertEqual($0 as? EdgeBevelError,.workingMemoryLimitExceeded)
+        }
+        XCTAssertEqual(stageA.stageACount,1)
+        XCTAssertEqual(stageA.diagnosticsCount,0)
+        XCTAssertEqual(stageA.stageBCount,0)
+
+        let full=try EdgeBevel.estimate(
+            mesh:source,table:table,selection:selection,transform:.identity,
+            options:.init(widthMillimeters:0.1))
+        let stageB=EdgeBevelMemoryInstrumentation()
+        XCTAssertThrowsError(try EdgeBevel.estimate(
+            mesh:source,table:table,selection:selection,transform:.identity,
+            options:.init(widthMillimeters:0.1),
+            memoryLimit:full.estimatedWorkingByteCount-1,
+            instrumentation:stageB)) {
+            XCTAssertEqual($0 as? EdgeBevelError,.workingMemoryLimitExceeded)
+        }
+        XCTAssertEqual(stageB.stageACount,1)
+        XCTAssertEqual(stageB.diagnosticsCount,1)
+        XCTAssertEqual(stageB.stageBCount,1)
+        XCTAssertNoThrow(try EdgeBevel.estimate(
+            mesh:source,table:table,selection:selection,transform:.identity,
+            options:.init(widthMillimeters:0.1),
+            memoryLimit:full.estimatedWorkingByteCount))
+    }
+
+    func testRefinedMemoryAndFingerprintGrowDeterministically() throws {
+        let source=octahedron()
+        let (table,selection,_)=try selected(source,keys:[try key(0,1)])
+        let first=try EdgeBevel.makePreview(
+            mesh:source,table:table,selection:selection,transform:.identity,
+            options:.init(widthMillimeters:0.1),
+            meshChangeVersion:.init(),transformChangeVersion:.init())
+        let repeated=try EdgeBevel.makePreview(
+            mesh:source,table:table,selection:selection,transform:.identity,
+            options:.init(widthMillimeters:0.1),
+            meshChangeVersion:first.source.meshChangeVersion,
+            transformChangeVersion:first.source.transformChangeVersion)
+        XCTAssertEqual(first.source.analysisFingerprint,repeated.source.analysisFingerprint)
+
+        let multiple=twoOctahedra()
+        let (multipleTable,multipleSelection,_)=try selected(
+            multiple,keys:[try key(0,1),try key(6,7)])
+        let multipleEstimate=try EdgeBevel.estimate(
+            mesh:multiple,table:multipleTable,selection:multipleSelection,
+            transform:.identity,options:.init(widthMillimeters:0.1))
+        XCTAssertGreaterThan(
+            multipleEstimate.estimatedWorkingByteCount,
+            first.estimate.estimatedWorkingByteCount)
+    }
+
+    func testNonFiniteSourceNormalIsRejectedBeforePlanning() throws {
+        var source=octahedron()
+        source.vertices[0].normal.x = .nan
+        let table=try MeshEdgeTable.build(mesh:source)
+        var selection=try EdgeSelection(table:table)
+        let edgeID=try XCTUnwrap(table.edgeIDByKey[try key(0,1)])
+        _=try selection.apply(.add,edgeID:edgeID)
+        XCTAssertThrowsError(try EdgeBevel.estimate(
+            mesh:source,table:table,selection:selection,transform:.identity,
+            options:.init(widthMillimeters:0.1))) {
+            XCTAssertEqual($0 as? EdgeBevelError,.nonFiniteValue)
+        }
+    }
+
     func testPreviewIdentityRejectsSelectionTransformOptionsAndVertexChange() throws {
         var source = octahedron()
         let (table, selection, _) = try selected(source, keys: [try key(0, 1)])
@@ -285,13 +358,16 @@ final class EdgeBevelTests: XCTestCase {
         let preview = try model.previewEdgeBevel(options: .init(widthMillimeters: 0.1))
         let after = try model.applyEdgeBevel(preview: preview).mesh
         await waitForWriteCount(1, coordinator: coordinator)
-        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, after)
+        let recoveryAfterApply = try await coordinator.inspectRecovery()
+        XCTAssertEqual(recoveryAfterApply.project.mesh, after)
         model.undo()
         await waitForWriteCount(2, coordinator: coordinator)
-        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, before)
+        let recoveryAfterUndo = try await coordinator.inspectRecovery()
+        XCTAssertEqual(recoveryAfterUndo.project.mesh, before)
         model.redo()
         await waitForWriteCount(3, coordinator: coordinator)
-        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, after)
+        let recoveryAfterRedo = try await coordinator.inspectRecovery()
+        XCTAssertEqual(recoveryAfterRedo.project.mesh, after)
         let writeCount = await coordinator.successfulWriteCount
         XCTAssertEqual(writeCount, 3)
     }

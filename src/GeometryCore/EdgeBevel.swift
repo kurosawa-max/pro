@@ -7,6 +7,25 @@ struct EdgeBevelOptions: Equatable {
     static let maximumWidthMillimeters = 1_000.0
     var widthMillimeters = defaultWidthMillimeters
 }
+
+final class EdgeBevelMemoryInstrumentation {
+    private(set) var stageACount = 0
+    private(set) var diagnosticsCount = 0
+    private(set) var stageBCount = 0
+    fileprivate func recordStageA() { stageACount += 1 }
+    fileprivate func recordDiagnostics() { diagnosticsCount += 1 }
+    fileprivate func recordStageB() { stageBCount += 1 }
+}
+
+private struct ExactPositionKey: Hashable {
+    let x: UInt32
+    let y: UInt32
+    let z: UInt32
+    init(_ position: SIMD3<Float>) {
+        func canonical(_ value: Float) -> UInt32 { value == 0 ? 0 : value.bitPattern }
+        x=canonical(position.x); y=canonical(position.y); z=canonical(position.z)
+    }
+}
 struct EdgeBevelEstimate: Equatable {
     let selectedEdgeCount: Int
     let affectedFaceCount: Int
@@ -127,6 +146,7 @@ enum EdgeBevel {
         let edgeLength: Double
         let widthTolerance: Double
         let maximumWidthError: Double
+        let affectedSourceVertices: [UInt32]
     }
     private struct Plan { let items: [Item]; let estimate: EdgeBevelEstimate; let fingerprint: UInt64 }
 
@@ -146,55 +166,23 @@ enum EdgeBevel {
     }
 
     static func estimate(mesh: EditableMesh, table: MeshEdgeTable, selection: EdgeSelection,
-                         transform: ObjectTransform, options: EdgeBevelOptions) throws -> EdgeBevelEstimate {
-        try makePlan(mesh: mesh, table: table, selection: selection, transform: transform, options: options).estimate
+                         transform: ObjectTransform, options: EdgeBevelOptions,
+                         memoryLimit: Int = maximumWorkingBytes,
+                         instrumentation: EdgeBevelMemoryInstrumentation? = nil) throws -> EdgeBevelEstimate {
+        try makePlan(mesh: mesh, table: table, selection: selection, transform: transform,
+                     options: options, memoryLimit: memoryLimit,
+                     instrumentation: instrumentation).estimate
     }
 
     static func bevel(mesh: EditableMesh, table: MeshEdgeTable, selection: EdgeSelection,
                       transform: ObjectTransform, options: EdgeBevelOptions) throws -> EdgeBevelResult {
         let plan = try makePlan(mesh: mesh, table: table, selection: selection, transform: transform, options: options)
-        var vertices = mesh.vertices, indices = mesh.indices
+        var vertices = mesh.vertices
         vertices.reserveCapacity(plan.estimate.resultingVertexCount)
-        indices.reserveCapacity(plan.estimate.resultingTriangleCount * 3)
         for item in plan.items {
-            let base = UInt32(vertices.count)
             for p in item.local { vertices.append(MeshVertex(position: p, normal: .zero)) }
-            for side in 0..<2 {
-                let face = item.faces[side], offset = face * 3
-                let lowOffset = side == 0 ? base : base + 2
-                let highOffset = side == 0 ? base + 1 : base + 3
-                let source = Array(mesh.indices[offset..<(offset + 3)])
-                let trimmed = source.map { index -> UInt32 in
-                    if index == item.record.key.low { return lowOffset }
-                    if index == item.record.key.high { return highOffset }
-                    return index
-                }
-                indices.replaceSubrange(offset..<(offset + 3), with: trimmed)
-            }
-            var supportExtras: [[UInt32]] = []
-            for support in item.supports {
-                let inserted = base + UInt32(support.insertedVertexSlot)
-                let children = try splitSupportFace(
-                    mesh: mesh, face: support.supportFace,
-                    edge: support.sideEdge, inserted: inserted)
-                let offset = support.supportFace * 3
-                indices.replaceSubrange(offset..<(offset + 3), with: children.first)
-                supportExtras.append(children.second)
-            }
-            supportExtras.forEach { indices.append(contentsOf: $0) }
-
-            let low = item.record.key.low, high = item.record.key.high
-            let cavityVertices: Set<UInt32> = [low, base, base + 1, high, base + 3, base + 2]
-            let boundary = try cavityBoundary(indices: indices, vertices: cavityVertices)
-            let candidates: [[UInt32]] = [
-                [base, base + 1, base + 3], [base, base + 3, base + 2],
-                [low, base, base + 2], [high, base + 3, base + 1]
-            ]
-            let closureTriangles = try orientClosure(candidates, boundary: boundary)
-            for triangle in closureTriangles {
-                indices.append(contentsOf: triangle)
-            }
         }
+        let indices = try plannedIndices(mesh: mesh, items: plan.items)
         var result = EditableMesh(vertices: vertices, indices: indices)
         result.recalculateNormals(recordChange: false); _ = result.adjacency()
         let report = MeshTopologyDiagnostics.analyze(result)
@@ -205,18 +193,51 @@ enum EdgeBevel {
               report.boundaryEdgeCount == plan.estimate.sourceBoundaryEdgeCount,
               MeshTopologyDiagnostics.hasGeometricDuplicateTriangles(result) == false
         else { throw EdgeBevelError.validationFailed }
+        var affected = Set<UInt32>()
+        for (itemIndex, item) in plan.items.enumerated() {
+            affected.formUnion(item.affectedSourceVertices)
+            let base = UInt32(mesh.vertices.count + itemIndex * 4)
+            affected.formUnion([base, base + 1, base + 2, base + 3])
+        }
+        try validateAffectedVertexFans(mesh: result, affectedVertexIDs: affected)
         return EdgeBevelResult(mesh: result, estimate: plan.estimate, analysisFingerprint: plan.fingerprint)
     }
 
     private static func makePlan(mesh: EditableMesh, table: MeshEdgeTable, selection: EdgeSelection,
-                                 transform: ObjectTransform, options: EdgeBevelOptions) throws -> Plan {
+                                 transform: ObjectTransform, options: EdgeBevelOptions,
+                                 memoryLimit: Int = maximumWorkingBytes,
+                                 instrumentation: EdgeBevelMemoryInstrumentation? = nil) throws -> Plan {
         guard options.widthMillimeters.isFinite else { throw EdgeBevelError.invalidWidth }
         guard options.widthMillimeters >= EdgeBevelOptions.minimumWidthMillimeters else { throw EdgeBevelError.widthTooSmall }
         guard options.widthMillimeters <= EdgeBevelOptions.maximumWidthMillimeters else { throw EdgeBevelError.widthLimitExceeded }
         guard table.matches(mesh), selection.matches(table) else { throw EdgeBevelError.staleSelection }
         let ids = selection.selectedEdgeIDs(); guard !ids.isEmpty else { throw EdgeBevelError.noSelection }
-        guard transform.isFinite, mesh.indices.count.isMultiple(of: 3), mesh.vertices.allSatisfy({ $0.position.allFinite }) else { throw EdgeBevelError.nonFiniteValue }
-        let preflight = try memoryPreflight(mesh: mesh, table: table, selectedEdgeCount: ids.count)
+        guard transform.isFinite, transform.translation.allFinite,
+              transform.rotation.x.isFinite, transform.rotation.y.isFinite,
+              transform.rotation.z.isFinite, transform.rotation.w.isFinite,
+              transform.scale.allFinite,
+              transform.scale.x > 0, transform.scale.y > 0, transform.scale.z > 0,
+              mesh.indices.count.isMultiple(of: 3),
+              mesh.vertices.allSatisfy({ $0.position.allFinite && $0.normal.allFinite })
+        else { throw EdgeBevelError.nonFiniteValue }
+        instrumentation?.recordStageA()
+        let preflight = try memoryPreflight(
+            mesh: mesh, table: table, selectedEdgeCount: ids.count,
+            memoryLimit: memoryLimit)
+        let localBounds=mesh.bounds
+        guard localBounds.minimum.allFinite, localBounds.maximum.allFinite else {
+            throw EdgeBevelError.nonFiniteValue
+        }
+        var sourceWorldBounds=AxisAlignedBoundingBox()
+        for vertex in mesh.vertices {
+            let worldPosition=transform.worldPosition(fromLocal:vertex.position)
+            guard worldPosition.allFinite else { throw EdgeBevelError.nonFiniteValue }
+            sourceWorldBounds.include(worldPosition)
+        }
+        guard sourceWorldBounds.minimum.allFinite, sourceWorldBounds.maximum.allFinite else {
+            throw EdgeBevelError.nonFiniteValue
+        }
+        instrumentation?.recordDiagnostics()
         let sourceReport = MeshTopologyDiagnostics.analyze(mesh)
         guard sourceReport.invalidIndexTriangleCount == 0, sourceReport.degenerateTriangleCount == 0,
               sourceReport.duplicateTriangleCount == 0, sourceReport.nonManifoldEdgeCount == 0,
@@ -324,6 +345,15 @@ enum EdgeBevel {
                 }
             }
             guard abs(simd_dot(normals[0],normals[1])) < 0.999_9 else { throw EdgeBevelError.coplanarEdge }
+            var positionKeys = Set<ExactPositionKey>()
+            for vertexID in localAffectedVertices {
+                positionKeys.insert(ExactPositionKey(mesh.vertices[Int(vertexID)].position))
+            }
+            for stored in local {
+                guard positionKeys.insert(ExactPositionKey(stored)).inserted else {
+                    throw EdgeBevelError.collapsedGeometry
+                }
+            }
             if edgeMax < maxWidth { maxWidth=edgeMax; limitingEdge=id }
             minAltitude=min(minAltitude,edgeMinimumAltitude)
             sharedTolerance=max(sharedTolerance,edgeTolerance)
@@ -332,11 +362,19 @@ enum EdgeBevel {
                 record: edge, faces: faces, opposite: opposite, supports: supports,
                 local: local, maxWidth: edgeMax, minimumAltitude: edgeMinimumAltitude,
                 edgeLength: el, widthTolerance: edgeTolerance,
-                maximumWidthError: edgeMaximumError))
+                maximumWidthError: edgeMaximumError,
+                affectedSourceVertices: localAffectedVertices.sorted()))
         }
         guard options.widthMillimeters < maxWidth else { throw EdgeBevelError.widthExceedsSafeMaximum }
-        var sourceWorldBounds=AxisAlignedBoundingBox()
-        mesh.vertices.forEach { sourceWorldBounds.include(transform.worldPosition(fromLocal:$0.position)) }
+        instrumentation?.recordStageB()
+        let refinedBytes = try refinedWorkingByteCount(
+            mesh: mesh, table: table, selectedEdgeCount: ids.count,
+            affectedFaceCount: affectedFaces.count,
+            affectedVertexCount: affectedVertices.count,
+            endpointIncidentEdgeCount: selectedVertices.reduce(0) {
+                $0 + table.edgeIDsByVertexID[Int($1)].count
+            }, resultVertexCount: preflight.vertices,
+            resultTriangleCount: preflight.triangles, memoryLimit: memoryLimit)
         var resultLocalBounds=mesh.bounds, resultWorldBounds=sourceWorldBounds
         for item in items { for p in item.local {
             resultLocalBounds.include(p)
@@ -351,13 +389,31 @@ enum EdgeBevel {
                 mix(UInt64($0.supportFace), into: &fp)
                 mix(UInt64($0.sideEdge.low), into: &fp)
                 mix(UInt64($0.sideEdge.high), into: &fp)
+                mix(UInt64($0.thirdVertex), into: &fp)
+                mix((try? directedUse(mesh, face: $0.incidentFace, edge: $0.sideEdge)) == true ? 1 : 0, into: &fp)
+                mix((try? directedUse(mesh, face: $0.supportFace, edge: $0.sideEdge)) == true ? 1 : 0, into: &fp)
+            }
+            item.affectedSourceVertices.forEach {
+                mix(UInt64($0), into: &fp)
+                let actual = transform.worldPosition(fromLocal: mesh.vertices[Int($0)].position)
+                mix(UInt64(actual.x.bitPattern), into: &fp)
+                mix(UInt64(actual.y.bitPattern), into: &fp)
+                mix(UInt64(actual.z.bitPattern), into: &fp)
             }
             item.local.forEach {
                 mix(UInt64($0.x.bitPattern), into: &fp)
                 mix(UInt64($0.y.bitPattern), into: &fp)
                 mix(UInt64($0.z.bitPattern), into: &fp)
             }
+            mix(item.maxWidth.bitPattern, into: &fp)
+            mix(item.widthTolerance.bitPattern, into: &fp)
+            mix(item.maximumWidthError.bitPattern, into: &fp)
         }
+        let resultIndices = try plannedIndices(mesh: mesh, items: items)
+        resultIndices.forEach { mix(UInt64($0), into: &fp) }
+        affectedFaces.sorted().forEach { mix(UInt64($0), into: &fp) }
+        affectedVertices.sorted().forEach { mix(UInt64($0), into: &fp) }
+        mix(UInt64(refinedBytes), into: &fp)
         return Plan(items:items, estimate:EdgeBevelEstimate(
             selectedEdgeCount:ids.count, affectedFaceCount:affectedFaces.count,
             supportFaceCount:ids.count * 4, selectedEndpointCount:ids.count * 2,
@@ -368,7 +424,7 @@ enum EdgeBevel {
             limitingEdgeID:limitingEdge, limitingFaceID:limitingFace,
             widthToleranceMillimeters:sharedTolerance,
             maximumMeasuredWidthErrorMillimeters:maxError,
-            estimatedWorkingByteCount:preflight.bytes,
+            estimatedWorkingByteCount:refinedBytes,
             sourceLocalBounds:mesh.bounds, resultLocalBounds:resultLocalBounds,
             sourceWorldBounds:sourceWorldBounds, resultWorldBounds:resultWorldBounds,
             sourceComponentCount:sourceReport.connectedComponentCount,
@@ -468,6 +524,52 @@ enum EdgeBevel {
         throw EdgeBevelError.invalidBevelCavity
     }
 
+    private static func plannedIndices(mesh: EditableMesh, items: [Item]) throws -> [UInt32] {
+        var indices = mesh.indices
+        let extraIndexCount = try checkedProduct(items.count, 8 * 3)
+        let capacity = try checkedSum(indices.count, extraIndexCount)
+        indices.reserveCapacity(capacity)
+        for (itemIndex, item) in items.enumerated() {
+            let baseValue = try checkedSum(mesh.vertices.count, try checkedProduct(itemIndex, 4))
+            guard baseValue <= Int(UInt32.max) else { throw EdgeBevelError.vertexLimitExceeded }
+            let base = UInt32(baseValue)
+            for side in 0..<2 {
+                let face=item.faces[side], offset=face*3
+                let lowOffset=side == 0 ? base : base+2
+                let highOffset=side == 0 ? base+1 : base+3
+                let source=try triangle(mesh,face:face)
+                let trimmed=source.map { index -> UInt32 in
+                    if index == item.record.key.low { return lowOffset }
+                    if index == item.record.key.high { return highOffset }
+                    return index
+                }
+                indices.replaceSubrange(offset..<(offset+3),with:trimmed)
+            }
+            var extras:[[UInt32]]=[]
+            for support in item.supports {
+                let inserted=base+UInt32(support.insertedVertexSlot)
+                let children=try splitSupportFace(
+                    mesh:mesh,face:support.supportFace,
+                    edge:support.sideEdge,inserted:inserted)
+                let offset=support.supportFace*3
+                indices.replaceSubrange(offset..<(offset+3),with:children.first)
+                extras.append(children.second)
+            }
+            extras.forEach { indices.append(contentsOf:$0) }
+            let low=item.record.key.low, high=item.record.key.high
+            let cavity:Set<UInt32>=[low,base,base+1,high,base+3,base+2]
+            let boundary=try cavityBoundary(indices:indices,vertices:cavity)
+            let candidates:[[UInt32]]=[
+                [base,base+1,base+3],[base,base+3,base+2],
+                [low,base,base+2],[high,base+3,base+1]
+            ]
+            try orientClosure(candidates,boundary:boundary).forEach {
+                indices.append(contentsOf:$0)
+            }
+        }
+        return indices
+    }
+
     private static func cavityBoundary(
         indices: [UInt32], vertices: Set<UInt32>
     ) throws -> [MeshEdgeKey: (UInt32, UInt32)] {
@@ -541,8 +643,50 @@ enum EdgeBevel {
         throw EdgeBevelError.invalidBevelCavity
     }
 
+    private static func validateAffectedVertexFans(
+        mesh: EditableMesh, affectedVertexIDs: Set<UInt32>
+    ) throws {
+        guard !affectedVertexIDs.isEmpty else { throw EdgeBevelError.validationFailed }
+        var facesByVertex: [UInt32: [Int]] = [:]
+        var facesByVertexEdge: [UInt32: [MeshEdgeKey: [Int]]] = [:]
+        for face in 0..<(mesh.indices.count / 3) {
+            let values=try triangle(mesh,face:face)
+            for vertex in values where affectedVertexIDs.contains(vertex) {
+                facesByVertex[vertex,default:[]].append(face)
+                for neighbor in values where neighbor != vertex {
+                    guard let key=MeshEdgeKey(vertex,neighbor) else {
+                        throw EdgeBevelError.validationFailed
+                    }
+                    facesByVertexEdge[vertex,default:[:]][key,default:[]].append(face)
+                }
+            }
+        }
+        for vertex in affectedVertexIDs.sorted() {
+            guard let faces=facesByVertex[vertex], !faces.isEmpty,
+                  let edgeUses=facesByVertexEdge[vertex],
+                  edgeUses.values.allSatisfy({ $0.count == 2 })
+            else { throw EdgeBevelError.validationFailed }
+            var adjacency:[Int:Set<Int>]=[:]
+            for uses in edgeUses.values {
+                let a=uses[0], b=uses[1]
+                adjacency[a,default:[]].insert(b)
+                adjacency[b,default:[]].insert(a)
+            }
+            guard faces.allSatisfy({ adjacency[$0]?.count == 2 }),
+                  let seed=faces.min() else { throw EdgeBevelError.validationFailed }
+            var visited:Set<Int>=[seed], queue=[seed], cursor=0
+            while cursor<queue.count {
+                let face=queue[cursor]; cursor+=1
+                for neighbor in adjacency[face,default:[]].sorted()
+                    where visited.insert(neighbor).inserted { queue.append(neighbor) }
+            }
+            guard visited.count == Set(faces).count else { throw EdgeBevelError.validationFailed }
+        }
+    }
+
     private static func memoryPreflight(
-        mesh: EditableMesh, table: MeshEdgeTable, selectedEdgeCount: Int
+        mesh: EditableMesh, table: MeshEdgeTable, selectedEdgeCount: Int,
+        memoryLimit: Int = maximumWorkingBytes
     ) throws -> (vertices: Int, triangles: Int, bytes: Int) {
         let (addVertices, overflow1)=selectedEdgeCount.multipliedReportingOverflow(by:4)
         let (addTriangles, overflow2)=selectedEdgeCount.multipliedReportingOverflow(by:8)
@@ -564,8 +708,46 @@ enum EdgeBevel {
         try account(triangles,120)                // result indices, adjacency, duplicate/fan diagnostics
         try account(table.edges.count,64)          // current table and incidence staging
         try account(selectedEdgeCount,1_536)       // plans, world Double geometry, cavities, Preview
-        guard bytes<=maximumWorkingBytes else { throw EdgeBevelError.workingMemoryLimitExceeded }
+        guard bytes<=memoryLimit else { throw EdgeBevelError.workingMemoryLimitExceeded }
         return (vertices,triangles,bytes)
+    }
+
+    private static func refinedWorkingByteCount(
+        mesh: EditableMesh, table: MeshEdgeTable, selectedEdgeCount: Int,
+        affectedFaceCount: Int, affectedVertexCount: Int,
+        endpointIncidentEdgeCount: Int, resultVertexCount: Int,
+        resultTriangleCount: Int, memoryLimit: Int
+    ) throws -> Int {
+        var bytes=0
+        func account(_ count:Int,_ stride:Int)throws {
+            guard count>=0 else { throw EdgeBevelError.arithmeticOverflow }
+            let (part,o1)=count.multipliedReportingOverflow(by:stride)
+            let (sum,o2)=bytes.addingReportingOverflow(part)
+            guard !o1,!o2 else { throw EdgeBevelError.arithmeticOverflow }
+            bytes=sum
+        }
+        try account(mesh.vertices.count,64)
+        try account(mesh.indices.count,20)
+        try account(resultVertexCount,128)
+        try account(resultTriangleCount,160)
+        try account(table.edges.count,80)
+        try account(selectedEdgeCount,2_048)
+        try account(affectedFaceCount,384)
+        try account(affectedVertexCount,320)
+        try account(endpointIncidentEdgeCount,128)
+        guard bytes<=memoryLimit else { throw EdgeBevelError.workingMemoryLimitExceeded }
+        return bytes
+    }
+
+    private static func checkedProduct(_ lhs:Int,_ rhs:Int)throws->Int {
+        let (value,overflow)=lhs.multipliedReportingOverflow(by:rhs)
+        guard !overflow else { throw EdgeBevelError.arithmeticOverflow }
+        return value
+    }
+    private static func checkedSum(_ lhs:Int,_ rhs:Int)throws->Int {
+        let (value,overflow)=lhs.addingReportingOverflow(rhs)
+        guard !overflow else { throw EdgeBevelError.arithmeticOverflow }
+        return value
     }
 
     private static func mix(_ value: UInt64, into fingerprint: inout UInt64) {
