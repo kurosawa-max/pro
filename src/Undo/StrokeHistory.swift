@@ -1,7 +1,23 @@
+import Foundation
 import simd
 
 struct VertexChange: Equatable { let index: Int; let before: SIMD3<Float>; let after: SIMD3<Float> }
 struct StrokeCommand: Equatable { let changes: [VertexChange] }
+
+struct VertexTranslateCommand: Equatable {
+    let topologyID: UUID
+    let topologyRevision: UInt64
+    let changes: [VertexChange]
+
+    init?(topologyID: UUID, topologyRevision: UInt64, changes: [VertexChange]) {
+        guard !changes.isEmpty,
+              changes.allSatisfy({ $0.index >= 0 && $0.before.allFinite && $0.after.allFinite })
+        else { return nil }
+        self.topologyID = topologyID
+        self.topologyRevision = topologyRevision
+        self.changes = changes
+    }
+}
 
 struct TransformCommand: Equatable {
     let before: ObjectTransform
@@ -29,6 +45,7 @@ struct ReplaceMeshCommand: Equatable {
 
 enum WorkspaceCommand: Equatable {
     case sculpt(StrokeCommand)
+    case vertexTranslate(VertexTranslateCommand)
     case transform(TransformCommand)
     case replaceMesh(ReplaceMeshCommand)
 }

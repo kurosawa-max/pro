@@ -743,6 +743,7 @@ final class VertexSelectionTests: XCTestCase {
             cameraDirection: SIMD3(0, 0, -1))
         model.endTranslationGizmoDrag()
         XCTAssertEqual(model.undoCount, 1)
+        XCTAssertTrue(model.lastUndoIsVertexTranslateForTesting)
         XCTAssertNotEqual(model.mesh.vertices[0].position, before.vertices[0].position)
         XCTAssertEqual(model.mesh.runtime.topologyID, topology)
         XCTAssertEqual(model.mesh.runtime.topologyRevision, topologyRevision)
@@ -755,6 +756,87 @@ final class VertexSelectionTests: XCTestCase {
         model.redo()
         XCTAssertNotEqual(model.mesh, before)
         XCTAssertEqual(model.vertexSelection, selection)
+    }
+
+    func testVertexTranslateFailedBeginIsSideEffectFree() throws {
+        let model = WorkspaceModel(vertexTranslateFailureInjector: .init { $0 == .sourceSnapshot })
+        model.setInteractionMode(.vertexSelect)
+        model.selectAllVertices()
+        let mesh = model.mesh
+        let transform = model.objectTransform
+        let camera = model.camera
+        let selection = model.vertexSelection
+        let generation = model.projectMutationGeneration
+        let history = (model.undoCount, model.redoCount)
+        let project = try model.projectData()
+        let status = model.status
+        let ray = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3(0, 0, -1))
+
+        XCTAssertFalse(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: ray, cameraDirection: SIMD3(0, 0, -1)))
+        XCTAssertEqual(model.mesh, mesh)
+        XCTAssertEqual(model.objectTransform, transform)
+        XCTAssertEqual(model.camera, camera)
+        XCTAssertEqual(model.vertexSelection, selection)
+        XCTAssertEqual(model.projectMutationGeneration, generation)
+        XCTAssertEqual((model.undoCount, model.redoCount).0, history.0)
+        XCTAssertEqual((model.undoCount, model.redoCount).1, history.1)
+        XCTAssertEqual(try model.projectData(), project)
+        XCTAssertEqual(model.status, status)
+        XCTAssertFalse(model.isGizmoDragging)
+        XCTAssertNil(model.vertexTranslatePreviewMesh)
+    }
+
+    func testVertexTranslateCandidateFailureCancelsAndCanRetry() {
+        var remainingFailures = 1
+        let model = WorkspaceModel(vertexTranslateFailureInjector: .init { point in
+            guard point == .candidateValidation, remainingFailures > 0 else { return false }
+            remainingFailures -= 1
+            return true
+        })
+        model.setInteractionMode(.vertexSelect)
+        model.selectAllVertices()
+        let original = model.mesh
+        let start = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3(0, 0, -1))
+        let end = Ray(origin: SIMD3<Float>(0.8, 0.6, 5), direction: SIMD3(0, 0, -1))
+
+        XCTAssertTrue(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: start, cameraDirection: SIMD3(0, 0, -1)))
+        model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0, 0, -1))
+        XCTAssertFalse(model.isGizmoDragging)
+        XCTAssertNil(model.vertexTranslatePreviewMesh)
+        XCTAssertEqual(model.mesh, original)
+        XCTAssertEqual(model.undoCount, 0)
+
+        XCTAssertTrue(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: start, cameraDirection: SIMD3(0, 0, -1)))
+        model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0, 0, -1))
+        XCTAssertNotNil(model.vertexTranslatePreviewMesh)
+        model.cancelTranslationGizmoDrag()
+        XCTAssertFalse(model.isGizmoDragging)
+        XCTAssertEqual(model.mesh, original)
+    }
+
+    func testVertexTranslateTransactionBindsSessionGenerationAndSelectionVersion() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        XCTAssertTrue(try selection.apply(.add, vertexID: 0))
+        let session = UUID()
+        let generation = MutationGeneration(value: 7, overflowIdentity: UUID())
+        let transaction = try VertexTranslateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            projectSessionID: session, projectGeneration: generation)
+        XCTAssertTrue(transaction.matches(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            projectSessionID: session, projectGeneration: generation))
+        XCTAssertFalse(transaction.matches(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            projectSessionID: UUID(), projectGeneration: generation))
+        var newer = generation
+        newer.advance()
+        XCTAssertFalse(transaction.matches(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            projectSessionID: session, projectGeneration: newer))
     }
 
     func testWorkspaceVertexTranslateNoOpDoesNotRecordHistory() {

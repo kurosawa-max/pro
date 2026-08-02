@@ -405,6 +405,11 @@ struct VertexTranslateTransaction: Equatable {
     let topologyRevision: UInt64
     let topologyFingerprint: UInt64
     let sourceVertexRevision: UInt64
+    let sourceVertexCount: Int
+    let sourceIndexCount: Int
+    let selectionVersion: VertexSelectionVersion
+    private(set) var projectSessionID: UUID
+    private(set) var projectGeneration: MutationGeneration
     let vertexIDs: [MeshVertexID]
     let startPositions: [SIMD3<Float>]
     let pivotLocal: SIMD3<Float>
@@ -418,19 +423,36 @@ struct VertexTranslateTransaction: Equatable {
         self.localDelta = localDelta
     }
 
+    mutating func rebind(projectSessionID: UUID, projectGeneration: MutationGeneration) {
+        self.projectSessionID = projectSessionID
+        self.projectGeneration = projectGeneration
+    }
+
     func matches(mesh: EditableMesh, table: MeshVertexTopologyTable,
-                 selection: VertexSelection, transform: ObjectTransform) -> Bool {
+                 selection: VertexSelection, transform: ObjectTransform,
+                 projectSessionID: UUID, projectGeneration: MutationGeneration) -> Bool {
         topologyID == mesh.runtime.topologyID
             && topologyRevision == mesh.runtime.topologyRevision
             && topologyFingerprint == table.fingerprint
             && sourceVertexRevision == mesh.runtime.revision
+            && sourceVertexCount == mesh.vertices.count
+            && sourceIndexCount == mesh.indices.count
             && table.sourceTopologyID == mesh.runtime.topologyID
             && table.sourceTopologyRevision == mesh.runtime.topologyRevision
             && table.sourceVertexCount == mesh.vertices.count
             && table.sourceIndexCount == mesh.indices.count
             && selection.matches(table)
+            && selectionVersion == selection.version
             && vertexIDs == selection.selectedVertexIDs()
             && self.transform == transform.sanitized()
+            && self.projectSessionID == projectSessionID
+            && self.projectGeneration == projectGeneration
+    }
+
+    func matches(mesh: EditableMesh, table: MeshVertexTopologyTable,
+                 selection: VertexSelection, transform: ObjectTransform) -> Bool {
+        matches(mesh: mesh, table: table, selection: selection, transform: transform,
+                projectSessionID: projectSessionID, projectGeneration: projectGeneration)
     }
 }
 
@@ -441,6 +463,7 @@ enum VertexTranslateError: Error, Equatable, LocalizedError {
     case nonFiniteDelta
     case workingMemoryLimitExceeded
     case allocationOverflow
+    case preparationFailed
 
     var errorDescription: String? {
         switch self {
@@ -450,7 +473,25 @@ enum VertexTranslateError: Error, Equatable, LocalizedError {
         case .nonFiniteDelta: "The requested move is outside the supported numeric range."
         case .workingMemoryLimitExceeded: "The move would exceed the working-memory limit."
         case .allocationOverflow: "The move size calculation overflowed."
+        case .preparationFailed: "The selected vertex move could not be prepared safely."
         }
+    }
+}
+
+enum VertexTranslateFailurePoint: Hashable {
+    case sourceSnapshot
+    case selectedPositionCopy
+    case candidateAllocation
+    case candidateValidation
+    case normalRebuild
+    case rendererPreparation
+}
+
+struct VertexTranslateFailureInjector {
+    let shouldFail: (VertexTranslateFailurePoint) -> Bool
+
+    init(shouldFail: @escaping (VertexTranslateFailurePoint) -> Bool = { _ in false }) {
+        self.shouldFail = shouldFail
     }
 }
 
@@ -460,13 +501,18 @@ enum VertexTranslateGeometry {
     static func begin(
         mesh: EditableMesh, table: MeshVertexTopologyTable,
         selection: VertexSelection, transform: ObjectTransform,
-        transactionID: UUID = UUID(), memoryLimit: Int = maximumWorkingBytes
+        projectSessionID: UUID = UUID(), projectGeneration: MutationGeneration = MutationGeneration(),
+        transactionID: UUID = UUID(), memoryLimit: Int = maximumWorkingBytes,
+        failureInjector: VertexTranslateFailureInjector = VertexTranslateFailureInjector()
     ) throws -> VertexTranslateTransaction {
         guard table.matches(mesh), selection.matches(table) else {
             throw VertexTranslateError.staleSource
         }
         let ids = selection.selectedVertexIDs()
         guard !ids.isEmpty else { throw VertexTranslateError.emptySelection }
+        guard !failureInjector.shouldFail(.selectedPositionCopy) else {
+            throw VertexTranslateError.preparationFailed
+        }
         let estimate = try estimatedPeakBytes(
             vertexCount: mesh.vertices.count, indexCount: mesh.indices.count,
             selectedCount: ids.count)
@@ -494,7 +540,10 @@ enum VertexTranslateGeometry {
             id: transactionID, topologyID: mesh.runtime.topologyID,
             topologyRevision: mesh.runtime.topologyRevision,
             topologyFingerprint: table.fingerprint,
-            sourceVertexRevision: mesh.runtime.revision, vertexIDs: ids,
+            sourceVertexRevision: mesh.runtime.revision,
+            sourceVertexCount: mesh.vertices.count, sourceIndexCount: mesh.indices.count,
+            selectionVersion: selection.version, projectSessionID: projectSessionID,
+            projectGeneration: projectGeneration, vertexIDs: ids,
             startPositions: positions, pivotLocal: pivotLocal, pivotWorld: pivotWorld,
             transform: safeTransform)
     }
@@ -526,7 +575,8 @@ enum VertexTranslateGeometry {
 
     static func candidate(
         sourceMesh: EditableMesh, transaction: inout VertexTranslateTransaction,
-        worldDelta: SIMD3<Float>, profiler: PerformanceProfiler? = nil
+        worldDelta: SIMD3<Float>, profiler: PerformanceProfiler? = nil,
+        failureInjector: VertexTranslateFailureInjector = VertexTranslateFailureInjector()
     ) throws -> EditableMesh? {
         guard worldDelta.allFinite else { throw VertexTranslateError.nonFiniteDelta }
         let transformed = transaction.transform.inverseModelMatrix * SIMD4<Float>(worldDelta, 0)
@@ -540,6 +590,9 @@ enum VertexTranslateGeometry {
               transaction.vertexIDs.count == transaction.startPositions.count else {
             throw VertexTranslateError.staleSource
         }
+        guard !failureInjector.shouldFail(.candidateAllocation) else {
+            throw VertexTranslateError.preparationFailed
+        }
         var updates: [Int: SIMD3<Float>] = [:]
         updates.reserveCapacity(transaction.vertexIDs.count)
         for (offset, id) in transaction.vertexIDs.enumerated() {
@@ -549,6 +602,11 @@ enum VertexTranslateGeometry {
         }
         var candidate = sourceMesh
         let mutations = candidate.updatePositions(updates, profiler: profiler)
+        guard !failureInjector.shouldFail(.normalRebuild),
+              !failureInjector.shouldFail(.candidateValidation),
+              !failureInjector.shouldFail(.rendererPreparation) else {
+            throw VertexTranslateError.preparationFailed
+        }
         guard mutations.isEmpty || mutations.count == updates.count else {
             throw VertexTranslateError.staleSource
         }

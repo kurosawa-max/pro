@@ -17,7 +17,9 @@ The gizmo produces a world-space delta. The inverse model matrix converts the de
 A drag transaction captures:
 
 - a runtime transaction identity;
-- topology ID, topology revision, topology fingerprint, and source vertex revision;
+- project session identity and the non-rewinding project generation;
+- topology ID, topology revision, topology fingerprint, source vertex revision, and source counts;
+- the exact Vertex Selection version;
 - sorted selected vertex IDs and their start positions;
 - sanitized `ObjectTransform`;
 - local and world pivot;
@@ -25,13 +27,17 @@ A drag transaction captures:
 
 Every preview position is reconstructed from `startPosition + currentLocalDelta`. Updates never accumulate a frame delta. The preview is a separate `EditableMesh`; the committed Workspace mesh, serialized project, history, dirty generation, Autosave, Recovery, and STL output remain unchanged until drag end.
 
+Drag start has a read-only prepared phase. It validates the runtime source, copies the source snapshot and selected positions, checks the memory limit, and constructs the gizmo constraint session before ending a conflicting Sculpt stroke or Transform-panel transaction. A failed prepared phase changes no Workspace or UI state. Only the fully prepared request may enter the nonthrowing state-install phase.
+
 Cancel, mode change, input suppression, modal interruption, or a stale source discards the preview. A zero-distance drag records no history entry.
 
 ## Commit, Undo, and runtime caches
 
-A successful drag end installs the validated preview and records one vertex-change command in the unified Workspace history. Undo and Redo restore the selected positions in chronological order with Sculpt and Transform commands. A commit preserves topology ID, topology revision, indices, `ObjectTransform`, camera, and Vertex Selection.
+A successful drag end prepares the Picking BVH before installing the validated preview and records one dedicated `VertexTranslateCommand` in the unified Workspace history. Undo and Redo restore the selected positions in chronological order with Sculpt and Transform commands. A commit preserves topology ID, topology revision, indices, `ObjectTransform`, camera, and Vertex Selection.
 
-`EditableMesh.updatePositions` recalculates affected normals and advances only vertex revision. The vertex spatial index receives the mutations. Picking BVH uses its existing vertex-revision refit path. The renderer observes the new vertex revision and updates the vertex buffer; unchanged topology prevents an index-buffer upload. Selection ID buffers remain keyed to the unchanged selection and topology.
+`EditableMesh.updatePositions` recalculates affected normals and advances only vertex revision. The vertex spatial index receives the mutations. Preview Picking uses an isolated BVH cache, while commit prepares and installs the committed BVH before Workspace mutation. The renderer observes the new vertex revision and updates the vertex buffer; unchanged topology prevents an index-buffer upload. Selection ID buffers remain keyed to the unchanged selection and topology.
+
+Explicit cancel and stale-source cancellation restore the raw hover captured at drag start. Commit clears that hover so the next pointer sample can evaluate the committed geometry. Preparation and candidate failure points are injectable in tests; a failed candidate is discarded without changing project content and a subsequent drag can retry.
 
 ## Memory and limits
 

@@ -17,6 +17,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify checked-out CI revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "event=$GITHUB_EVENT_NAME"
+          echo "ref=$GITHUB_REF"
+          echo "sha=$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            [[ "$GITHUB_REF" =~ ^refs/pull/[0-9]+/merge$ ]]
+          fi
+          xcodebuild -version
+
       - name: Select and boot compatible iPad Simulator
         shell: bash
         run: |
