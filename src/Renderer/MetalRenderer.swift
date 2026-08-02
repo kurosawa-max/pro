@@ -11,6 +11,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private let scaleGizmoRenderer: ScaleGizmoRenderer
     private let faceSelectionOverlayRenderer: FaceSelectionOverlayRenderer
     private let edgeSelectionOverlayRenderer: EdgeSelectionOverlayRenderer
+    private let vertexSelectionOverlayRenderer: VertexSelectionOverlayRenderer
     private let diagnosticsOverlayRenderer: MeshDiagnosticsOverlayRenderer
     private let profiler: PerformanceProfiler?
     private var depthState: MTLDepthStencilState
@@ -29,13 +30,16 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     var showsTranslationGizmo = true
     var showsFaceSelection = false
     var showsEdgeSelection = false
+    var showsVertexSelection = false
     var diagnosticsOverlayOptions = MeshDiagnosticsOverlayOptions()
     private(set) var gizmoWorldScale: Float = 1
     private(set) var viewProjection = matrix_identity_float4x4
 
     init?(view: MTKView, profiler: PerformanceProfiler?,
           faceSelectionBufferAllocator: FaceSelectionIndexBufferAllocating = MetalFaceSelectionIndexBufferAllocator(),
-          edgeSelectionBufferAllocator: EdgeSelectionPairBufferAllocating = MetalEdgeSelectionPairBufferAllocator()) {
+          edgeSelectionBufferAllocator: EdgeSelectionPairBufferAllocating = MetalEdgeSelectionPairBufferAllocator(),
+          vertexSelectionBufferAllocator: VertexSelectionIDBufferAllocating = MetalVertexSelectionIDBufferAllocator(),
+          vertexSelectionMemoryLimit: Int = MeshVertexTopologyTable.maximumWorkingBytes) {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { return nil }
         self.device = device; self.queue = queue; self.profiler = profiler
         view.device = device; view.depthStencilPixelFormat = .depth32Float; view.colorPixelFormat = .bgra8Unorm_srgb
@@ -65,6 +69,11 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
                 device: device, library: library, colorPixelFormat: view.colorPixelFormat,
                 depthPixelFormat: view.depthStencilPixelFormat,
                 allocator: edgeSelectionBufferAllocator),
+              let vertexSelectionOverlayRenderer = VertexSelectionOverlayRenderer(
+                device: device, library: library, colorPixelFormat: view.colorPixelFormat,
+                depthPixelFormat: view.depthStencilPixelFormat,
+                allocator: vertexSelectionBufferAllocator,
+                memoryLimit: vertexSelectionMemoryLimit),
               let diagnosticsOverlayRenderer = MeshDiagnosticsOverlayRenderer(
                 device: device, library: library, colorPixelFormat: view.colorPixelFormat,
                 depthPixelFormat: view.depthStencilPixelFormat) else { return nil }
@@ -74,6 +83,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         self.scaleGizmoRenderer = scaleGizmoRenderer
         self.faceSelectionOverlayRenderer = faceSelectionOverlayRenderer
         self.edgeSelectionOverlayRenderer = edgeSelectionOverlayRenderer
+        self.vertexSelectionOverlayRenderer = vertexSelectionOverlayRenderer
         self.diagnosticsOverlayRenderer = diagnosticsOverlayRenderer
         let depth = MTLDepthStencilDescriptor(); depth.isDepthWriteEnabled = true; depth.depthCompareFunction = .less
         guard let depthState = device.makeDepthStencilState(descriptor: depth) else { return nil }
@@ -134,6 +144,14 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             drawableSizePixels: drawableSizePixels, displayScale: displayScale)
     }
 
+    func updateVertexSelection(
+        mesh: EditableMesh, table: MeshVertexTopologyTable?, selection: VertexSelection,
+        hover: VertexHoverState
+    ) -> VertexSelectionOverlayUpdateSummary {
+        vertexSelectionOverlayRenderer.update(
+            mesh: mesh, table: table, selection: selection, hover: hover)
+    }
+
     private func makeOrReuse(buffer: MTLBuffer?, requiredLength: Int) -> MTLBuffer? {
         guard requiredLength > 0 else { return nil }
         if let buffer, buffer.length >= requiredLength { return buffer }
@@ -190,6 +208,12 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
                     Float(view.drawableSize.width), Float(view.drawableSize.height)),
                 displayScale: Float(view.contentScaleFactor))
         }
+        if showsVertexSelection {
+            vertexSelectionOverlayRenderer.encode(
+                encoder: encoder, vertexBuffer: vertexBuffer,
+                viewProjection: viewProjection, model: objectTransform.modelMatrix,
+                displayScale: Float(view.contentScaleFactor))
+        }
         diagnosticsOverlayRenderer.encode(encoder: encoder, viewProjection: viewProjection,
                                           model: objectTransform.modelMatrix,
                                           options: diagnosticsOverlayOptions)
@@ -244,7 +268,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     }
 
     static let drawOrder: [RendererDrawLayer] = [
-        .mesh, .faceSelection, .edgeSelection, .diagnostics, .gizmo
+        .mesh, .faceSelection, .edgeSelection, .vertexSelection, .diagnostics, .gizmo
     ]
 
     #if DEBUG
@@ -291,6 +315,12 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     var edgeSelectionOverlayHoverUploadedKey: EdgeHoverOverlayCacheKey? {
         edgeSelectionOverlayRenderer.hoverUploadedKey
     }
+    var vertexSelectionOverlaySelectedUploadCount: Int { vertexSelectionOverlayRenderer.selectedUploadCount }
+    var vertexSelectionOverlayHoverUploadCount: Int { vertexSelectionOverlayRenderer.hoverUploadCount }
+    var vertexSelectionOverlaySelectedCount: Int { vertexSelectionOverlayRenderer.selectedCount }
+    var vertexSelectionOverlayHoverCount: Int { vertexSelectionOverlayRenderer.hoverCount }
+    var vertexSelectionOverlayHasSelectedBuffer: Bool { vertexSelectionOverlayRenderer.hasSelectedBuffer }
+    var vertexSelectionOverlayHasHoverBuffer: Bool { vertexSelectionOverlayRenderer.hasHoverBuffer }
     #endif
 }
 
@@ -298,6 +328,7 @@ enum RendererDrawLayer: Equatable {
     case mesh
     case faceSelection
     case edgeSelection
+    case vertexSelection
     case diagnostics
     case gizmo
 }

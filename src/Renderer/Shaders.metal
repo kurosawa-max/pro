@@ -113,6 +113,35 @@ fragment float4 edgeSelectionFragment(EdgeSelectionVertexOut in [[stage_in]]) {
     return in.color;
 }
 
+struct VertexSelectionUniforms {
+    float4x4 viewProjection;
+    float4x4 model;
+    float pointSize;
+    float4 color;
+};
+struct VertexSelectionVertexOut {
+    float4 position [[position]];
+    float4 color;
+    float pointSize [[point_size]];
+};
+
+vertex VertexSelectionVertexOut vertexSelectionVertex(
+    uint instanceID [[vertex_id]],
+    constant MeshVertex *vertices [[buffer(0)]],
+    constant uint *vertexIDs [[buffer(1)]],
+    constant VertexSelectionUniforms &uniforms [[buffer(2)]]) {
+    VertexSelectionVertexOut out;
+    uint vertexID = vertexIDs[instanceID];
+    out.position = uniforms.viewProjection * uniforms.model * float4(vertices[vertexID].position, 1.0);
+    out.color = uniforms.color;
+    out.pointSize = uniforms.pointSize;
+    return out;
+}
+
+fragment float4 vertexSelectionFragment(VertexSelectionVertexOut in [[stage_in]]) {
+    return in.color;
+}
+
 struct GizmoVertex { float3 position; float4 color; int handle; };
 struct GizmoUniforms { float4x4 viewProjection; float3 origin; float scale; int hoverHandle; int activeHandle; };
 struct GizmoVertexOut { float4 position [[position]]; float4 color; };

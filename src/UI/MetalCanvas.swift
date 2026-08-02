@@ -36,8 +36,12 @@ struct MetalCanvas: UIViewRepresentable {
             mesh: model.mesh, table: model.meshEdgeTable,
             selection: model.edgeSelection, hoveredEdgeID: model.hoveredEdgeID,
             drawableSizePixels: view.drawableSize, displayScale: view.contentScaleFactor))
+        model.handleVertexSelectionOverlayUpdate(renderer.updateVertexSelection(
+            mesh: model.mesh, table: model.meshVertexTopologyTable,
+            selection: model.vertexSelection, hover: model.vertexHover))
         renderer.showsFaceSelection = model.interactionMode == .faceSelect
         renderer.showsEdgeSelection = model.interactionMode == .edgeSelect
+        renderer.showsVertexSelection = model.interactionMode == .vertexSelect
         return view
     }
 
@@ -66,8 +70,14 @@ struct MetalCanvas: UIViewRepresentable {
             drawableSizePixels: view.drawableSize, displayScale: view.contentScaleFactor) {
             model.handleEdgeSelectionOverlayUpdate(result)
         }
+        if let result = context.coordinator.renderer?.updateVertexSelection(
+            mesh: model.mesh, table: model.meshVertexTopologyTable,
+            selection: model.vertexSelection, hover: model.vertexHover) {
+            model.handleVertexSelectionOverlayUpdate(result)
+        }
         context.coordinator.renderer?.showsFaceSelection = model.interactionMode == .faceSelect
         context.coordinator.renderer?.showsEdgeSelection = model.interactionMode == .edgeSelect
+        context.coordinator.renderer?.showsVertexSelection = model.interactionMode == .vertexSelect
     }
 
     @MainActor final class Coordinator: NSObject, UIGestureRecognizerDelegate {
@@ -90,6 +100,7 @@ struct MetalCanvas: UIViewRepresentable {
             else { model.cancelStroke() }
             model.hoverLocation = nil
             model.clearEdgeHover()
+            model.clearVertexHover()
             updateGizmoHover(ray: nil, scale: 1)
         }
 
@@ -97,10 +108,14 @@ struct MetalCanvas: UIViewRepresentable {
             guard !isInputSuppressed else { return }
             guard let renderer, let ray = renderer.ray(at: sample.location, viewSize: view.bounds.size) else { return }
             if beginGizmoDrag(ray: ray, renderer: renderer) { return }
-            if model.interactionMode == .faceSelect || model.interactionMode == .edgeSelect {
-                guard model.interactionMode == .faceSelect
-                    ? model.isFaceSelectionInteractionEnabled
-                    : model.isEdgeSelectionInteractionEnabled else { return }
+            if model.interactionMode != .sculpt {
+                let enabled = switch model.interactionMode {
+                case .faceSelect: model.isFaceSelectionInteractionEnabled
+                case .edgeSelect: model.isEdgeSelectionInteractionEnabled
+                case .vertexSelect: model.isVertexSelectionInteractionEnabled
+                case .sculpt: false
+                }
+                guard enabled else { return }
                 faceSelectionTap.begin(sample)
                 return
             }
@@ -113,7 +128,7 @@ struct MetalCanvas: UIViewRepresentable {
                 guard let ray = renderer.ray(at: sample.location, viewSize: view.bounds.size) else { return }
                 updateGizmoDrag(ray: ray, renderer: renderer)
             } else if faceSelectionTap.isTracking {
-                if model.interactionMode == .faceSelect || model.interactionMode == .edgeSelect {
+                if model.interactionMode != .sculpt {
                     faceSelectionTap.update(sample)
                 }
                 else { faceSelectionTap.cancel() }
@@ -129,7 +144,7 @@ struct MetalCanvas: UIViewRepresentable {
                 faceSelectionTap.cancel()
                 endGizmoDrag()
             } else if faceSelectionTap.isTracking {
-                guard model.interactionMode == .faceSelect || model.interactionMode == .edgeSelect,
+                guard model.interactionMode != .sculpt,
                       let sample,
                       let point = faceSelectionTap.finish(sample, viewport: view.bounds),
                       let ray = renderer?.ray(at: point, viewSize: view.bounds.size) else {
@@ -138,8 +153,12 @@ struct MetalCanvas: UIViewRepresentable {
                 }
                 if model.interactionMode == .faceSelect {
                     _ = model.selectFace(fromWorldRay: ray)
-                } else if let renderer {
+                } else if model.interactionMode == .edgeSelect, let renderer {
                     _ = model.selectEdge(
+                        fromWorldRay: ray, screenPoint: point,
+                        viewportSize: view.bounds.size, viewProjection: renderer.viewProjection)
+                } else if let renderer {
+                    _ = model.selectVertex(
                         fromWorldRay: ray, screenPoint: point,
                         viewportSize: view.bounds.size, viewProjection: renderer.viewProjection)
                 }
@@ -158,12 +177,14 @@ struct MetalCanvas: UIViewRepresentable {
             guard !isInputSuppressed else {
                 model.hoverLocation = nil
                 model.clearEdgeHover()
+                model.clearVertexHover()
                 updateGizmoHover(ray: nil, scale: 1)
                 return
             }
             guard let point, let renderer, let ray = renderer.ray(at: point, viewSize: view.bounds.size) else {
                 model.hoverLocation = nil
                 model.clearEdgeHover()
+                model.clearVertexHover()
                 updateGizmoHover(ray: nil, scale: 1)
                 return
             }
@@ -183,9 +204,17 @@ struct MetalCanvas: UIViewRepresentable {
                     fromWorldRay: nil, screenPoint: nil, viewportSize: view.bounds.size,
                     viewProjection: renderer.viewProjection)
             }
+            if model.interactionMode == .vertexSelect, !hasHover {
+                model.updateVertexHover(
+                    fromWorldRay: ray, screenPoint: point, viewportSize: view.bounds.size,
+                    viewProjection: renderer.viewProjection)
+            } else if model.interactionMode == .vertexSelect {
+                model.clearVertexHover()
+            }
             model.hoverLocation = hasHover
                 || model.interactionMode == .faceSelect
-                || model.interactionMode == .edgeSelect ? nil : point
+                || model.interactionMode == .edgeSelect
+                || model.interactionMode == .vertexSelect ? nil : point
         }
 
         private func beginGizmoDrag(ray: Ray, renderer: MetalRenderer) -> Bool {
