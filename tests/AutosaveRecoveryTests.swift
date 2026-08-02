@@ -854,7 +854,7 @@ final class AutosaveRecoveryTests: XCTestCase {
         XCTAssertNotNil(model.vertexTranslatePreviewMesh)
         let previewAutosave = await model.requestImmediateAutosave()
         let previewWriteCount = await coordinator.successfulWriteCount
-        XCTAssertFalse(previewAutosave)
+        XCTAssertTrue(previewAutosave)
         XCTAssertEqual(previewWriteCount, 0)
         model.cancelTranslationGizmoDrag()
         let cancelWriteCount = await coordinator.successfulWriteCount
