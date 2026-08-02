@@ -833,6 +833,59 @@ final class AutosaveRecoveryTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testSelectedVertexTranslateAutosavePreviewCancelCommitUndoRedoOrdering() async throws {
+        let environment = try makeStorageEnvironment()
+        defer { environment.cleanup() }
+        let scheduler = ManualAutosaveDelayScheduler()
+        let coordinator = ProjectAutosaveCoordinator(
+            storage: environment.storage, scheduler: scheduler)
+        let model = WorkspaceModel(autosaveCoordinator: coordinator)
+        await model.inspectRecoveryOnLaunch()
+        model.setInteractionMode(.vertexSelect)
+        model.selectAllVertices()
+        let original = model.mesh
+        let start = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))
+        let end = Ray(origin: SIMD3<Float>(0.8, 0.6, 5), direction: SIMD3<Float>(0, 0, -1))
+
+        XCTAssertTrue(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: start, cameraDirection: SIMD3(0, 0, -1)))
+        model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0, 0, -1))
+        XCTAssertNotNil(model.vertexTranslatePreviewMesh)
+        let previewAutosave = await model.requestImmediateAutosave()
+        let previewWriteCount = await coordinator.successfulWriteCount
+        XCTAssertFalse(previewAutosave)
+        XCTAssertEqual(previewWriteCount, 0)
+        model.cancelTranslationGizmoDrag()
+        let cancelWriteCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(cancelWriteCount, 0)
+
+        XCTAssertTrue(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: start, cameraDirection: SIMD3(0, 0, -1)))
+        model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0, 0, -1))
+        model.endTranslationGizmoDrag()
+        let committed = model.mesh
+        await waitUntil { await scheduler.waiterCount == 1 }
+        await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 1 }
+        let committedRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(committedRecovery, committed)
+
+        model.undo()
+        await waitUntil { await scheduler.waiterCount == 1 }
+        await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 2 }
+        let undoRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(undoRecovery, original)
+
+        model.redo()
+        await waitUntil { await scheduler.waiterCount == 1 }
+        await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 3 }
+        let redoRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(redoRecovery, committed)
+    }
+
     private func makeSnapshot(name: String, sessionID: UUID = UUID(), capturedAt: Date = Date(),
                               translation: SIMD3<Float> = .zero) throws -> ProjectAutosaveSnapshot {
         let project = ForgeProject(mesh: try PrimitiveMeshBuilder.cube(size: 20),

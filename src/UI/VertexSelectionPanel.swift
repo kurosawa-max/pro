@@ -33,11 +33,17 @@ struct VertexSelectionPanel: View {
                     .font(.caption2)
                 Text("Picks a vertex of the nearest visible triangle within 16 points. Runtime only; topology changes clear selection.")
                     .font(.caption2)
+                Text("In Move mode, drag the world-space gizmo to preview and commit one non-topology vertex move. Cancel leaves the project unchanged.")
+                    .font(.caption2)
                 Text(hoverDescription).font(.caption2)
                     .accessibilityLabel(hoverDescription)
                 if let error = model.vertexSelectionError {
                     Text(error).foregroundStyle(.red)
                         .accessibilityLabel("Vertex selection error: \(error)")
+                }
+                if let error = model.vertexTranslateError {
+                    Text(error).foregroundStyle(.red)
+                        .accessibilityLabel("Selected vertex move error: \(error)")
                 }
             }
             .padding(10)

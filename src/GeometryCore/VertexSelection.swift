@@ -398,3 +398,188 @@ enum VertexSelectionError: Error, Equatable, LocalizedError {
         }
     }
 }
+
+struct VertexTranslateTransaction: Equatable {
+    let id: UUID
+    let topologyID: UUID
+    let topologyRevision: UInt64
+    let topologyFingerprint: UInt64
+    let sourceVertexRevision: UInt64
+    let vertexIDs: [MeshVertexID]
+    let startPositions: [SIMD3<Float>]
+    let pivotLocal: SIMD3<Float>
+    let pivotWorld: SIMD3<Float>
+    let transform: ObjectTransform
+    private(set) var worldDelta: SIMD3<Float> = .zero
+    private(set) var localDelta: SIMD3<Float> = .zero
+
+    mutating func update(worldDelta: SIMD3<Float>, localDelta: SIMD3<Float>) {
+        self.worldDelta = worldDelta
+        self.localDelta = localDelta
+    }
+
+    func matches(mesh: EditableMesh, table: MeshVertexTopologyTable,
+                 selection: VertexSelection, transform: ObjectTransform) -> Bool {
+        topologyID == mesh.runtime.topologyID
+            && topologyRevision == mesh.runtime.topologyRevision
+            && topologyFingerprint == table.fingerprint
+            && sourceVertexRevision == mesh.runtime.revision
+            && table.sourceTopologyID == mesh.runtime.topologyID
+            && table.sourceTopologyRevision == mesh.runtime.topologyRevision
+            && table.sourceVertexCount == mesh.vertices.count
+            && table.sourceIndexCount == mesh.indices.count
+            && selection.matches(table)
+            && vertexIDs == selection.selectedVertexIDs()
+            && self.transform == transform.sanitized()
+    }
+}
+
+enum VertexTranslateError: Error, Equatable, LocalizedError {
+    case emptySelection
+    case staleSource
+    case invalidTransform
+    case nonFiniteDelta
+    case workingMemoryLimitExceeded
+    case allocationOverflow
+
+    var errorDescription: String? {
+        switch self {
+        case .emptySelection: "Select at least one vertex before moving."
+        case .staleSource: "The selected vertices changed before the move completed."
+        case .invalidTransform: "The object transform cannot be inverted safely."
+        case .nonFiniteDelta: "The requested move is outside the supported numeric range."
+        case .workingMemoryLimitExceeded: "The move would exceed the working-memory limit."
+        case .allocationOverflow: "The move size calculation overflowed."
+        }
+    }
+}
+
+enum VertexTranslateGeometry {
+    static let maximumWorkingBytes = 768 * 1_024 * 1_024
+
+    static func begin(
+        mesh: EditableMesh, table: MeshVertexTopologyTable,
+        selection: VertexSelection, transform: ObjectTransform,
+        transactionID: UUID = UUID(), memoryLimit: Int = maximumWorkingBytes
+    ) throws -> VertexTranslateTransaction {
+        guard table.matches(mesh), selection.matches(table) else {
+            throw VertexTranslateError.staleSource
+        }
+        let ids = selection.selectedVertexIDs()
+        guard !ids.isEmpty else { throw VertexTranslateError.emptySelection }
+        let estimate = try estimatedPeakBytes(
+            vertexCount: mesh.vertices.count, indexCount: mesh.indices.count,
+            selectedCount: ids.count)
+        guard estimate <= memoryLimit else { throw VertexTranslateError.workingMemoryLimitExceeded }
+        var minimum = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var maximum = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        var positions: [SIMD3<Float>] = []
+        positions.reserveCapacity(ids.count)
+        for id in ids {
+            guard Int(id) < mesh.vertices.count else { throw VertexTranslateError.staleSource }
+            let position = mesh.vertices[Int(id)].position
+            guard position.allFinite else { throw VertexTranslateError.staleSource }
+            minimum = simd_min(minimum, position)
+            maximum = simd_max(maximum, position)
+            positions.append(position)
+        }
+        let safeTransform = transform.sanitized()
+        let pivotLocal = (minimum + maximum) * 0.5
+        let pivotWorld = safeTransform.worldPosition(fromLocal: pivotLocal)
+        guard safeTransform.isFinite, pivotLocal.allFinite, pivotWorld.allFinite,
+              matrixIsFinite(safeTransform.inverseModelMatrix) else {
+            throw VertexTranslateError.invalidTransform
+        }
+        return VertexTranslateTransaction(
+            id: transactionID, topologyID: mesh.runtime.topologyID,
+            topologyRevision: mesh.runtime.topologyRevision,
+            topologyFingerprint: table.fingerprint,
+            sourceVertexRevision: mesh.runtime.revision, vertexIDs: ids,
+            startPositions: positions, pivotLocal: pivotLocal, pivotWorld: pivotWorld,
+            transform: safeTransform)
+    }
+
+    static func pivot(
+        mesh: EditableMesh, table: MeshVertexTopologyTable,
+        selection: VertexSelection, transform: ObjectTransform
+    ) throws -> (local: SIMD3<Float>, world: SIMD3<Float>) {
+        guard table.matches(mesh), selection.matches(table) else {
+            throw VertexTranslateError.staleSource
+        }
+        let ids = selection.selectedVertexIDs()
+        guard !ids.isEmpty else { throw VertexTranslateError.emptySelection }
+        var minimum = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var maximum = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        for id in ids {
+            guard Int(id) < mesh.vertices.count else { throw VertexTranslateError.staleSource }
+            let position = mesh.vertices[Int(id)].position
+            guard position.allFinite else { throw VertexTranslateError.staleSource }
+            minimum = simd_min(minimum, position)
+            maximum = simd_max(maximum, position)
+        }
+        let local = (minimum + maximum) * 0.5
+        let safeTransform = transform.sanitized()
+        let world = safeTransform.worldPosition(fromLocal: local)
+        guard local.allFinite, world.allFinite else { throw VertexTranslateError.invalidTransform }
+        return (local, world)
+    }
+
+    static func candidate(
+        sourceMesh: EditableMesh, transaction: inout VertexTranslateTransaction,
+        worldDelta: SIMD3<Float>, profiler: PerformanceProfiler? = nil
+    ) throws -> EditableMesh? {
+        guard worldDelta.allFinite else { throw VertexTranslateError.nonFiniteDelta }
+        let transformed = transaction.transform.inverseModelMatrix * SIMD4<Float>(worldDelta, 0)
+        let localDelta = SIMD3<Float>(transformed.x, transformed.y, transformed.z)
+        guard transformed.w.isFinite, abs(transformed.w) <= 0.000_01,
+              localDelta.allFinite else { throw VertexTranslateError.nonFiniteDelta }
+        transaction.update(worldDelta: worldDelta, localDelta: localDelta)
+        guard localDelta != .zero else { return nil }
+        guard transaction.topologyID == sourceMesh.runtime.topologyID,
+              transaction.topologyRevision == sourceMesh.runtime.topologyRevision,
+              transaction.vertexIDs.count == transaction.startPositions.count else {
+            throw VertexTranslateError.staleSource
+        }
+        var updates: [Int: SIMD3<Float>] = [:]
+        updates.reserveCapacity(transaction.vertexIDs.count)
+        for (offset, id) in transaction.vertexIDs.enumerated() {
+            let value = transaction.startPositions[offset] + localDelta
+            guard value.allFinite else { throw VertexTranslateError.nonFiniteDelta }
+            updates[Int(id)] = value
+        }
+        var candidate = sourceMesh
+        let mutations = candidate.updatePositions(updates, profiler: profiler)
+        guard mutations.isEmpty || mutations.count == updates.count else {
+            throw VertexTranslateError.staleSource
+        }
+        return candidate
+    }
+
+    static func estimatedPeakBytes(
+        vertexCount: Int, indexCount: Int, selectedCount: Int
+    ) throws -> Int {
+        guard vertexCount >= 0, indexCount >= 0, selectedCount >= 0 else {
+            throw VertexTranslateError.allocationOverflow
+        }
+        var bytes = 0
+        func add(_ count: Int, _ stride: Int) throws {
+            let (part, firstOverflow) = count.multipliedReportingOverflow(by: stride)
+            let (total, secondOverflow) = bytes.addingReportingOverflow(part)
+            guard !firstOverflow, !secondOverflow else { throw VertexTranslateError.allocationOverflow }
+            bytes = total
+        }
+        // Source and preview vertex/index storage plus selection snapshots and update staging.
+        try add(vertexCount, MemoryLayout<MeshVertex>.stride * 2)
+        try add(indexCount, MemoryLayout<UInt32>.stride * 2)
+        try add(selectedCount, MemoryLayout<MeshVertexID>.stride)
+        try add(selectedCount, MemoryLayout<SIMD3<Float>>.stride * 2)
+        try add(selectedCount, 64)
+        return bytes
+    }
+
+    private static func matrixIsFinite(_ matrix: simd_float4x4) -> Bool {
+        (0..<4).allSatisfy { column in
+            (0..<4).allSatisfy { matrix[column][$0].isFinite }
+        }
+    }
+}

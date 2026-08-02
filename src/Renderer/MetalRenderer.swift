@@ -23,6 +23,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private var uploadedTopologyRevision: UInt64?
     var camera = CameraState()
     var objectTransform = ObjectTransform.identity
+    var gizmoOriginOverride: SIMD3<Float>?
     var gizmoState = TranslationGizmoState()
     var rotationGizmoState = RotationGizmoState()
     var scaleGizmoState = ScaleGizmoState()
@@ -218,10 +219,11 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
                                           model: objectTransform.modelMatrix,
                                           options: diagnosticsOverlayOptions)
         if showsTranslationGizmo {
+            let gizmoOrigin = gizmoOriginOverride ?? objectTransform.translation
             switch gizmoMode {
             case .translate:
                 gizmoRenderer.encode(encoder: encoder, viewProjection: viewProjection,
-                                     origin: objectTransform.translation, scale: gizmoWorldScale, state: gizmoState)
+                                     origin: gizmoOrigin, scale: gizmoWorldScale, state: gizmoState)
             case .rotate:
                 rotationGizmoRenderer.encode(encoder: encoder, viewProjection: viewProjection,
                                              origin: objectTransform.translation, scale: gizmoWorldScale,
@@ -255,7 +257,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         let projection = float4x4.perspective(fovY: 45 * .pi / 180, aspect: aspect, near: near, far: far)
         let cp = cos(camera.pitch), eye = camera.target + SIMD3<Float>(sin(camera.yaw) * cp, sin(camera.pitch), cos(camera.yaw) * cp) * camera.distance
         viewProjection = projection * float4x4.lookAt(eye: eye, center: camera.target, up: SIMD3<Float>(0, 1, 0))
-        let distance = simd_length(eye - objectTransform.translation)
+        let distance = simd_length(eye - (gizmoOriginOverride ?? objectTransform.translation))
         gizmoWorldScale = TranslationGizmoGeometry.worldScale(cameraDistance: distance,
                                                                viewportHeight: Float(size.height),
                                                                fovYRadians: 45 * .pi / 180)
