@@ -27,7 +27,9 @@ A drag transaction captures:
 
 Every preview position is reconstructed from `startPosition + currentLocalDelta`. Updates never accumulate a frame delta. The preview is a separate `EditableMesh`; the committed Workspace mesh, serialized project, history, dirty generation, Autosave, Recovery, and STL output remain unchanged until drag end.
 
-Drag start has a read-only prepared phase. It validates the runtime source, copies the source snapshot and selected positions, checks the memory limit, and constructs the gizmo constraint session before ending a conflicting Sculpt stroke or Transform-panel transaction. A failed prepared phase changes no Workspace or UI state. Only the fully prepared request may enter the nonthrowing state-install phase.
+Drag start has a read-only prepared phase. It projects the mesh revision, transform, history generation, and project generation that will exist after conflicting Sculpt, Transform-panel, and ordinary Translation Gizmo sessions are formally ended. It then validates the projected runtime source, copies selected positions, checks the memory limit, binds the final project/session identity, and constructs the final gizmo constraint session. A late preparation failure changes no Workspace or UI state.
+
+After preparation succeeds, `commitPreparedVertexTranslateDrag` is nonthrowing. It ends those conflicts, checks projected values only as internal invariants, and installs the already-complete transaction and gizmo session. It performs no recoverable validation, rebinding, snapshot creation, failure injection, or failed-begin return after conflict resolution starts.
 
 Cancel, mode change, input suppression, modal interruption, or a stale source discards the preview. A zero-distance drag records no history entry.
 

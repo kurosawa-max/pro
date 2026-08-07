@@ -886,6 +886,39 @@ final class AutosaveRecoveryTests: XCTestCase {
         XCTAssertEqual(redoRecovery, committed)
     }
 
+    @MainActor
+    func testSelectedVertexTranslateLateBeginFailureSchedulesNoAutosaveOrRecovery() async throws {
+        let environment = try makeStorageEnvironment()
+        defer { environment.cleanup() }
+        let scheduler = ManualAutosaveDelayScheduler()
+        let coordinator = ProjectAutosaveCoordinator(
+            storage: environment.storage, scheduler: scheduler)
+        let model = WorkspaceModel(
+            autosaveCoordinator: coordinator,
+            vertexTranslateFailureInjector: .init { $0 == .commitBoundary })
+        await model.inspectRecoveryOnLaunch()
+        model.setInteractionMode(.vertexSelect)
+        XCTAssertTrue(model.applyVertexSelectionHit(0))
+        model.installVertexTranslateBeginConflictsForTesting()
+        let generation = model.projectMutationGeneration
+        let recovery = model.recoveryDescriptor
+        let writeCount = await coordinator.successfulWriteCount
+        let waiterCount = await scheduler.waiterCount
+        let ray = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3(0, 0, -1))
+
+        XCTAssertFalse(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: ray, cameraDirection: SIMD3(0, 0, -1)))
+        let finalWriteCount = await coordinator.successfulWriteCount
+        let finalWaiterCount = await scheduler.waiterCount
+        XCTAssertEqual(model.projectMutationGeneration, generation)
+        XCTAssertEqual(model.recoveryDescriptor, recovery)
+        XCTAssertEqual(finalWriteCount, writeCount)
+        XCTAssertEqual(finalWaiterCount, waiterCount)
+        XCTAssertTrue(model.isStrokeActive)
+        XCTAssertTrue(model.isTransformPanelEditing)
+        XCTAssertTrue(model.translationGizmoState.isDragging)
+    }
+
     private func makeSnapshot(name: String, sessionID: UUID = UUID(), capturedAt: Date = Date(),
                               translation: SIMD3<Float> = .zero) throws -> ProjectAutosaveSnapshot {
         let project = ForgeProject(mesh: try PrimitiveMeshBuilder.cube(size: 20),

@@ -759,17 +759,29 @@ final class VertexSelectionTests: XCTestCase {
     }
 
     func testVertexTranslateFailedBeginIsSideEffectFree() throws {
-        let model = WorkspaceModel(vertexTranslateFailureInjector: .init { $0 == .sourceSnapshot })
+        let model = WorkspaceModel(vertexTranslateFailureInjector: .init { $0 == .commitBoundary })
         model.setInteractionMode(.vertexSelect)
-        model.selectAllVertices()
+        XCTAssertTrue(model.applyVertexSelectionHit(0))
+        model.installVertexTranslateBeginConflictsForTesting()
         let mesh = model.mesh
         let transform = model.objectTransform
         let camera = model.camera
         let selection = model.vertexSelection
+        let edgeSelection = model.edgeSelection
+        let faceSelection = model.faceSelection
+        let hover = model.vertexHover
+        let effectiveHover = model.effectiveVertexHoverID
         let generation = model.projectMutationGeneration
         let history = (model.undoCount, model.redoCount)
         let project = try model.projectData()
         let status = model.status
+        let dirty = model.isDirty
+        let recovery = model.recoveryDescriptor
+        let pickingAvailable = model.pickingCacheHasIndexForTesting
+        let pickingTopology = model.pickingCacheTopologyIDForTesting
+        XCTAssertTrue(model.isStrokeActive)
+        XCTAssertTrue(model.isTransformPanelEditing)
+        XCTAssertTrue(model.translationGizmoState.isDragging)
         let ray = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3(0, 0, -1))
 
         XCTAssertFalse(model.beginTranslationGizmoDrag(
@@ -778,13 +790,56 @@ final class VertexSelectionTests: XCTestCase {
         XCTAssertEqual(model.objectTransform, transform)
         XCTAssertEqual(model.camera, camera)
         XCTAssertEqual(model.vertexSelection, selection)
+        XCTAssertEqual(model.edgeSelection, edgeSelection)
+        XCTAssertEqual(model.faceSelection, faceSelection)
+        XCTAssertEqual(model.vertexHover, hover)
+        XCTAssertEqual(model.effectiveVertexHoverID, effectiveHover)
         XCTAssertEqual(model.projectMutationGeneration, generation)
         XCTAssertEqual((model.undoCount, model.redoCount).0, history.0)
         XCTAssertEqual((model.undoCount, model.redoCount).1, history.1)
         XCTAssertEqual(try model.projectData(), project)
         XCTAssertEqual(model.status, status)
-        XCTAssertFalse(model.isGizmoDragging)
+        XCTAssertEqual(model.isDirty, dirty)
+        XCTAssertEqual(model.recoveryDescriptor, recovery)
+        XCTAssertEqual(model.pickingCacheHasIndexForTesting, pickingAvailable)
+        XCTAssertEqual(model.pickingCacheTopologyIDForTesting, pickingTopology)
+        XCTAssertTrue(model.isStrokeActive)
+        XCTAssertTrue(model.isTransformPanelEditing)
+        XCTAssertTrue(model.translationGizmoState.isDragging)
         XCTAssertNil(model.vertexTranslatePreviewMesh)
+        XCTAssertFalse(model.vertexTranslateTransactionActiveForTesting)
+    }
+
+    func testVertexTranslateSuccessfulBeginResolvesPreparedConflictsInfallibly() {
+        let model = WorkspaceModel()
+        model.setInteractionMode(.vertexSelect)
+        XCTAssertTrue(model.applyVertexSelectionHit(0))
+        let committedVertices = model.mesh.vertices
+        let committedIndices = model.mesh.indices
+        let committedTopologyID = model.mesh.runtime.topologyID
+        model.installVertexTranslateBeginConflictsForTesting()
+        let committedTransform = model.objectTransform
+        XCTAssertTrue(model.isStrokeActive)
+        XCTAssertTrue(model.isTransformPanelEditing)
+        XCTAssertTrue(model.translationGizmoState.isDragging)
+        XCTAssertNotNil(model.vertexHover.vertexID)
+        let ray = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3(0, 0, -1))
+
+        XCTAssertTrue(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: ray, cameraDirection: SIMD3(0, 0, -1)))
+        XCTAssertFalse(model.isStrokeActive)
+        XCTAssertFalse(model.isTransformPanelEditing)
+        XCTAssertTrue(model.translationGizmoState.isDragging)
+        XCTAssertEqual(model.translationGizmoState.activeHandle, .xyPlane)
+        XCTAssertTrue(model.vertexTranslateTransactionActiveForTesting)
+        XCTAssertNil(model.vertexHover.vertexID)
+        XCTAssertNil(model.vertexTranslatePreviewMesh)
+        XCTAssertEqual(model.mesh.vertices, committedVertices)
+        XCTAssertEqual(model.mesh.indices, committedIndices)
+        XCTAssertEqual(model.mesh.runtime.topologyID, committedTopologyID)
+        XCTAssertEqual(model.objectTransform, committedTransform)
+        XCTAssertEqual(model.undoCount, 1)
+        XCTAssertEqual(model.redoCount, 0)
     }
 
     func testVertexTranslateCandidateFailureCancelsAndCanRetry() {

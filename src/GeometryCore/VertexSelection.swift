@@ -485,6 +485,7 @@ enum VertexTranslateFailurePoint: Hashable {
     case candidateValidation
     case normalRebuild
     case rendererPreparation
+    case commitBoundary
 }
 
 struct VertexTranslateFailureInjector {
