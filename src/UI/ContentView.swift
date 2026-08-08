@@ -128,6 +128,7 @@ struct ContentView: View {
                     }
                     .pickerStyle(.menu)
                     .accessibilityHint("Switch between sculpting, face, edge, and vertex selection")
+                    .accessibilityIdentifier("workspace-interaction-mode")
                     #if DEBUG
                     .disabled(model.isBenchmarkRunning)
                     #endif
@@ -137,6 +138,11 @@ struct ContentView: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 220)
+                    .accessibilityIdentifier("workspace-gizmo-mode")
+                    .accessibilityHint(
+                        model.interactionMode == .vertexSelect && model.selectedVertexCount == 0
+                            ? "Select one or more vertices before using Move"
+                            : "Choose Move, Rotate, or Scale")
                     #if DEBUG
                     .disabled(model.isBenchmarkRunning)
                     #endif

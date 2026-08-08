@@ -581,3 +581,8 @@ Pickingはcurrent CPU BVHのnearest triangleを得て、その3 edgeだけをcur
 `MeshVertexTopologyTable`はvertex ID順にincident edge／faceとneighbor vertex IDを保持し、topology identityとdeterministic fingerprintへ結合する。`VertexSelection`は1 bit per vertexのdense runtime stateで、Face／Edge Selectionと独立し、project、history、Autosave、Recovery、formatVersion 1へ参加しない。
 
 Pickingはworld Rayをobject-localへ変換し、current CPU BVHのnearest visible triangleの3頂点だけをscreenへ投影する。16-point以内のexact squared distanceで厳密に順位付けし、完全同距離の場合だけlower vertex IDをtie-breakに使用するため、linear triangle scanを行わない。Topology tableとselectionはID／revision／vertex count／index count／全triangle index列のstreaming fingerprintへbindする。Metal overlayはmesh vertex bufferを再利用してselected／effective-hover ID bufferを独立cacheし、mesh→face→edge→vertex→Diagnostics→Gizmoの順でdepth-tested pointsを描画する。upload前にはactive GPU＋candidate GPU＋CPU ID stagingのpeakをchecked arithmeticで検証し、失敗したcomponentだけを非表示にして同じkeyを次frameで再試行する。詳細は`VERTEX_SELECTION.md`を参照する。
+## Selected Vertex Translation runtime boundary
+
+Vertex SelectとMove Gizmoの組み合わせでは、Translation Gizmoのoriginを選択頂点のobject-local AABB中心をworldへ変換した位置へ上書きする。world deltaはinverse model matrixへ`w = 0`で渡し、非一様scaleを含むlocal deltaへ変換する。GeometryCoreのtransactionはtopology identity、vertex revision、topology fingerprint、sorted vertex IDs、開始位置、sanitized Transformを固定し、previewを常に開始位置から絶対評価する。
+
+Preview meshは`WorkspaceModel.mesh`と分離され、Rendererだけが`renderedMesh`として参照する。したがってpreview中のproject bytes、history、dirty generation、Autosave、Recovery、STLはcommitted meshを参照し続ける。commit時だけvertex changesを統合historyへ1件recordする。indicesとtopology runtime identityは維持され、Rendererはvertex bufferのみ更新する。selection overlayは既存mesh vertex bufferと既存selected-ID bufferを再利用する。

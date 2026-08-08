@@ -13,6 +13,7 @@
 - `FACE_SELECTION.md` — triangle face identity、dense bitset、BVH picking、connected selection、Metal overlay
 - `EDGE_SELECTION.md` — canonical topological edge、deterministic table、visible picking、runtime overlay
 - `VERTEX_SELECTION.md` — mesh vertex identity、dense bitset、BVH visible picking、point overlay
+- `VERTEX_TRANSLATE.md` — selected local positionsのworld-axis移動、非破壊preview、1操作1Undo
 - `EDGE_BEVEL.md` — isolated manifold edgeのworld-mm chamfer、support face split、atomic install
 - `FACE_EXTRUDE.md` — manifold face patchのworld-mm extrusion、preview、atomic topology install、Undo
 - `FACE_INSET.md` — planar convex single-loop face patchのconstant-width world-mm inset、preview、atomic install

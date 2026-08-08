@@ -54,6 +54,8 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var meshVertexTopologyTable: MeshVertexTopologyTable?
     @Published private(set) var vertexHover = VertexHoverState()
     @Published private(set) var vertexSelectionError: String?
+    @Published private(set) var vertexTranslatePreviewMesh: EditableMesh?
+    @Published private(set) var vertexTranslateError: String?
     private var vertexOverlaySelectedError: String?
     private var vertexOverlayHoverError: String?
     private var edgeOverlaySelectedError: String?
@@ -141,6 +143,14 @@ final class WorkspaceModel: ObservableObject {
     private var meshRadialArrayPreviewRequestID: UUID?
     private var edgeBevelPreviewRequestID: UUID?
     private var meshSeamEditPreviewRequestID: UUID?
+    private var vertexTranslateTransaction: VertexTranslateTransaction?
+    private var vertexTranslateStartHover: VertexHoverState?
+    private let vertexTranslatePickingCache = MeshBVHCache()
+    private var vertexTranslatePivotCache: (
+        meshRevision: UInt64, selectionVersion: VertexSelectionVersion,
+        transform: ObjectTransform, world: SIMD3<Float>
+    )?
+    private let vertexTranslateFailureInjector: VertexTranslateFailureInjector
 
     private var isFaceTopologyEditRunning: Bool {
         isFaceExtrudeRunning || isFaceInsetRunning || isFaceBevelRunning || isEdgeBevelRunning
@@ -201,9 +211,11 @@ final class WorkspaceModel: ObservableObject {
     }
 
     init(autosaveCoordinator: ProjectAutosaveCoordinator = ProjectAutosaveCoordinator(),
-         pickingCache: MeshBVHCache = MeshBVHCache()) {
+         pickingCache: MeshBVHCache = MeshBVHCache(),
+         vertexTranslateFailureInjector: VertexTranslateFailureInjector = VertexTranslateFailureInjector()) {
         self.autosaveCoordinator = autosaveCoordinator
         self.pickingCache = pickingCache
+        self.vertexTranslateFailureInjector = vertexTranslateFailureInjector
         self.lastSavedGeneration = projectMutationGeneration
         rebuildFaceSelectionForCurrentTopology()
         rebuildEdgeSelectionForCurrentTopology()
@@ -578,6 +590,39 @@ final class WorkspaceModel: ObservableObject {
         guard let table = meshVertexTopologyTable, vertexSelection.matches(table) else { return 0 }
         return vertexSelection.selectedCount
     }
+
+
+    private struct PreparedVertexTranslateDrag {
+        let transaction: VertexTranslateTransaction
+        let gizmoSession: TranslationDragSession
+        let activeHandle: TranslationGizmoHandle
+        let startHover: VertexHoverState
+        let expectedMeshRevision: UInt64
+        let expectedTransform: ObjectTransform
+        let expectedProjectGeneration: MutationGeneration
+        let expectedSelectionVersion: VertexSelectionVersion
+    }
+    var renderedMesh: EditableMesh { vertexTranslatePreviewMesh ?? mesh }
+    var vertexTranslatePivotWorld: SIMD3<Float>? {
+        if let transaction = vertexTranslateTransaction {
+            return transaction.pivotWorld + transaction.worldDelta
+        }
+        guard interactionMode == .vertexSelect, gizmoMode == .translate,
+              let table = meshVertexTopologyTable else { return nil }
+        let safeTransform = objectTransform.sanitized()
+        if let cached = vertexTranslatePivotCache,
+           cached.meshRevision == mesh.runtime.revision,
+           cached.selectionVersion == vertexSelection.version,
+           cached.transform == safeTransform {
+            return cached.world
+        }
+        guard let world = try? VertexTranslateGeometry.pivot(
+            mesh: mesh, table: table, selection: vertexSelection,
+            transform: safeTransform).world else { return nil }
+        vertexTranslatePivotCache = (
+            mesh.runtime.revision, vertexSelection.version, safeTransform, world)
+        return world
+    }
     var totalVertexCount: Int { meshVertexTopologyTable?.records.count ?? 0 }
     var effectiveVertexHoverID: MeshVertexID? {
         vertexHover.effectiveVertexID(for: vertexSelection)
@@ -777,6 +822,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { return }
         #endif
+        if vertexTranslateTransaction != nil { cancelTranslationGizmoDrag() }
         vertexSelectionOperation = operation
         vertexSelectionError = nil
     }
@@ -844,6 +890,7 @@ final class WorkspaceModel: ObservableObject {
 
     @discardableResult
     func applyVertexSelectionHit(_ vertexID: MeshVertexID) -> Bool {
+        if vertexTranslateTransaction != nil { cancelTranslationGizmoDrag() }
         guard isVertexSelectionInteractionEnabled, let table = meshVertexTopologyTable,
               vertexSelection.matches(table) else {
             reportVertexSelectionError(VertexSelectionError.unavailable); return false
@@ -855,11 +902,21 @@ final class WorkspaceModel: ObservableObject {
         } catch { reportVertexSelectionError(error); return false }
     }
 
-    func clearVertexSelection() { mutateVertexSelection { $0.clear() } }
-    func selectAllVertices() { mutateVertexSelection { $0.selectAll() } }
-    func invertVertexSelection() { mutateVertexSelection { $0.invert() } }
+    func clearVertexSelection() {
+        if vertexTranslateTransaction != nil { cancelTranslationGizmoDrag() }
+        mutateVertexSelection { $0.clear() }
+    }
+    func selectAllVertices() {
+        if vertexTranslateTransaction != nil { cancelTranslationGizmoDrag() }
+        mutateVertexSelection { $0.selectAll() }
+    }
+    func invertVertexSelection() {
+        if vertexTranslateTransaction != nil { cancelTranslationGizmoDrag() }
+        mutateVertexSelection { $0.invert() }
+    }
 
     func selectConnectedVertices() {
+        if vertexTranslateTransaction != nil { cancelTranslationGizmoDrag() }
         guard isVertexSelectionInteractionEnabled, let table = meshVertexTopologyTable,
               vertexSelection.matches(table), vertexSelection.selectedCount > 0 else { return }
         do {
@@ -3070,31 +3127,152 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { return nil }
         #endif
-        return TranslationGizmoGeometry.hit(ray: ray, origin: objectTransform.translation, scale: scale)
+        let origin = vertexTranslatePivotWorld ?? objectTransform.translation
+        return TranslationGizmoGeometry.hit(ray: ray, origin: origin, scale: scale)
     }
 
     @discardableResult
     func beginTranslationGizmoDrag(handle: TranslationGizmoHandle, ray: Ray,
                                    cameraDirection: SIMD3<Float>) -> Bool {
-        guard showsTranslationGizmo, gizmoMode == .translate, !isGizmoDragging else { return false }
+        guard showsTranslationGizmo, gizmoMode == .translate else { return false }
         #if DEBUG
         guard !isBenchmarkRunning else { return false }
         #endif
+        if interactionMode != .vertexSelect {
+            guard !isGizmoDragging else { return false }
+            guard let session = TranslationGizmoGeometry.beginSession(
+                handle: handle, ray: ray, transform: objectTransform,
+                cameraDirection: cameraDirection) else { return false }
+            commitTransformPanelTransaction()
+            cancelStroke()
+            cancelTranslationGizmoDrag()
+            translationGizmoState.activeHandle = handle
+            translationGizmoState.dragSession = session
+            return true
+        }
+
+        let mayReplaceOrdinaryTranslation = translationGizmoState.isDragging
+            && vertexTranslateTransaction == nil
+            && !rotationGizmoState.isDragging && !scaleGizmoState.isDragging
+        guard !isGizmoDragging || mayReplaceOrdinaryTranslation else { return false }
+        guard let prepared = try? prepareVertexTranslateDrag(
+            handle: handle, ray: ray, cameraDirection: cameraDirection) else { return false }
+        commitPreparedVertexTranslateDrag(prepared)
+        return true
+    }
+
+    private func prepareVertexTranslateDrag(
+        handle: TranslationGizmoHandle, ray: Ray, cameraDirection: SIMD3<Float>
+    ) throws -> PreparedVertexTranslateDrag {
+        guard ray.origin.allFinite, ray.direction.allFinite,
+              cameraDirection.allFinite, simd_length_squared(ray.direction) > 1e-12 else {
+            throw VertexTranslateError.preparationFailed
+        }
+        guard let table = meshVertexTopologyTable, vertexSelection.matches(table),
+              vertexSelection.selectedCount > 0, !isTopologyEditRunning,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw VertexTranslateError.preparationFailed
+        }
+        guard !vertexTranslateFailureInjector.shouldFail(.sourceSnapshot) else {
+            throw VertexTranslateError.preparationFailed
+        }
+
+        var expectedMesh = mesh
+        if let strokeBefore { _ = expectedMesh.updatePositions(strokeBefore) }
+        let expectedTransform = translationGizmoState.dragSession?.startTransform
+            ?? objectTransform
+        var expectedGeneration = projectMutationGeneration
+        if let panelTransformBefore,
+           TransformCommand(before: panelTransformBefore, after: objectTransform) != nil {
+            expectedGeneration.advance()
+        }
+        let transaction = try VertexTranslateGeometry.begin(
+            mesh: expectedMesh, table: table, selection: vertexSelection,
+            transform: expectedTransform, projectSessionID: workspaceSessionID,
+            projectGeneration: expectedGeneration,
+            failureInjector: vertexTranslateFailureInjector)
+        guard let session = TranslationGizmoGeometry.beginSession(
+            handle: handle, ray: ray,
+            transform: ObjectTransform(translation: transaction.pivotWorld),
+            cameraDirection: cameraDirection) else {
+            throw VertexTranslateError.preparationFailed
+        }
+        guard !vertexTranslateFailureInjector.shouldFail(.commitBoundary) else {
+            throw VertexTranslateError.preparationFailed
+        }
+        return PreparedVertexTranslateDrag(
+            transaction: transaction, gizmoSession: session, activeHandle: handle,
+            startHover: vertexHover, expectedMeshRevision: expectedMesh.runtime.revision,
+            expectedTransform: expectedTransform.sanitized(),
+            expectedProjectGeneration: expectedGeneration,
+            expectedSelectionVersion: vertexSelection.version)
+    }
+
+    private func commitPreparedVertexTranslateDrag(_ prepared: PreparedVertexTranslateDrag) {
         commitTransformPanelTransaction()
         cancelStroke()
         cancelTranslationGizmoDrag()
-        guard let session = TranslationGizmoGeometry.beginSession(handle: handle, ray: ray,
-                                                                   transform: objectTransform,
-                                                                   cameraDirection: cameraDirection) else { return false }
-        translationGizmoState.activeHandle = handle
-        translationGizmoState.dragSession = session
-        return true
+
+        assert(mesh.runtime.revision == prepared.expectedMeshRevision)
+        assert(mesh.runtime.topologyID == prepared.transaction.topologyID)
+        assert(mesh.runtime.topologyRevision == prepared.transaction.topologyRevision)
+        assert(objectTransform.sanitized() == prepared.expectedTransform)
+        assert(projectMutationGeneration == prepared.expectedProjectGeneration)
+        assert(vertexSelection.version == prepared.expectedSelectionVersion)
+        assert(workspaceSessionID == prepared.transaction.projectSessionID)
+        assert(prepared.transaction.vertexIDs.enumerated().allSatisfy { offset, vertexID in
+            mesh.vertices.indices.contains(Int(vertexID))
+                && mesh.vertices[Int(vertexID)].position == prepared.transaction.startPositions[offset]
+        })
+
+        vertexTranslateTransaction = prepared.transaction
+        vertexTranslateStartHover = prepared.startHover
+        vertexTranslatePreviewMesh = nil
+        vertexTranslatePickingCache.invalidate()
+        vertexTranslateError = nil
+        vertexHover = vertexHover.updating(nil)
+        translationGizmoState.activeHandle = prepared.activeHandle
+        translationGizmoState.dragSession = prepared.gizmoSession
+        status = "Move Selected Vertices"
     }
 
     func updateTranslationGizmoDrag(ray: Ray, cameraDirection: SIMD3<Float>) {
         guard let session = translationGizmoState.dragSession,
               let translation = TranslationGizmoGeometry.translation(session: session, ray: ray,
                                                                       cameraDirection: cameraDirection) else { return }
+        if var transaction = vertexTranslateTransaction {
+            do {
+                guard let table = meshVertexTopologyTable,
+                      transaction.matches(mesh: mesh, table: table,
+                                          selection: vertexSelection,
+                                          transform: objectTransform,
+                                          projectSessionID: workspaceSessionID,
+                                          projectGeneration: projectMutationGeneration) else {
+                    throw VertexTranslateError.staleSource
+                }
+                let candidate = try VertexTranslateGeometry.candidate(
+                    sourceMesh: vertexTranslatePreviewMesh ?? mesh, transaction: &transaction,
+                    worldDelta: translation - session.startTransform.translation,
+                    profiler: profiler, failureInjector: vertexTranslateFailureInjector)
+                if let candidate {
+                    guard vertexTranslatePickingCache.index(for: candidate) != nil else {
+                        throw VertexTranslateError.preparationFailed
+                    }
+                } else {
+                    vertexTranslatePickingCache.invalidate()
+                }
+                vertexTranslatePreviewMesh = candidate
+                vertexTranslateTransaction = transaction
+                vertexTranslateError = nil
+                status = "Move Selected Vertices"
+            } catch {
+                vertexTranslateError = error.localizedDescription
+                cancelTranslationGizmoDrag()
+            }
+            return
+        }
         var transform = session.startTransform
         transform.translation = translation
         objectTransform = transform.sanitized()
@@ -3102,6 +3280,64 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func endTranslationGizmoDrag() {
+        if let transaction = vertexTranslateTransaction {
+            let candidate = vertexTranslatePreviewMesh
+            translationGizmoState.dragSession = nil
+            translationGizmoState.activeHandle = nil
+            vertexTranslateTransaction = nil
+            vertexTranslatePreviewMesh = nil
+            vertexTranslatePickingCache.invalidate()
+            guard let candidate else {
+                vertexTranslateStartHover = nil
+                status = "Vertex move unchanged"
+                return
+            }
+            guard let table = meshVertexTopologyTable,
+                  transaction.matches(mesh: mesh, table: table,
+                                      selection: vertexSelection,
+                                      transform: objectTransform,
+                                      projectSessionID: workspaceSessionID,
+                                      projectGeneration: projectMutationGeneration) else {
+                vertexTranslateError = VertexTranslateError.staleSource.localizedDescription
+                vertexHover = vertexTranslateStartHover ?? vertexHover
+                vertexTranslateStartHover = nil
+                status = "Vertex move cancelled"
+                return
+            }
+            let changes: [VertexChange] = transaction.vertexIDs.enumerated().compactMap { offset, id in
+                let index = Int(id)
+                let after = candidate.vertices[index].position
+                let before = transaction.startPositions[offset]
+                return before == after ? nil : VertexChange(index: index, before: before, after: after)
+            }
+            guard !changes.isEmpty else {
+                vertexTranslateStartHover = nil
+                status = "Vertex move unchanged"
+                return
+            }
+            guard let command = VertexTranslateCommand(
+                topologyID: transaction.topologyID,
+                topologyRevision: transaction.topologyRevision,
+                changes: changes),
+                  let preparedPicking = try? pickingCache.makeIndex(for: candidate) else {
+                vertexTranslateError = "The vertex move could not be prepared safely."
+                vertexHover = vertexTranslateStartHover ?? vertexHover
+                vertexTranslateStartHover = nil
+                status = "Vertex move cancelled"
+                return
+            }
+            mesh = candidate
+            pickingCache.install(preparedPicking, for: mesh)
+            sculptSpatialIndex.didUpdate(changes.map {
+                VertexMutation(index: $0.index, before: $0.before, after: $0.after)
+            }, mesh: mesh)
+            record(.vertexTranslate(command))
+            vertexTranslateError = nil
+            vertexHover = vertexHover.updating(nil)
+            vertexTranslateStartHover = nil
+            status = "Moved \(changes.count) selected vertices"
+            return
+        }
         let startTransform = translationGizmoState.dragSession?.startTransform
         translationGizmoState.dragSession = nil
         translationGizmoState.activeHandle = nil
@@ -3109,6 +3345,16 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func cancelTranslationGizmoDrag() {
+        if vertexTranslateTransaction != nil {
+            vertexTranslateTransaction = nil
+            vertexTranslatePreviewMesh = nil
+            vertexTranslatePickingCache.invalidate()
+            vertexHover = vertexTranslateStartHover ?? vertexHover
+            vertexTranslateStartHover = nil
+            translationGizmoState.dragSession = nil
+            translationGizmoState.activeHandle = nil
+            return
+        }
         if let session = translationGizmoState.dragSession { objectTransform = session.startTransform }
         translationGizmoState.dragSession = nil
         translationGizmoState.activeHandle = nil
@@ -3274,6 +3520,14 @@ final class WorkspaceModel: ObservableObject {
         switch command {
         case .sculpt(let stroke):
             let positions = Dictionary(uniqueKeysWithValues: stroke.changes.map {
+                ($0.index, useAfter ? $0.after : $0.before)
+            })
+            let mutations = mesh.updatePositions(positions, profiler: profiler)
+            sculptSpatialIndex.didUpdate(mutations, mesh: mesh)
+        case .vertexTranslate(let translation):
+            guard translation.topologyID == mesh.runtime.topologyID,
+                  translation.topologyRevision == mesh.runtime.topologyRevision else { return }
+            let positions = Dictionary(uniqueKeysWithValues: translation.changes.map {
                 ($0.index, useAfter ? $0.after : $0.before)
             })
             let mutations = mesh.updatePositions(positions, profiler: profiler)
@@ -3515,6 +3769,34 @@ final class WorkspaceModel: ObservableObject {
     var isMeshSeamEditSnapshotSafeForTesting: Bool { isTopologyEditSnapshotSafe }
     var pickingCacheHasIndexForTesting: Bool { pickingCache.bvh != nil }
     var pickingCacheTopologyIDForTesting: UUID? { pickingCache.topologyID }
+    var lastUndoIsVertexTranslateForTesting: Bool {
+        guard let command = history.undoStack.last else { return false }
+        if case .vertexTranslate = command { return true }
+        return false
+    }
+    var vertexTranslateTransactionActiveForTesting: Bool { vertexTranslateTransaction != nil }
+    func installVertexTranslateBeginConflictsForTesting(
+        hoverVertexID: MeshVertexID = 1,
+        strokeVertexID: Int = 0,
+        strokeDelta: SIMD3<Float> = SIMD3<Float>(0.05, 0, 0),
+        panelTranslationDelta: SIMD3<Float> = SIMD3<Float>(0.2, 0, 0)
+    ) {
+        precondition(interactionMode == .vertexSelect)
+        precondition(mesh.vertices.indices.contains(strokeVertexID))
+        panelTransformBefore = objectTransform
+        objectTransform.translation += panelTranslationDelta
+        let ray = Ray(origin: objectTransform.translation + SIMD3<Float>(0.3, 0.3, 5),
+                      direction: SIMD3<Float>(0, 0, -1))
+        translationGizmoState.dragSession = TranslationGizmoGeometry.beginSession(
+            handle: .xyPlane, ray: ray, transform: objectTransform,
+            cameraDirection: SIMD3<Float>(0, 0, -1))
+        translationGizmoState.activeHandle = .xyPlane
+        let before = mesh.vertices[strokeVertexID].position
+        _ = mesh.updatePositions([strokeVertexID: before + strokeDelta])
+        strokeBefore = [strokeVertexID: before]
+        vertexHover = vertexHover.updating(hoverVertexID)
+        status = "Prepared conflict state"
+    }
     #endif
 
     private func scheduleAutosaveIfSafe() {

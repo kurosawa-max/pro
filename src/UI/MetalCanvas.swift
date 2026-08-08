@@ -13,6 +13,7 @@ struct MetalCanvas: UIViewRepresentable {
         guard let renderer = MetalRenderer(view: view, profiler: model.profiler) else { return view }
         context.coordinator.renderer = renderer
         renderer.objectTransform = model.objectTransform
+        renderer.gizmoOriginOverride = model.vertexTranslatePivotWorld
         renderer.gizmoState = model.translationGizmoState
         renderer.rotationGizmoState = model.rotationGizmoState
         renderer.scaleGizmoState = model.scaleGizmoState
@@ -30,14 +31,14 @@ struct MetalCanvas: UIViewRepresentable {
         view.onPencilCancelled = { [weak coordinator = context.coordinator] in coordinator?.inputCancelled() }
         view.onHover = { [weak coordinator = context.coordinator] point in coordinator?.hover(point, in: view) }
         context.coordinator.installGestures(on: view)
-        renderer.update(mesh: model.mesh)
-        renderer.updateFaceSelection(mesh: model.mesh, selection: model.faceSelection)
+        renderer.update(mesh: model.renderedMesh)
+        renderer.updateFaceSelection(mesh: model.renderedMesh, selection: model.faceSelection)
         model.handleEdgeSelectionOverlayUpdate(renderer.updateEdgeSelection(
-            mesh: model.mesh, table: model.meshEdgeTable,
+            mesh: model.renderedMesh, table: model.meshEdgeTable,
             selection: model.edgeSelection, hoveredEdgeID: model.hoveredEdgeID,
             drawableSizePixels: view.drawableSize, displayScale: view.contentScaleFactor))
         model.handleVertexSelectionOverlayUpdate(renderer.updateVertexSelection(
-            mesh: model.mesh, table: model.meshVertexTopologyTable,
+            mesh: model.renderedMesh, table: model.meshVertexTopologyTable,
             selection: model.vertexSelection, hover: model.vertexHover))
         renderer.showsFaceSelection = model.interactionMode == .faceSelect
         renderer.showsEdgeSelection = model.interactionMode == .edgeSelect
@@ -50,6 +51,7 @@ struct MetalCanvas: UIViewRepresentable {
         context.coordinator.setInputSuppressed(isInputSuppressed)
         context.coordinator.renderer?.camera = model.camera
         context.coordinator.renderer?.objectTransform = model.objectTransform
+        context.coordinator.renderer?.gizmoOriginOverride = model.vertexTranslatePivotWorld
         context.coordinator.renderer?.gizmoState = model.translationGizmoState
         context.coordinator.renderer?.rotationGizmoState = model.rotationGizmoState
         context.coordinator.renderer?.scaleGizmoState = model.scaleGizmoState
@@ -62,16 +64,16 @@ struct MetalCanvas: UIViewRepresentable {
         context.coordinator.renderer?.updateDiagnostics(data: model.currentMeshDiagnosticsOverlay,
                                                         revision: model.meshDiagnosticsOverlayRevision,
                                                         options: model.meshDiagnosticsOverlayOptions)
-        context.coordinator.renderer?.update(mesh: model.mesh)
-        context.coordinator.renderer?.updateFaceSelection(mesh: model.mesh, selection: model.faceSelection)
+        context.coordinator.renderer?.update(mesh: model.renderedMesh)
+        context.coordinator.renderer?.updateFaceSelection(mesh: model.renderedMesh, selection: model.faceSelection)
         if let result = context.coordinator.renderer?.updateEdgeSelection(
-            mesh: model.mesh, table: model.meshEdgeTable,
+            mesh: model.renderedMesh, table: model.meshEdgeTable,
             selection: model.edgeSelection, hoveredEdgeID: model.hoveredEdgeID,
             drawableSizePixels: view.drawableSize, displayScale: view.contentScaleFactor) {
             model.handleEdgeSelectionOverlayUpdate(result)
         }
         if let result = context.coordinator.renderer?.updateVertexSelection(
-            mesh: model.mesh, table: model.meshVertexTopologyTable,
+            mesh: model.renderedMesh, table: model.meshVertexTopologyTable,
             selection: model.vertexSelection, hover: model.vertexHover) {
             model.handleVertexSelectionOverlayUpdate(result)
         }
