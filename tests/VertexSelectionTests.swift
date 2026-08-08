@@ -1043,11 +1043,13 @@ final class VertexSelectionTests: XCTestCase {
             mesh: source, table: table, selection: selection, transform: .identity,
             axis: SIMD3(0, 0, 1), projectSessionID: UUID(),
             projectGeneration: MutationGeneration())
-        for angle in [Float.pi * 2, Float.pi * 4, Float.pi * 4 + 0.25] {
-            let candidate = try XCTUnwrap(VertexRotateGeometry.candidate(
-                sourceMesh: source, transaction: &transaction, accumulatedAngle: angle))
-            XCTAssertTrue(candidate.vertices.allSatisfy { $0.position.allFinite && $0.normal.allFinite })
-        }
+        XCTAssertNil(try VertexRotateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, accumulatedAngle: .pi * 2))
+        XCTAssertNil(try VertexRotateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, accumulatedAngle: .pi * 4))
+        let candidate = try XCTUnwrap(VertexRotateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, accumulatedAngle: .pi * 4 + 0.25))
+        XCTAssertTrue(candidate.vertices.allSatisfy { $0.position.allFinite && $0.normal.allFinite })
     }
 
     func testWorkspaceVertexRotatePreviewCommitUndoRedoAndCancel() throws {
