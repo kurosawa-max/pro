@@ -1101,6 +1101,198 @@ final class VertexSelectionTests: XCTestCase {
             sourceMesh: source, transaction: &transaction, accumulatedAngle: .nan))
     }
 
+    func testVertexRotateTransactionRejectsEveryRuntimeIdentityChangeAndNonRewindingRestoration() throws {
+        var source = quad()
+        let table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        XCTAssertTrue(try selection.apply(.replace, vertexIDs: [0, 2]))
+        let session = UUID(), generation = MutationGeneration()
+        let transform = ObjectTransform(translation: SIMD3(3, -2, 1),
+                                        rotation: ObjectTransform.rotation(degrees: SIMD3(10, 20, 30)),
+                                        scale: SIMD3(2, 0.5, 3))
+        let transaction = try VertexRotateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: transform,
+            axis: SIMD3(0, 1, 0), projectSessionID: session, projectGeneration: generation)
+        XCTAssertTrue(transaction.matches(mesh: source, table: table, selection: selection,
+                                          transform: transform, projectSessionID: session,
+                                          projectGeneration: generation))
+        for changed in [
+            ObjectTransform(translation: transform.translation + SIMD3(1, 0, 0),
+                            rotation: transform.rotation, scale: transform.scale),
+            ObjectTransform(translation: transform.translation,
+                            rotation: ObjectTransform.rotation(degrees: SIMD3(11, 20, 30)), scale: transform.scale),
+            ObjectTransform(translation: transform.translation,
+                            rotation: transform.rotation, scale: SIMD3(2, 0.6, 3))
+        ] {
+            XCTAssertFalse(transaction.matches(mesh: source, table: table, selection: selection,
+                                               transform: changed, projectSessionID: session,
+                                               projectGeneration: generation))
+        }
+        XCTAssertFalse(transaction.matches(mesh: source, table: table, selection: selection,
+                                           transform: transform, projectSessionID: UUID(),
+                                           projectGeneration: generation))
+        var advanced = generation; advanced.advance()
+        XCTAssertFalse(transaction.matches(mesh: source, table: table, selection: selection,
+                                           transform: transform, projectSessionID: session,
+                                           projectGeneration: advanced))
+        XCTAssertTrue(try selection.apply(.toggle, vertexID: 1))
+        XCTAssertTrue(try selection.apply(.toggle, vertexID: 1))
+        XCTAssertFalse(transaction.matches(mesh: source, table: table, selection: selection,
+                                           transform: transform, projectSessionID: session,
+                                           projectGeneration: generation))
+        _ = source.updatePositions([0: source.vertices[0].position + SIMD3(0.1, 0, 0)])
+        XCTAssertFalse(transaction.matches(mesh: source, table: table, selection: selection,
+                                           transform: transform, projectSessionID: session,
+                                           projectGeneration: generation))
+    }
+
+    func testVertexRotateWorldAxesAndTransformMatrixCasesUseStoredRenderSpacePositions() throws {
+        let source = mesh([SIMD3(1, 2, 3), SIMD3(-2, 1, 0), SIMD3(0, 0, 0)], [0, 1, 2])
+        let transforms: [ObjectTransform] = [
+            .identity,
+            ObjectTransform(translation: SIMD3(1_000_000, -2_000_000, 300_000)),
+            ObjectTransform(rotation: ObjectTransform.rotation(degrees: SIMD3(20, -35, 17))),
+            ObjectTransform(scale: SIMD3(repeating: 2)),
+            ObjectTransform(scale: SIMD3(2, 0.5, 3)),
+            ObjectTransform(translation: SIMD3(50, -70, 90),
+                            rotation: ObjectTransform.rotation(degrees: SIMD3(20, -35, 17)),
+                            scale: SIMD3(2, 0.5, 3))
+        ]
+        for transform in transforms {
+            let table = try MeshVertexTopologyTable.build(mesh: source)
+            var selection = try VertexSelection(table: table)
+            XCTAssertTrue(try selection.apply(.replace, vertexIDs: [0, 1]))
+            for axis in [SIMD3<Float>(1,0,0), SIMD3<Float>(0,1,0), SIMD3<Float>(0,0,1)] {
+                for angle in [Float.pi / 2, -Float.pi / 2] {
+                    var transaction = try VertexRotateGeometry.begin(
+                        mesh: source, table: table, selection: selection, transform: transform,
+                        axis: axis, projectSessionID: UUID(), projectGeneration: MutationGeneration())
+                    let result = try XCTUnwrap(VertexRotateGeometry.candidate(
+                        sourceMesh: source, transaction: &transaction, accumulatedAngle: angle))
+                    for offset in transaction.vertexIDs.indices {
+                        let expected = transaction.pivotWorld + simd_quatf(angle: angle, axis: axis).act(
+                            transaction.startWorldPositions[offset] - transaction.pivotWorld)
+                        let actual = transform.worldPosition(fromLocal:
+                            result.vertices[Int(transaction.vertexIDs[offset])].position)
+                        assertEqual(actual, expected, accuracy: max(0.001, simd_length(expected) * Float.ulpOfOne * 64))
+                    }
+                }
+            }
+        }
+    }
+
+    func testVertexRotatePivotIsSelectedLocalAABBCenterNotCentroidAndOrderIndependent() throws {
+        let source = isolatedVertices(4)
+        var altered = source
+        _ = altered.updatePositions([0: SIMD3(-10,-4,-2), 1: SIMD3(8,2,6), 2: SIMD3(8,2,-2), 3: SIMD3(100,100,100)])
+        let table = try MeshVertexTopologyTable.build(mesh: altered)
+        let transform = ObjectTransform(translation: SIMD3(7,8,9),
+                                        rotation: ObjectTransform.rotation(degrees: SIMD3(10,20,30)),
+                                        scale: SIMD3(2,0.5,3))
+        var a = try VertexSelection(table: table), b = try VertexSelection(table: table)
+        XCTAssertTrue(try a.apply(.replace, vertexIDs: [0,1,2]))
+        XCTAssertTrue(try b.apply(.replace, vertexIDs: [2,0,1]))
+        let ta = try VertexRotateGeometry.begin(mesh: altered, table: table, selection: a,
+            transform: transform, axis: SIMD3(0,0,1), projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        let tb = try VertexRotateGeometry.begin(mesh: altered, table: table, selection: b,
+            transform: transform, axis: SIMD3(0,0,1), projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        assertEqual(ta.pivotLocal, SIMD3(-1,-1,2)); assertEqual(ta.pivotLocal, tb.pivotLocal)
+        XCTAssertNotEqual(ta.pivotLocal, SIMD3<Float>(2,0,Float(2.0/3.0)))
+        assertEqual(ta.pivotWorld, transform.worldPosition(fromLocal: ta.pivotLocal))
+    }
+
+    func testVertexRotateAbsoluteAnglesDoNotAccumulatePreviewErrorAndFullTurnsAreNoOps() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        XCTAssertTrue(try selection.apply(.replace, vertexIDs: [0, 1, 2]))
+        var incremental = try VertexRotateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, axis: SIMD3(0,0,1), projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        var preview = source
+        for degrees in [10, 20, 45, 180, 370] as [Float] {
+            preview = try XCTUnwrap(VertexRotateGeometry.candidate(
+                sourceMesh: preview, transaction: &incremental,
+                accumulatedAngle: degrees * .pi / 180))
+        }
+        var oneShot = try VertexRotateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, axis: SIMD3(0,0,1), projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        let expected = try XCTUnwrap(VertexRotateGeometry.candidate(
+            sourceMesh: source, transaction: &oneShot, accumulatedAngle: 370 * .pi / 180))
+        XCTAssertEqual(preview.vertices, expected.vertices)
+        for angle in [Float(0), Float.pi * 2, -Float.pi * 2, Float.pi * 4] {
+            var noOp = oneShot
+            XCTAssertNil(try VertexRotateGeometry.candidate(
+                sourceMesh: source, transaction: &noOp, accumulatedAngle: angle))
+        }
+    }
+
+    func testVertexRotateLeavesUnselectedVerticesAndTopologyBitExact() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        XCTAssertTrue(try selection.apply(.replace, vertexIDs: [0, 2]))
+        var transaction = try VertexRotateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, axis: SIMD3(0,0,1), projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        let result = try XCTUnwrap(VertexRotateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, accumulatedAngle: .pi / 3))
+        XCTAssertEqual(result.vertices[1].position, source.vertices[1].position)
+        XCTAssertEqual(result.vertices[3].position, source.vertices[3].position)
+        XCTAssertEqual(result.indices, source.indices)
+        XCTAssertEqual(result.runtime.topologyID, source.runtime.topologyID)
+        XCTAssertEqual(result.runtime.topologyRevision, source.runtime.topologyRevision)
+        XCTAssertNotEqual(result.runtime.revision, source.runtime.revision)
+    }
+
+    func testVertexRotateFailureBoundariesAreAtomicAndClassified() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        XCTAssertTrue(try selection.apply(.replace, vertexIDs: [0, 1]))
+        for point in [VertexRotateFailurePoint.candidateAllocation, .candidatePostUpdate] {
+            var transaction = try VertexRotateGeometry.begin(mesh: source, table: table,
+                selection: selection, transform: .identity, axis: SIMD3(0,0,1),
+                projectSessionID: UUID(), projectGeneration: MutationGeneration())
+            XCTAssertThrowsError(try VertexRotateGeometry.candidate(
+                sourceMesh: source, transaction: &transaction, accumulatedAngle: .pi / 4,
+                failureInjector: .init { $0 == point })) { error in
+                    XCTAssertEqual(error as? VertexRotateError, .preparationFailed)
+                }
+            XCTAssertEqual(source, quad())
+        }
+        var transaction = try VertexRotateGeometry.begin(mesh: source, table: table,
+            selection: selection, transform: .identity, axis: SIMD3(0,0,1),
+            projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        XCTAssertThrowsError(try VertexRotateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, accumulatedAngle: .pi / 4,
+            failureInjector: .init { $0 == .roundTripValidation })) { error in
+                XCTAssertEqual(error as? VertexRotateError, .precisionLoss)
+            }
+    }
+
+    func testWorkspaceVertexRotatePreviewAndCommitBVHFailureAreAtomicAndRetryable() throws {
+        let start = Ray(origin: SIMD3<Float>(1,0,5), direction: SIMD3(0,0,-1))
+        let end = Ray(origin: SIMD3<Float>(0,1,5), direction: SIMD3(0,0,-1))
+        for point in [VertexRotateFailurePoint.previewBVHPreparation, .commitBVHPreparation] {
+            var shouldFail = true
+            let model = WorkspaceModel(vertexRotateFailureInjector: .init { shouldFail && $0 == point })
+            model.setInteractionMode(.vertexSelect); model.selectAllVertices(); model.setGizmoMode(.rotate)
+            let original = model.mesh, generation = model.projectMutationGeneration
+            XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start))
+            model.updateRotationGizmoDrag(ray: end)
+            if point == .previewBVHPreparation {
+                XCTAssertNil(model.vertexRotatePreviewMesh)
+                XCTAssertFalse(model.vertexRotatePreviewPickingHasIndexForTesting)
+                XCTAssertFalse(model.vertexRotateTransactionActiveForTesting)
+            } else {
+                XCTAssertNotNil(model.vertexRotatePreviewMesh)
+                model.endRotationGizmoDrag()
+            }
+            XCTAssertEqual(model.mesh, original); XCTAssertEqual(model.projectMutationGeneration, generation)
+            XCTAssertEqual(model.undoCount, 0); XCTAssertFalse(model.isGizmoDragging)
+            shouldFail = false
+            XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start))
+            model.updateRotationGizmoDrag(ray: end); model.endRotationGizmoDrag()
+            XCTAssertNotEqual(model.mesh, original); XCTAssertTrue(model.lastUndoIsVertexRotateForTesting)
+        }
+    }
+
     private func assertEqual(
         _ lhs: SIMD3<Float>, _ rhs: SIMD3<Float>, accuracy: Float = 0.000_01,
         file: StaticString = #filePath, line: UInt = #line

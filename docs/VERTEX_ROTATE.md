@@ -12,7 +12,7 @@ Pivotは選択頂点のobject-local AABB中心を現在の`ObjectTransform`でwo
 
 `VertexRotateTransaction`はworkspace session、project generation、topology ID／revision／fingerprint、vertex revision、source counts、selection version／count、sorted vertex IDs、開始local／world位置、pivot、sanitized Transform、world axis、accumulated angleを固定する。pointer update中にselection bitsetを再列挙しない。Preview meshとPreview BVHはcommitted workspaceから分離され、project bytes、history、Autosave、Recovery、STLへ参加しない。
 
-Beginはread-only prepared phaseで全fallible処理を完了し、成功後だけSculpt、Transform panel transaction、置換対象の通常Object Rotate dragを解消する。他のGizmo dragは開始を拒否する。Commitはcandidate meshとcommitted Picking BVHを準備してから非throwing installを行い、semantic `vertexRotate` commandを統合historyへ1件記録する。Cancel／stale／failureは開始hoverを復元し、commitはhoverをclearする。no-opはhistoryを作らない。
+BeginはVertex Select時にread-only prepared phaseで全fallible処理を完了し、成功後だけSculpt、Transform panel transaction、置換対象の通常Object Rotate dragを解消する。他のGizmo dragは開始を拒否する。通常のObject Rotateは従来どおり既存transactionを確定／cancelしてからsessionを開始する。Commitはcandidate meshとcommitted Picking BVHを準備してからnonthrowing installを行い、semantic `vertexRotate` commandを統合historyへ1件記録する。Preview BVH失敗はpreviewを破棄し、commit BVH失敗は確定meshを変更しないため、次のdragで再試行できる。Cancel／stale／failureは開始hoverを復元し、commitはhoverをclearする。0および整数full-turnはno-opとしてhistory、dirty、Autosaveを変更しない。
 
 ## Rendering and limits
 

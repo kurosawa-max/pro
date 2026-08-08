@@ -3441,10 +3441,10 @@ final class WorkspaceModel: ObservableObject {
         guard !isBenchmarkRunning else { return false }
         #endif
         if interactionMode != .vertexSelect {
-            guard !isGizmoDragging,
-                  let session = RotationGizmoGeometry.beginSession(
-                    handle: handle, ray: ray, transform: objectTransform) else { return false }
+            guard !isGizmoDragging else { return false }
             commitTransformPanelTransaction(); cancelStroke(); cancelAllGizmoDrags()
+            guard let session = RotationGizmoGeometry.beginSession(
+                handle: handle, ray: ray, transform: objectTransform) else { return false }
             rotationGizmoState.activeHandle = handle
             rotationGizmoState.dragSession = session
             return true
@@ -3532,7 +3532,8 @@ final class WorkspaceModel: ObservableObject {
                     accumulatedAngle: update.accumulatedAngle, profiler: profiler,
                     failureInjector: vertexRotateFailureInjector)
                 if let candidate {
-                    guard vertexRotatePickingCache.index(for: candidate) != nil else {
+                    guard !vertexRotateFailureInjector.shouldFail(.previewBVHPreparation),
+                          vertexRotatePickingCache.index(for: candidate) != nil else {
                         throw VertexRotateError.preparationFailed
                     }
                 } else { vertexRotatePickingCache.invalidate() }
@@ -3587,6 +3588,7 @@ final class WorkspaceModel: ObservableObject {
             guard let command = VertexRotateCommand(
                 topologyID: transaction.topologyID,
                 topologyRevision: transaction.topologyRevision, changes: changes),
+                  !vertexRotateFailureInjector.shouldFail(.commitBVHPreparation),
                   let preparedPicking = try? pickingCache.makeIndex(for: candidate) else {
                 vertexRotateError = "The vertex rotation could not be prepared safely."
                 vertexHover = vertexRotateStartHover ?? vertexHover
@@ -3969,6 +3971,14 @@ final class WorkspaceModel: ObservableObject {
         return false
     }
     var vertexTranslateTransactionActiveForTesting: Bool { vertexTranslateTransaction != nil }
+    var vertexRotateTransactionActiveForTesting: Bool { vertexRotateTransaction != nil }
+    var vertexRotatePreviewPickingHasIndexForTesting: Bool { vertexRotatePickingCache.bvh != nil }
+    var vertexRotatePreviewPickingRevisionForTesting: UInt64? { vertexRotatePickingCache.revision }
+    var lastUndoIsVertexRotateForTesting: Bool {
+        guard let command = history.undoStack.last else { return false }
+        if case .vertexRotate = command { return true }
+        return false
+    }
     func installVertexTranslateBeginConflictsForTesting(
         hoverVertexID: MeshVertexID = 1,
         strokeVertexID: Int = 0,

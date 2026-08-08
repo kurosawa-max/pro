@@ -61,7 +61,8 @@ enum VertexRotateError: Error, Equatable, LocalizedError {
 
 enum VertexRotateFailurePoint: Hashable {
     case sourceSnapshot, selectedPositionCopy, candidateAllocation
-    case candidateValidation, normalRebuild, rendererPreparation, commitBoundary
+    case roundTripValidation, candidatePostUpdate
+    case previewBVHPreparation, commitBVHPreparation, commitBoundary
 }
 
 struct VertexRotateFailureInjector {
@@ -123,7 +124,9 @@ enum VertexRotateGeometry {
                           failureInjector: VertexRotateFailureInjector = .init()) throws -> EditableMesh? {
         guard accumulatedAngle.isFinite else { throw VertexRotateError.nonFiniteAngle }
         transaction.update(accumulatedAngle: accumulatedAngle)
-        guard abs(accumulatedAngle) > 1e-7 else { return nil }
+        let fullTurn = Float.pi * 2
+        let canonicalAngle = accumulatedAngle.truncatingRemainder(dividingBy: fullTurn)
+        guard abs(canonicalAngle) > 1e-6 else { return nil }
         guard transaction.vertexIDs.count == transaction.startLocalPositions.count,
               transaction.vertexIDs.count == transaction.startWorldPositions.count,
               transaction.topologyID == sourceMesh.runtime.topologyID,
@@ -131,7 +134,7 @@ enum VertexRotateGeometry {
             throw VertexRotateError.staleSource
         }
         guard !failureInjector.shouldFail(.candidateAllocation) else { throw VertexRotateError.preparationFailed }
-        let rotation = simd_quatf(angle: accumulatedAngle, axis: transaction.axis)
+        let rotation = simd_quatf(angle: canonicalAngle, axis: transaction.axis)
         var updates: [Int: SIMD3<Float>] = [:]
         updates.reserveCapacity(transaction.selectedCount)
         for offset in transaction.vertexIDs.indices {
@@ -149,14 +152,16 @@ enum VertexRotateGeometry {
                     simd_length(transaction.startWorldPositions[offset] - transaction.pivotWorld)))
             let tolerance = max(0.000_01, magnitude * Float.ulpOfOne * 48)
             guard local.allFinite, actual.allFinite,
-                  simd_distance(actual, ideal) <= tolerance else { throw VertexRotateError.precisionLoss }
+                  simd_distance(actual, ideal) <= tolerance,
+                  !failureInjector.shouldFail(.roundTripValidation) else {
+                throw VertexRotateError.precisionLoss
+            }
             updates[Int(transaction.vertexIDs[offset])] = local
         }
         var candidate = sourceMesh
         let mutations = candidate.updatePositions(updates, profiler: profiler)
-        guard !failureInjector.shouldFail(.normalRebuild), mutations.count <= updates.count,
-              !failureInjector.shouldFail(.candidateValidation),
-              !failureInjector.shouldFail(.rendererPreparation) else {
+        guard mutations.count <= updates.count,
+              !failureInjector.shouldFail(.candidatePostUpdate) else {
             throw VertexRotateError.preparationFailed
         }
         return candidate
