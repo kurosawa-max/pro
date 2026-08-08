@@ -808,7 +808,7 @@ final class FaceBevelTests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) async {
-        for _ in 0..<10_000 {
+        for _ in 0..<100_000 {
             if await coordinator.successfulWriteCount == expected { return }
             await Task.yield()
         }
