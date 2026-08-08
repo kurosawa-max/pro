@@ -13,7 +13,7 @@ struct MetalCanvas: UIViewRepresentable {
         guard let renderer = MetalRenderer(view: view, profiler: model.profiler) else { return view }
         context.coordinator.renderer = renderer
         renderer.objectTransform = model.objectTransform
-        renderer.gizmoOriginOverride = model.vertexTranslatePivotWorld
+        renderer.gizmoOriginOverride = model.selectedVertexGizmoOriginWorld
         renderer.gizmoState = model.translationGizmoState
         renderer.rotationGizmoState = model.rotationGizmoState
         renderer.scaleGizmoState = model.scaleGizmoState
@@ -51,7 +51,7 @@ struct MetalCanvas: UIViewRepresentable {
         context.coordinator.setInputSuppressed(isInputSuppressed)
         context.coordinator.renderer?.camera = model.camera
         context.coordinator.renderer?.objectTransform = model.objectTransform
-        context.coordinator.renderer?.gizmoOriginOverride = model.vertexTranslatePivotWorld
+        context.coordinator.renderer?.gizmoOriginOverride = model.selectedVertexGizmoOriginWorld
         context.coordinator.renderer?.gizmoState = model.translationGizmoState
         context.coordinator.renderer?.rotationGizmoState = model.rotationGizmoState
         context.coordinator.renderer?.scaleGizmoState = model.scaleGizmoState

@@ -987,6 +987,120 @@ final class VertexSelectionTests: XCTestCase {
         XCTAssertEqual(renderer.vertexSelectionOverlaySelectedUploadCount, selectionUploads)
     }
 
+    func testVertexRotatePivotAndWorldAxisCandidateAreAbsoluteFromStart() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        XCTAssertTrue(try selection.apply(.replace, vertexIDs: [0, 1, 2, 3]))
+        let transform = ObjectTransform(
+            translation: SIMD3(100, -20, 7),
+            rotation: ObjectTransform.rotation(degrees: SIMD3(20, 35, -15)),
+            scale: SIMD3(2, 0.5, 3))
+        var transaction = try VertexRotateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: transform,
+            axis: SIMD3(0, 0, 1), projectSessionID: UUID(),
+            projectGeneration: MutationGeneration())
+        assertEqual(transaction.pivotLocal, SIMD3(0.5, 0.5, 0))
+        assertEqual(transaction.pivotWorld, transform.worldPosition(fromLocal: SIMD3(0.5, 0.5, 0)))
+        _ = try VertexRotateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, accumulatedAngle: .pi / 4)
+        let halfTurn = try XCTUnwrap(VertexRotateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, accumulatedAngle: .pi))
+        let expected = transaction.pivotWorld
+            + simd_quatf(angle: .pi, axis: SIMD3(0, 0, 1)).act(
+                transaction.startWorldPositions[0] - transaction.pivotWorld)
+        assertEqual(transform.worldPosition(fromLocal: halfTurn.vertices[0].position), expected,
+                    accuracy: 0.000_2)
+        XCTAssertEqual(transaction.accumulatedAngle, .pi, accuracy: 0.000_01)
+    }
+
+    func testVertexRotateTransactionRejectsSelectionTransformAndVertexChanges() throws {
+        var source = quad()
+        let table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        XCTAssertTrue(try selection.apply(.add, vertexID: 0))
+        let session = UUID(), generation = MutationGeneration()
+        let transaction = try VertexRotateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            axis: SIMD3(1, 0, 0), projectSessionID: session, projectGeneration: generation)
+        XCTAssertTrue(transaction.matches(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            projectSessionID: session, projectGeneration: generation))
+        XCTAssertTrue(try selection.apply(.add, vertexID: 1))
+        XCTAssertFalse(transaction.matches(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            projectSessionID: session, projectGeneration: generation))
+        _ = source.updatePositions([0: SIMD3(0.1, 0, 0)])
+        XCTAssertFalse(transaction.matches(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            projectSessionID: session, projectGeneration: generation))
+    }
+
+    func testVertexRotateSupportsMultiTurnFiniteResults() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        XCTAssertTrue(try selection.apply(.replace, vertexIDs: [0, 1]))
+        var transaction = try VertexRotateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            axis: SIMD3(0, 0, 1), projectSessionID: UUID(),
+            projectGeneration: MutationGeneration())
+        for angle in [Float.pi * 2, Float.pi * 4, Float.pi * 4 + 0.25] {
+            let candidate = try XCTUnwrap(VertexRotateGeometry.candidate(
+                sourceMesh: source, transaction: &transaction, accumulatedAngle: angle))
+            XCTAssertTrue(candidate.vertices.allSatisfy { $0.position.allFinite && $0.normal.allFinite })
+        }
+    }
+
+    func testWorkspaceVertexRotatePreviewCommitUndoRedoAndCancel() throws {
+        let model = WorkspaceModel()
+        model.setInteractionMode(.vertexSelect); model.selectAllVertices(); model.setGizmoMode(.rotate)
+        let original = model.mesh, selection = model.vertexSelection
+        let start = Ray(origin: SIMD3<Float>(1, 0, 5), direction: SIMD3(0, 0, -1))
+        let end = Ray(origin: SIMD3<Float>(0, 1, 5), direction: SIMD3(0, 0, -1))
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start))
+        model.updateRotationGizmoDrag(ray: end)
+        XCTAssertNotNil(model.vertexRotatePreviewMesh)
+        XCTAssertEqual(model.mesh, original); XCTAssertEqual(model.undoCount, 0)
+        model.cancelRotationGizmoDrag()
+        XCTAssertEqual(model.mesh, original); XCTAssertNil(model.vertexRotatePreviewMesh)
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start))
+        model.updateRotationGizmoDrag(ray: end); model.endRotationGizmoDrag()
+        XCTAssertNotEqual(model.mesh, original); XCTAssertEqual(model.undoCount, 1)
+        XCTAssertEqual(model.vertexSelection, selection); XCTAssertTrue(model.objectTransform.isIdentity)
+        model.undo(); XCTAssertEqual(model.mesh, original); XCTAssertEqual(model.vertexSelection, selection)
+        model.redo(); XCTAssertNotEqual(model.mesh, original)
+    }
+
+    func testVertexRotateFailedLateBeginPreservesWorkspace() throws {
+        let model = WorkspaceModel(vertexRotateFailureInjector: .init { $0 == .commitBoundary })
+        model.setInteractionMode(.vertexSelect); model.selectAllVertices(); model.setGizmoMode(.rotate)
+        let mesh = model.mesh, transform = model.objectTransform, selection = model.vertexSelection
+        let generation = model.projectMutationGeneration, project = try model.projectData()
+        XCTAssertFalse(model.beginRotationGizmoDrag(
+            handle: .zAxis, ray: Ray(origin: SIMD3(1, 0, 5), direction: SIMD3(0, 0, -1))))
+        XCTAssertEqual(model.mesh, mesh); XCTAssertEqual(model.objectTransform, transform)
+        XCTAssertEqual(model.vertexSelection, selection); XCTAssertEqual(model.projectMutationGeneration, generation)
+        XCTAssertEqual(try model.projectData(), project); XCTAssertEqual(model.undoCount, 0)
+        XCTAssertNil(model.vertexRotatePreviewMesh); XCTAssertFalse(model.isGizmoDragging)
+    }
+
+    func testVertexRotateWorkingMemoryPreflightAndInvalidAngle() throws {
+        XCTAssertThrowsError(try VertexRotateGeometry.estimatedPeakBytes(
+            vertexCount: Int.max, indexCount: Int.max, selectedCount: Int.max))
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        XCTAssertTrue(try selection.apply(.add, vertexID: 0))
+        XCTAssertThrowsError(try VertexRotateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            axis: SIMD3(0, 0, 1), projectSessionID: UUID(),
+            projectGeneration: MutationGeneration(), memoryLimit: 1))
+        var transaction = try VertexRotateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            axis: SIMD3(0, 0, 1), projectSessionID: UUID(),
+            projectGeneration: MutationGeneration())
+        XCTAssertThrowsError(try VertexRotateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, accumulatedAngle: .nan))
+    }
+
     private func assertEqual(
         _ lhs: SIMD3<Float>, _ rhs: SIMD3<Float>, accuracy: Float = 0.000_01,
         file: StaticString = #filePath, line: UInt = #line

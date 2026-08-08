@@ -56,6 +56,8 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var vertexSelectionError: String?
     @Published private(set) var vertexTranslatePreviewMesh: EditableMesh?
     @Published private(set) var vertexTranslateError: String?
+    @Published private(set) var vertexRotatePreviewMesh: EditableMesh?
+    @Published private(set) var vertexRotateError: String?
     private var vertexOverlaySelectedError: String?
     private var vertexOverlayHoverError: String?
     private var edgeOverlaySelectedError: String?
@@ -151,6 +153,10 @@ final class WorkspaceModel: ObservableObject {
         transform: ObjectTransform, world: SIMD3<Float>
     )?
     private let vertexTranslateFailureInjector: VertexTranslateFailureInjector
+    private var vertexRotateTransaction: VertexRotateTransaction?
+    private var vertexRotateStartHover: VertexHoverState?
+    private let vertexRotatePickingCache = MeshBVHCache()
+    private let vertexRotateFailureInjector: VertexRotateFailureInjector
 
     private var isFaceTopologyEditRunning: Bool {
         isFaceExtrudeRunning || isFaceInsetRunning || isFaceBevelRunning || isEdgeBevelRunning
@@ -212,10 +218,12 @@ final class WorkspaceModel: ObservableObject {
 
     init(autosaveCoordinator: ProjectAutosaveCoordinator = ProjectAutosaveCoordinator(),
          pickingCache: MeshBVHCache = MeshBVHCache(),
-         vertexTranslateFailureInjector: VertexTranslateFailureInjector = VertexTranslateFailureInjector()) {
+         vertexTranslateFailureInjector: VertexTranslateFailureInjector = VertexTranslateFailureInjector(),
+         vertexRotateFailureInjector: VertexRotateFailureInjector = VertexRotateFailureInjector()) {
         self.autosaveCoordinator = autosaveCoordinator
         self.pickingCache = pickingCache
         self.vertexTranslateFailureInjector = vertexTranslateFailureInjector
+        self.vertexRotateFailureInjector = vertexRotateFailureInjector
         self.lastSavedGeneration = projectMutationGeneration
         rebuildFaceSelectionForCurrentTopology()
         rebuildEdgeSelectionForCurrentTopology()
@@ -602,7 +610,17 @@ final class WorkspaceModel: ObservableObject {
         let expectedProjectGeneration: MutationGeneration
         let expectedSelectionVersion: VertexSelectionVersion
     }
-    var renderedMesh: EditableMesh { vertexTranslatePreviewMesh ?? mesh }
+    private struct PreparedVertexRotateDrag {
+        let transaction: VertexRotateTransaction
+        let gizmoSession: RotationDragSession
+        let activeHandle: RotationGizmoHandle
+        let startHover: VertexHoverState
+        let expectedMeshRevision: UInt64
+        let expectedTransform: ObjectTransform
+        let expectedProjectGeneration: MutationGeneration
+        let expectedSelectionVersion: VertexSelectionVersion
+    }
+    var renderedMesh: EditableMesh { vertexRotatePreviewMesh ?? vertexTranslatePreviewMesh ?? mesh }
     var vertexTranslatePivotWorld: SIMD3<Float>? {
         if let transaction = vertexTranslateTransaction {
             return transaction.pivotWorld + transaction.worldDelta
@@ -622,6 +640,25 @@ final class WorkspaceModel: ObservableObject {
         vertexTranslatePivotCache = (
             mesh.runtime.revision, vertexSelection.version, safeTransform, world)
         return world
+    }
+    var vertexRotatePivotWorld: SIMD3<Float>? {
+        if let transaction = vertexRotateTransaction { return transaction.pivotWorld }
+        guard interactionMode == .vertexSelect, gizmoMode == .rotate,
+              let table = meshVertexTopologyTable else { return nil }
+        let safeTransform = objectTransform.sanitized()
+        if let cached = vertexTranslatePivotCache,
+           cached.meshRevision == mesh.runtime.revision,
+           cached.selectionVersion == vertexSelection.version,
+           cached.transform == safeTransform { return cached.world }
+        guard let world = try? VertexTranslateGeometry.pivot(
+            mesh: mesh, table: table, selection: vertexSelection,
+            transform: safeTransform).world else { return nil }
+        vertexTranslatePivotCache = (
+            mesh.runtime.revision, vertexSelection.version, safeTransform, world)
+        return world
+    }
+    var selectedVertexGizmoOriginWorld: SIMD3<Float>? {
+        vertexTranslatePivotWorld ?? vertexRotatePivotWorld
     }
     var totalVertexCount: Int { meshVertexTopologyTable?.records.count ?? 0 }
     var effectiveVertexHoverID: MeshVertexID? {
@@ -3393,28 +3430,125 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { return nil }
         #endif
-        return RotationGizmoGeometry.hit(ray: ray, origin: objectTransform.translation, scale: scale)
+        return RotationGizmoGeometry.hit(
+            ray: ray, origin: vertexRotatePivotWorld ?? objectTransform.translation, scale: scale)
     }
 
     @discardableResult
     func beginRotationGizmoDrag(handle: RotationGizmoHandle, ray: Ray) -> Bool {
-        guard showsTranslationGizmo, gizmoMode == .rotate, !isGizmoDragging else { return false }
+        guard showsTranslationGizmo, gizmoMode == .rotate else { return false }
         #if DEBUG
         guard !isBenchmarkRunning else { return false }
         #endif
-        commitTransformPanelTransaction()
-        cancelStroke()
-        cancelAllGizmoDrags()
-        guard let session = RotationGizmoGeometry.beginSession(handle: handle, ray: ray,
-                                                                transform: objectTransform) else { return false }
-        rotationGizmoState.activeHandle = handle
-        rotationGizmoState.dragSession = session
+        if interactionMode != .vertexSelect {
+            guard !isGizmoDragging,
+                  let session = RotationGizmoGeometry.beginSession(
+                    handle: handle, ray: ray, transform: objectTransform) else { return false }
+            commitTransformPanelTransaction(); cancelStroke(); cancelAllGizmoDrags()
+            rotationGizmoState.activeHandle = handle
+            rotationGizmoState.dragSession = session
+            return true
+        }
+        let mayReplaceOrdinaryRotation = rotationGizmoState.isDragging
+            && vertexRotateTransaction == nil
+            && !translationGizmoState.isDragging && !scaleGizmoState.isDragging
+        guard !isGizmoDragging || mayReplaceOrdinaryRotation,
+              let prepared = try? prepareVertexRotateDrag(handle: handle, ray: ray) else { return false }
+        commitPreparedVertexRotateDrag(prepared)
         return true
+    }
+
+    private func prepareVertexRotateDrag(
+        handle: RotationGizmoHandle, ray: Ray
+    ) throws -> PreparedVertexRotateDrag {
+        guard ray.origin.allFinite, ray.direction.allFinite,
+              simd_length_squared(ray.direction) > 1e-12,
+              let table = meshVertexTopologyTable, vertexSelection.matches(table),
+              vertexSelection.selectedCount > 0, !isTopologyEditRunning,
+              !isFaceSelectionProcessing, !isSTLImporting, !isMeshDiagnosticsRunning,
+              !isMeshCleanupRunning, !isRecoveryOperationInProgress,
+              !isRecoveryPromptPresented else { throw VertexRotateError.preparationFailed }
+        guard !vertexRotateFailureInjector.shouldFail(.sourceSnapshot) else {
+            throw VertexRotateError.preparationFailed
+        }
+        var expectedMesh = mesh
+        if let strokeBefore { _ = expectedMesh.updatePositions(strokeBefore) }
+        let expectedTransform = rotationGizmoState.dragSession?.startTransform ?? objectTransform
+        var expectedGeneration = projectMutationGeneration
+        if let panelTransformBefore,
+           TransformCommand(before: panelTransformBefore, after: objectTransform) != nil {
+            expectedGeneration.advance()
+        }
+        let transaction = try VertexRotateGeometry.begin(
+            mesh: expectedMesh, table: table, selection: vertexSelection,
+            transform: expectedTransform, axis: handle.axis,
+            projectSessionID: workspaceSessionID, projectGeneration: expectedGeneration,
+            failureInjector: vertexRotateFailureInjector)
+        guard let session = RotationGizmoGeometry.beginSession(
+            handle: handle, ray: ray, origin: transaction.pivotWorld,
+            startTransform: expectedTransform),
+              !vertexRotateFailureInjector.shouldFail(.commitBoundary) else {
+            throw VertexRotateError.preparationFailed
+        }
+        return PreparedVertexRotateDrag(
+            transaction: transaction, gizmoSession: session, activeHandle: handle,
+            startHover: vertexHover, expectedMeshRevision: expectedMesh.runtime.revision,
+            expectedTransform: expectedTransform.sanitized(),
+            expectedProjectGeneration: expectedGeneration,
+            expectedSelectionVersion: vertexSelection.version)
+    }
+
+    private func commitPreparedVertexRotateDrag(_ prepared: PreparedVertexRotateDrag) {
+        commitTransformPanelTransaction(); cancelStroke(); cancelRotationGizmoDrag()
+        assert(mesh.runtime.revision == prepared.expectedMeshRevision)
+        assert(objectTransform.sanitized() == prepared.expectedTransform)
+        assert(projectMutationGeneration == prepared.expectedProjectGeneration)
+        assert(vertexSelection.version == prepared.expectedSelectionVersion)
+        vertexRotateTransaction = prepared.transaction
+        vertexRotateStartHover = prepared.startHover
+        vertexRotatePreviewMesh = nil
+        vertexRotatePickingCache.invalidate()
+        vertexRotateError = nil
+        vertexHover = vertexHover.updating(nil)
+        rotationGizmoState.activeHandle = prepared.activeHandle
+        rotationGizmoState.dragSession = prepared.gizmoSession
+        status = "Rotate Selected Vertices"
     }
 
     func updateRotationGizmoDrag(ray: Ray) {
         guard var session = rotationGizmoState.dragSession,
               let update = RotationGizmoGeometry.rotation(session: session, ray: ray) else { return }
+        if var transaction = vertexRotateTransaction {
+            do {
+                guard let table = meshVertexTopologyTable,
+                      transaction.matches(mesh: mesh, table: table, selection: vertexSelection,
+                                          transform: objectTransform,
+                                          projectSessionID: workspaceSessionID,
+                                          projectGeneration: projectMutationGeneration) else {
+                    throw VertexRotateError.staleSource
+                }
+                let candidate = try VertexRotateGeometry.candidate(
+                    sourceMesh: vertexRotatePreviewMesh ?? mesh, transaction: &transaction,
+                    accumulatedAngle: update.accumulatedAngle, profiler: profiler,
+                    failureInjector: vertexRotateFailureInjector)
+                if let candidate {
+                    guard vertexRotatePickingCache.index(for: candidate) != nil else {
+                        throw VertexRotateError.preparationFailed
+                    }
+                } else { vertexRotatePickingCache.invalidate() }
+                vertexRotatePreviewMesh = candidate
+                vertexRotateTransaction = transaction
+                vertexRotateError = nil
+                session.lastRawAngle = update.rawAngle
+                session.accumulatedAngle = update.accumulatedAngle
+                rotationGizmoState.dragSession = session
+                status = "Rotate Selected Vertices"
+            } catch {
+                vertexRotateError = error.localizedDescription
+                cancelRotationGizmoDrag()
+            }
+            return
+        }
         var transform = session.startTransform
         transform.rotation = update.rotation
         objectTransform = transform.sanitized()
@@ -3425,6 +3559,50 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func endRotationGizmoDrag() {
+        if let transaction = vertexRotateTransaction {
+            let candidate = vertexRotatePreviewMesh
+            rotationGizmoState.dragSession = nil; rotationGizmoState.activeHandle = nil
+            vertexRotateTransaction = nil; vertexRotatePreviewMesh = nil
+            vertexRotatePickingCache.invalidate()
+            guard let candidate else {
+                vertexRotateStartHover = nil; status = "Vertex rotation unchanged"; return
+            }
+            guard let table = meshVertexTopologyTable,
+                  transaction.matches(mesh: mesh, table: table, selection: vertexSelection,
+                                      transform: objectTransform,
+                                      projectSessionID: workspaceSessionID,
+                                      projectGeneration: projectMutationGeneration) else {
+                vertexRotateError = VertexRotateError.staleSource.localizedDescription
+                vertexHover = vertexRotateStartHover ?? vertexHover
+                vertexRotateStartHover = nil; status = "Vertex rotation cancelled"; return
+            }
+            let changes = transaction.vertexIDs.enumerated().compactMap { offset, id -> VertexChange? in
+                let index = Int(id), before = transaction.startLocalPositions[offset]
+                let after = candidate.vertices[index].position
+                return before == after ? nil : VertexChange(index: index, before: before, after: after)
+            }
+            guard !changes.isEmpty else {
+                vertexRotateStartHover = nil; status = "Vertex rotation unchanged"; return
+            }
+            guard let command = VertexRotateCommand(
+                topologyID: transaction.topologyID,
+                topologyRevision: transaction.topologyRevision, changes: changes),
+                  let preparedPicking = try? pickingCache.makeIndex(for: candidate) else {
+                vertexRotateError = "The vertex rotation could not be prepared safely."
+                vertexHover = vertexRotateStartHover ?? vertexHover
+                vertexRotateStartHover = nil; status = "Vertex rotation cancelled"; return
+            }
+            mesh = candidate
+            pickingCache.install(preparedPicking, for: mesh)
+            sculptSpatialIndex.didUpdate(changes.map {
+                VertexMutation(index: $0.index, before: $0.before, after: $0.after)
+            }, mesh: mesh)
+            record(.vertexRotate(command))
+            vertexRotateError = nil; vertexHover = vertexHover.updating(nil)
+            vertexRotateStartHover = nil
+            status = "Rotated \(changes.count) selected vertices"
+            return
+        }
         let startTransform = rotationGizmoState.dragSession?.startTransform
         rotationGizmoState.dragSession = nil
         rotationGizmoState.activeHandle = nil
@@ -3432,6 +3610,14 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func cancelRotationGizmoDrag() {
+        if vertexRotateTransaction != nil {
+            vertexRotateTransaction = nil; vertexRotatePreviewMesh = nil
+            vertexRotatePickingCache.invalidate()
+            vertexHover = vertexRotateStartHover ?? vertexHover
+            vertexRotateStartHover = nil
+            rotationGizmoState.dragSession = nil; rotationGizmoState.activeHandle = nil
+            return
+        }
         if let session = rotationGizmoState.dragSession { objectTransform = session.startTransform }
         rotationGizmoState.dragSession = nil
         rotationGizmoState.activeHandle = nil
@@ -3528,6 +3714,14 @@ final class WorkspaceModel: ObservableObject {
             guard translation.topologyID == mesh.runtime.topologyID,
                   translation.topologyRevision == mesh.runtime.topologyRevision else { return }
             let positions = Dictionary(uniqueKeysWithValues: translation.changes.map {
+                ($0.index, useAfter ? $0.after : $0.before)
+            })
+            let mutations = mesh.updatePositions(positions, profiler: profiler)
+            sculptSpatialIndex.didUpdate(mutations, mesh: mesh)
+        case .vertexRotate(let rotation):
+            guard rotation.topologyID == mesh.runtime.topologyID,
+                  rotation.topologyRevision == mesh.runtime.topologyRevision else { return }
+            let positions = Dictionary(uniqueKeysWithValues: rotation.changes.map {
                 ($0.index, useAfter ? $0.after : $0.before)
             })
             let mutations = mesh.updatePositions(positions, profiler: profiler)
