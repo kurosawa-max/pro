@@ -15,7 +15,6 @@ struct VertexRotateTransaction: Equatable {
     let projectGeneration: MutationGeneration
     let vertexIDs: [MeshVertexID]
     let startLocalPositions: [SIMD3<Float>]
-    let startWorldPositions: [SIMD3<Float>]
     let pivotLocal: SIMD3<Float>
     let pivotWorld: SIMD3<Float>
     let transform: ObjectTransform
@@ -94,15 +93,14 @@ enum VertexRotateGeometry {
               axis.allFinite, simd_length_squared(axis) > 0 else { throw VertexRotateError.invalidTransform }
         var minimum = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
         var maximum = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
-        var local: [SIMD3<Float>] = [], world: [SIMD3<Float>] = []
-        local.reserveCapacity(ids.count); world.reserveCapacity(ids.count)
+        var local: [SIMD3<Float>] = []
+        local.reserveCapacity(ids.count)
         for id in ids {
             guard Int(id) < mesh.vertices.count else { throw VertexRotateError.staleSource }
             let p = mesh.vertices[Int(id)].position
-            let w = safeTransform.worldPosition(fromLocal: p)
-            guard p.allFinite, w.allFinite else { throw VertexRotateError.staleSource }
+            guard p.allFinite else { throw VertexRotateError.staleSource }
             minimum = simd_min(minimum, p); maximum = simd_max(maximum, p)
-            local.append(p); world.append(w)
+            local.append(p)
         }
         let pivotLocal = (minimum + maximum) * 0.5
         let pivotWorld = safeTransform.worldPosition(fromLocal: pivotLocal)
@@ -114,7 +112,7 @@ enum VertexRotateGeometry {
             sourceIndexCount: mesh.indices.count, selectionVersion: selection.version,
             selectedCount: selection.selectedCount, projectSessionID: projectSessionID,
             projectGeneration: projectGeneration, vertexIDs: ids,
-            startLocalPositions: local, startWorldPositions: world,
+            startLocalPositions: local,
             pivotLocal: pivotLocal, pivotWorld: pivotWorld,
             transform: safeTransform, axis: simd_normalize(axis))
     }
@@ -128,7 +126,6 @@ enum VertexRotateGeometry {
         let canonicalAngle = accumulatedAngle.truncatingRemainder(dividingBy: fullTurn)
         guard abs(canonicalAngle) > 1e-6 else { return nil }
         guard transaction.vertexIDs.count == transaction.startLocalPositions.count,
-              transaction.vertexIDs.count == transaction.startWorldPositions.count,
               transaction.topologyID == sourceMesh.runtime.topologyID,
               transaction.topologyRevision == sourceMesh.runtime.topologyRevision else {
             throw VertexRotateError.staleSource
@@ -138,21 +135,26 @@ enum VertexRotateGeometry {
         var updates: [Int: SIMD3<Float>] = [:]
         updates.reserveCapacity(transaction.selectedCount)
         for offset in transaction.vertexIDs.indices {
-            let ideal = transaction.pivotWorld
-                + rotation.act(transaction.startWorldPositions[offset] - transaction.pivotWorld)
-            let h = transaction.transform.inverseModelMatrix * SIMD4<Float>(ideal, 1)
-            guard h.x.isFinite, h.y.isFinite, h.z.isFinite, h.w.isFinite, abs(h.w) > 1e-8 else {
+            let localOffset = transaction.startLocalPositions[offset] - transaction.pivotLocal
+            let world4 = transaction.transform.modelMatrix * SIMD4<Float>(localOffset, 0)
+            let worldOffset = SIMD3<Float>(world4.x, world4.y, world4.z)
+            let rotatedWorldOffset = rotation.act(worldOffset)
+            let local4 = transaction.transform.inverseModelMatrix * SIMD4<Float>(rotatedWorldOffset, 0)
+            guard localOffset.allFinite, worldOffset.allFinite, rotatedWorldOffset.allFinite,
+                  local4.x.isFinite, local4.y.isFinite, local4.z.isFinite else {
                 throw VertexRotateError.precisionLoss
             }
-            let local = SIMD3<Float>(h.x, h.y, h.z) / h.w
-            let actual = transaction.transform.worldPosition(fromLocal: local)
+            let rotatedLocalOffset = SIMD3<Float>(local4.x, local4.y, local4.z)
+            let local = transaction.pivotLocal + rotatedLocalOffset
+            let actual4 = transaction.transform.modelMatrix * SIMD4<Float>(local - transaction.pivotLocal, 0)
+            let actualWorldOffset = SIMD3<Float>(actual4.x, actual4.y, actual4.z)
             let magnitude = max(
-                max(1, simd_length(ideal)),
-                max(simd_length(transaction.pivotWorld),
-                    simd_length(transaction.startWorldPositions[offset] - transaction.pivotWorld)))
+                max(1, simd_length(worldOffset)),
+                max(simd_length(rotatedWorldOffset),
+                    max(simd_length(localOffset), simd_length(rotatedLocalOffset))))
             let tolerance = max(0.000_01, magnitude * Float.ulpOfOne * 48)
-            guard local.allFinite, actual.allFinite,
-                  simd_distance(actual, ideal) <= tolerance,
+            guard local.allFinite, actualWorldOffset.allFinite,
+                  simd_distance(actualWorldOffset, rotatedWorldOffset) <= tolerance,
                   !failureInjector.shouldFail(.roundTripValidation) else {
                 throw VertexRotateError.precisionLoss
             }
@@ -185,7 +187,7 @@ enum VertexRotateGeometry {
         try add(triangles, MemoryLayout<TriangleReference>.stride * 2)
         try add(triangles, MemoryLayout<BVHNode>.stride * 4)
         try add(selectedCount, MemoryLayout<MeshVertexID>.stride)
-        try add(selectedCount, MemoryLayout<SIMD3<Float>>.stride * 3)
+        try add(selectedCount, MemoryLayout<SIMD3<Float>>.stride * 2)
         try add(selectedCount, 64)
         return bytes
     }
