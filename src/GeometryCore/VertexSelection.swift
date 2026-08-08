@@ -150,6 +150,8 @@ enum VertexSelectionOperation: String, CaseIterable, Hashable {
     case toggle = "Toggle"
 }
 
+// Runtime content identity. A real selection mutation replaces the UUID; no-op
+// operations preserve it, so equality does not require scanning the dense bitset.
 struct VertexSelectionVersion: Equatable, Hashable { let id: UUID }
 
 struct VertexSelection: Equatable {
@@ -443,7 +445,7 @@ struct VertexTranslateTransaction: Equatable {
             && table.sourceIndexCount == mesh.indices.count
             && selection.matches(table)
             && selectionVersion == selection.version
-            && vertexIDs == selection.selectedVertexIDs()
+            && vertexIDs.count == selection.selectedCount
             && self.transform == transform.sanitized()
             && self.projectSessionID == projectSessionID
             && self.projectGeneration == projectGeneration
@@ -603,13 +605,15 @@ enum VertexTranslateGeometry {
         }
         var candidate = sourceMesh
         let mutations = candidate.updatePositions(updates, profiler: profiler)
-        guard !failureInjector.shouldFail(.normalRebuild),
-              !failureInjector.shouldFail(.candidateValidation),
-              !failureInjector.shouldFail(.rendererPreparation) else {
+        guard !failureInjector.shouldFail(.normalRebuild) else {
             throw VertexTranslateError.preparationFailed
         }
         guard mutations.isEmpty || mutations.count == updates.count else {
             throw VertexTranslateError.staleSource
+        }
+        guard !failureInjector.shouldFail(.candidateValidation),
+              !failureInjector.shouldFail(.rendererPreparation) else {
+            throw VertexTranslateError.preparationFailed
         }
         return candidate
     }
@@ -627,9 +631,17 @@ enum VertexTranslateGeometry {
             guard !firstOverflow, !secondOverflow else { throw VertexTranslateError.allocationOverflow }
             bytes = total
         }
-        // Source and preview vertex/index storage plus selection snapshots and update staging.
+        // Source and preview CPU mesh storage.
         try add(vertexCount, MemoryLayout<MeshVertex>.stride * 2)
         try add(indexCount, MemoryLayout<UInt32>.stride * 2)
+        // Active and candidate GPU vertex buffers can coexist during upload.
+        try add(vertexCount, MemoryLayout<MeshVertex>.stride * 2)
+        // Preview Picking owns one reference per triangle and up to two BVH nodes
+        // per triangle while the committed mesh and preview mesh remain alive.
+        let triangleCount = indexCount / 3
+        try add(triangleCount, MemoryLayout<TriangleReference>.stride)
+        try add(triangleCount, MemoryLayout<BVHNode>.stride * 2)
+        // Selected IDs, start/candidate positions, and dictionary/update staging.
         try add(selectedCount, MemoryLayout<MeshVertexID>.stride)
         try add(selectedCount, MemoryLayout<SIMD3<Float>>.stride * 2)
         try add(selectedCount, 64)

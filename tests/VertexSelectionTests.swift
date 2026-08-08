@@ -685,10 +685,44 @@ final class VertexSelectionTests: XCTestCase {
             mesh: replacement, table: table, selection: selection, transform: .identity))
     }
 
-    func testVertexTranslateWorkingMemoryPreflightIncludesSourceAndPreview() throws {
+    func testVertexTranslateRuntimeSelectionIdentityPreservesNoOpAndRejectsRewoundContent() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        XCTAssertTrue(try selection.apply(.add, vertexID: 0))
+        let transaction = try VertexTranslateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity)
+        let boundVersion = selection.version
+
+        XCTAssertFalse(try selection.apply(.add, vertexID: 0))
+        XCTAssertEqual(selection.version, boundVersion)
+        XCTAssertTrue(transaction.matches(
+            mesh: source, table: table, selection: selection, transform: .identity))
+
+        XCTAssertTrue(try selection.apply(.add, vertexID: 1))
+        XCTAssertTrue(try selection.apply(.remove, vertexID: 1))
+        XCTAssertEqual(selection.selectedVertexIDs(), transaction.vertexIDs)
+        XCTAssertNotEqual(selection.version, boundVersion)
+        XCTAssertFalse(transaction.matches(
+            mesh: source, table: table, selection: selection, transform: .identity))
+
+        var recreated = try VertexSelection(table: table)
+        XCTAssertTrue(try recreated.apply(.add, vertexID: 0))
+        XCTAssertEqual(recreated.selectedVertexIDs(), transaction.vertexIDs)
+        XCTAssertNotEqual(recreated.version, boundVersion)
+        XCTAssertFalse(transaction.matches(
+            mesh: source, table: table, selection: recreated, transform: .identity))
+    }
+
+    func testVertexTranslateWorkingMemoryPreflightIncludesMeshesRendererAndPicking() throws {
         let bytes = try VertexTranslateGeometry.estimatedPeakBytes(
             vertexCount: 100, indexCount: 300, selectedCount: 20)
-        XCTAssertGreaterThan(bytes, 100 * MemoryLayout<MeshVertex>.stride * 2)
+        let triangleCount = 100
+        let meshAndRendererVertices = 100 * MemoryLayout<MeshVertex>.stride * 4
+        let sourceAndPreviewIndices = 300 * MemoryLayout<UInt32>.stride * 2
+        let previewPicking = triangleCount * (
+            MemoryLayout<TriangleReference>.stride + MemoryLayout<BVHNode>.stride * 2)
+        XCTAssertGreaterThanOrEqual(
+            bytes, meshAndRendererVertices + sourceAndPreviewIndices + previewPicking)
         XCTAssertThrowsError(try VertexTranslateGeometry.estimatedPeakBytes(
             vertexCount: Int.max, indexCount: Int.max, selectedCount: Int.max))
         let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)

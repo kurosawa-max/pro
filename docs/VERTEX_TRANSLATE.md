@@ -25,6 +25,8 @@ A drag transaction captures:
 - local and world pivot;
 - latest world and local deltas.
 
+The selection version is a UUID content identity that changes only when the dense selection actually changes. Runtime drag validation compares this version and the O(1) selected count; it does not rebuild the selected-ID array on every pointer update. Topology identity, fingerprint, vertex revision, project session/generation, and sanitized Transform remain independently bound.
+
 Every preview position is reconstructed from `startPosition + currentLocalDelta`. Updates never accumulate a frame delta. The preview is a separate `EditableMesh`; the committed Workspace mesh, serialized project, history, dirty generation, Autosave, Recovery, and STL output remain unchanged until drag end.
 
 Drag start has a read-only prepared phase. It projects the mesh revision, transform, history generation, and project generation that will exist after conflicting Sculpt, Transform-panel, and ordinary Translation Gizmo sessions are formally ended. It then validates the projected runtime source, copies selected positions, checks the memory limit, binds the final project/session identity, and constructs the final gizmo constraint session. A late preparation failure changes no Workspace or UI state.
@@ -43,7 +45,7 @@ Explicit cancel and stale-source cancellation restore the raw hover captured at 
 
 ## Memory and limits
 
-The operation uses the existing 2,000,000-vertex selection limit and a 768 MiB working-memory ceiling. Preflight conservatively accounts for source and preview vertex/index storage, selected IDs and start positions, preview positions, and update staging. Overflow is rejected before preview creation.
+The operation uses the existing 2,000,000-vertex selection limit and a 768 MiB working-memory ceiling. Preflight conservatively accounts for source and preview CPU mesh storage, active and candidate GPU vertex buffers, preview Picking triangle references and BVH nodes, selected IDs and start positions, preview positions, and dictionary/update staging. Overflow is rejected before preview creation.
 
 ## Persistence
 
