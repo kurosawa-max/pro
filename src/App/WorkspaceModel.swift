@@ -4238,6 +4238,31 @@ final class WorkspaceModel: ObservableObject {
         vertexHover = vertexHover.updating(hoverVertexID)
         status = "Prepared scale conflict state"
     }
+    func installVertexScaleStrokeConflictForTesting(
+        vertexID: Int = 0, delta: SIMD3<Float> = SIMD3<Float>(0.05, 0, 0)
+    ) {
+        precondition(interactionMode == .vertexSelect)
+        precondition(mesh.vertices.indices.contains(vertexID))
+        let before = mesh.vertices[vertexID].position
+        _ = mesh.updatePositions([vertexID: before + delta])
+        strokeBefore = [vertexID: before]
+    }
+    func installVertexScalePanelConflictForTesting(
+        translationDelta: SIMD3<Float> = SIMD3<Float>(0.2, 0, 0)
+    ) {
+        precondition(interactionMode == .vertexSelect)
+        panelTransformBefore = objectTransform
+        objectTransform.translation += translationDelta
+    }
+    func installVertexScaleObjectDragConflictForTesting() {
+        precondition(interactionMode == .vertexSelect)
+        let ray = Ray(origin: objectTransform.translation + SIMD3<Float>(1, 0, 5),
+                      direction: SIMD3<Float>(0, 0, -1))
+        scaleGizmoState.dragSession = ScaleGizmoGeometry.beginSession(
+            handle: .xAxis, ray: ray, transform: objectTransform,
+            cameraDirection: SIMD3<Float>(0, 0, -1), referenceLength: 1)
+        scaleGizmoState.activeHandle = .xAxis
+    }
     #endif
 
     private func scheduleAutosaveIfSafe() {
