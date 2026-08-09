@@ -117,7 +117,7 @@ Edge Selectionを入力とするEdge Bevel foundationとして、互いにvertex
 ## Milestone 5 — Modeling Tools
 
 - Move/Rotate/Scale
-- Face/Edge/Vertex selection（Face／Edge／Vertex Selection foundationと、選択頂点のworld-space Move／Rotate foundationは実装済み）
+- Face/Edge/Vertex selection（Face／Edge／Vertex Selection foundationと、選択頂点のworld-space Move／Rotate／Scale foundationは実装済み）
 - Extrude（manifold face patchの基本parallel extrusionはFoundation実装済み。open boundary、whole shell、interactive/individual modeは未実装）
 - Inset（planar convex single-loop patchのconstant-width foundationは実装済み。concave、hole、multiple loop、outsetは未実装）
 - Basic bevel（planar convex face-region chamfer foundationは実装済み。general edge、multiple segment、concave／hole／non-planar regionは未実装）
@@ -176,3 +176,7 @@ Vertex Select中のMove Gizmoは、選択頂点local AABB中心をworld-space pi
 ## Selected Vertex Rotation foundation
 
 Vertex Select中のRotate Gizmoは同じselected bounds centerをpivotとし、world X／Y／Z ringと既存multi-turn unwrapを使う。開始local位置のpivot-relative offsetをmodel／inverse model matrixへ`w=0`で通し、accumulated angleをworld vectorへ絶対適用して、translationから独立した別mesh previewを表示する。commitはsemantic vertex rotation command 1件で、topology、indices、ObjectTransform、selectionを維持する。Scale、local axis、snap、soft selection、数値入力は未実装。
+
+## Selected Vertex Scale foundation
+
+Vertex Select中のScale Gizmoはselected local AABB centerをpivotとし、既存world X／Y／Z／uniform handleのabsolute factorを使う。開始local位置のpivot-relative offsetをmodel／inverse model matrixへ`w=0`で通すため、translationから独立し、rotationとnon-uniform ObjectTransform scaleを含むworld-axis scaleを別mesh previewへ適用する。commitはsemantic vertex scale command 1件で、topology、indices、ObjectTransform、selectionを維持する。local axis、plane handle、negative／mirror scale、snap、soft selection、数値入力は未実装。

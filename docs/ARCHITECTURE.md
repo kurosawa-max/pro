@@ -592,3 +592,11 @@ Preview meshは`WorkspaceModel.mesh`と分離され、Rendererだけが`rendered
 Vertex SelectとRotate Gizmoの組み合わせでは、Rotation Gizmo originを選択頂点のobject-local AABB中心をworldへ変換した位置へ上書きする。既存world-axis ringとmulti-turn angle unwrapを共有し、各pointer updateは開始world positionへaccumulated angleを絶対適用する。stored local Floatを再びworldへ通したrender-space結果を検証し、非一様scaleや大座標で安全に表現できない場合はmutation前に拒否する。
 
 専用transactionはruntime mesh／selection／workspace identity、開始local位置、local／world pivot、Transform、axisを固定する。Geometryはlocal pivot-relative offsetをmodel／inverse model matrixへ`w=0`で通すためabsolute Object translationから独立し、world pivotはGizmo UIだけに使う。Preview mesh／BVHはproject stateから分離し、commit前にcommitted BVHをprepareする。Preview／commitいずれのBVH preparation失敗もWorkspace install前に停止し、次のdragで再試行する。角度は開始snapshotへ絶対適用し、0および整数full-turnはno-opとする。成功はsemantic `vertexRotate` command 1件で、topology、indices、ObjectTransform、selection、project formatVersion 1を維持する。詳細は`VERTEX_ROTATE.md`を参照する。
+
+## Selected Vertex Scale runtime boundary
+
+Vertex SelectとScale Gizmoの組み合わせでは、選択頂点のobject-local AABB中心をpivotにし、既存X／Y／Z／uniform handleのabsolute factorを再利用する。開始local positionのpivot-relative offsetをmodel matrixへ`w=0`で渡し、world component scale後にinverse model matrixへ`w=0`で戻すため、Object translationから独立し、rotationとnon-uniform scaleを含むTransformでもworld-axis semanticsを維持する。
+
+専用transactionとpreview mesh／BVHはcommitted projectから分離し、commit前にcandidate、history command、Picking BVHを準備する。成功時だけsemantic `vertexScale` commandを統合historyへ1件記録する。position-only変更のためvertex bufferだけが更新され、indices、topology identity、selection ID buffer、ObjectTransform、project formatVersion 1は維持される。詳細は`VERTEX_SCALE.md`を参照する。
+
+Prepared beginはactive Sculpt cancel後mesh、Transform-panel commit後generation、ordinary Scale cancel後Transformを先に投影し、そのstateへtransaction／sessionをbindする。Late begin failureまではside effectを起こさず、成功後だけconflictを解消して期待stateを検証する。Pointer由来factorは`0.001...1000`へclampするが、GeometryCore direct inputは範囲外を拒否する。AABB midpointとround-trip magnitude／errorはcomponent-wise overflow-safe演算を用いる。
