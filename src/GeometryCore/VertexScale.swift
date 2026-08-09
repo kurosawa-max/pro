@@ -61,7 +61,7 @@ enum VertexScaleError: Error, Equatable, LocalizedError {
 enum VertexScaleFailurePoint: Hashable {
     case sourceSnapshot, selectedPositionCopy, candidateAllocation
     case roundTripValidation, candidatePostUpdate
-    case previewBVHPreparation, commitBVHPreparation, commitBoundary
+    case previewBVHPreparation, beginCommitBoundary, commitBVHPreparation, commitBoundary
 }
 
 struct VertexScaleFailureInjector {
@@ -104,7 +104,7 @@ enum VertexScaleGeometry {
             minimum = simd_min(minimum, position); maximum = simd_max(maximum, position)
             local.append(position)
         }
-        let pivotLocal = (minimum + maximum) * 0.5
+        let pivotLocal = minimum * 0.5 + maximum * 0.5
         let pivotWorld = safeTransform.worldPosition(fromLocal: pivotLocal)
         guard pivotLocal.allFinite, pivotWorld.allFinite else { throw VertexScaleError.invalidTransform }
         return VertexScaleTransaction(
@@ -154,12 +154,16 @@ enum VertexScaleGeometry {
             let local = transaction.pivotLocal + scaledLocalOffset
             let actual4 = transaction.transform.modelMatrix * SIMD4<Float>(local - transaction.pivotLocal, 0)
             let actualWorldOffset = SIMD3<Float>(actual4.x, actual4.y, actual4.z)
-            let magnitude = max(max(1, simd_length(worldOffset)),
-                                max(simd_length(scaledWorldOffset),
-                                    max(simd_length(localOffset), simd_length(scaledLocalOffset))))
+            let magnitude = max(
+                1, max(
+                    max(maxAbsComponent(worldOffset), maxAbsComponent(scaledWorldOffset)),
+                    max(maxAbsComponent(localOffset), maxAbsComponent(scaledLocalOffset))))
             let tolerance = max(0.000_01, magnitude * Float.ulpOfOne * 48)
+            let errorVector = actualWorldOffset - scaledWorldOffset
+            let error = maxAbsComponent(errorVector)
             guard local.allFinite, actualWorldOffset.allFinite,
-                  simd_distance(actualWorldOffset, scaledWorldOffset) <= tolerance,
+                  errorVector.allFinite, magnitude.isFinite, tolerance.isFinite,
+                  error.isFinite, error <= tolerance,
                   !failureInjector.shouldFail(.roundTripValidation) else {
                 throw VertexScaleError.precisionLoss
             }
@@ -199,5 +203,9 @@ enum VertexScaleGeometry {
 
     private static func matrixIsFinite(_ matrix: simd_float4x4) -> Bool {
         (0..<4).allSatisfy { column in (0..<4).allSatisfy { matrix[column][$0].isFinite } }
+    }
+
+    private static func maxAbsComponent(_ value: SIMD3<Float>) -> Float {
+        max(abs(value.x), max(abs(value.y), abs(value.z)))
     }
 }

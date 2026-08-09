@@ -1673,6 +1673,94 @@ final class VertexSelectionTests: XCTestCase {
             startScale: session.startScale, handle: .xAxis, factor: factor)))
     }
 
+    func testVertexScaleUsesOverflowSafeAABBCenterAndFinitePrecisionNorm() throws {
+        let source = mesh([
+            SIMD3<Float>(2.0e38, 2.0e38, 2.0e38),
+            SIMD3<Float>(3.0e38, 3.0e38, 3.0e38)
+        ], [])
+        let table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table); _ = selection.selectAll()
+        var transaction = try VertexScaleGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            handle: .uniform, projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        XCTAssertTrue(transaction.pivotLocal.allFinite)
+        assertEqual(transaction.pivotLocal, SIMD3<Float>(repeating: 2.5e38), accuracy: 2.0e31)
+        let candidate = try XCTUnwrap(VertexScaleGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, factor: 0.5))
+        XCTAssertTrue(candidate.vertices.allSatisfy { $0.position.allFinite })
+    }
+
+    func testVertexScalePreparedBeginResolvesProjectedConflictsBeforeFirstPreview() {
+        let model = WorkspaceModel()
+        model.setInteractionMode(.vertexSelect); model.selectAllVertices(); model.setGizmoMode(.scale)
+        model.installVertexScaleBeginConflictsForTesting()
+        let expectedTransform = model.objectTransform
+        let start = Ray(origin: expectedTransform.translation + SIMD3<Float>(1,0,5),
+                        direction: SIMD3<Float>(0,0,-1))
+        XCTAssertTrue(model.beginScaleGizmoDrag(
+            handle: .xAxis, ray: start, cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+        XCTAssertFalse(model.isStrokeActive); XCTAssertFalse(model.isTransformPanelEditing)
+        XCTAssertEqual(model.objectTransform, expectedTransform)
+        XCTAssertTrue(model.vertexScaleTransactionActiveForTesting)
+        model.updateScaleGizmoDrag(
+            ray: Ray(origin: start.origin + SIMD3<Float>(0.5,0,0), direction: start.direction),
+            cameraDirection: SIMD3(0,0,-1))
+        XCTAssertNotNil(model.vertexScalePreviewMesh)
+        XCTAssertNil(model.vertexScaleError)
+    }
+
+    func testVertexScaleFailedPreparedBeginLeavesEveryConflictActiveAndRetryable() throws {
+        var fail = true
+        let model = WorkspaceModel(vertexScaleFailureInjector: .init {
+            fail && $0 == .beginCommitBoundary
+        })
+        model.setInteractionMode(.vertexSelect); model.selectAllVertices(); model.setGizmoMode(.scale)
+        model.installVertexScaleBeginConflictsForTesting()
+        let mesh = model.mesh, transform = model.objectTransform, selection = model.vertexSelection
+        let generation = model.projectMutationGeneration, history = (model.undoCount, model.redoCount)
+        let project = try model.projectData(), hover = model.vertexHover
+        let start = Ray(origin: transform.translation + SIMD3<Float>(1,0,5),
+                        direction: SIMD3<Float>(0,0,-1))
+        XCTAssertFalse(model.beginScaleGizmoDrag(
+            handle: .xAxis, ray: start, cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+        XCTAssertEqual(model.mesh, mesh); XCTAssertEqual(model.objectTransform, transform)
+        XCTAssertEqual(model.vertexSelection, selection); XCTAssertEqual(model.vertexHover, hover)
+        XCTAssertEqual(model.projectMutationGeneration, generation)
+        XCTAssertEqual(model.undoCount, history.0); XCTAssertEqual(model.redoCount, history.1)
+        XCTAssertEqual(try model.projectData(), project)
+        XCTAssertTrue(model.isStrokeActive); XCTAssertTrue(model.isTransformPanelEditing)
+        XCTAssertTrue(model.scaleGizmoState.isDragging)
+        fail = false
+        XCTAssertTrue(model.beginScaleGizmoDrag(
+            handle: .xAxis, ray: start, cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+    }
+
+    func testVertexScalePointerFactorsClampWhileDirectGeometryInputsReject() throws {
+        let model = WorkspaceModel()
+        model.setInteractionMode(.vertexSelect); model.selectAllVertices(); model.setGizmoMode(.scale)
+        let start = Ray(origin: SIMD3<Float>(1,0,5), direction: SIMD3<Float>(0,0,-1))
+        XCTAssertTrue(model.beginScaleGizmoDrag(
+            handle: .xAxis, ray: start, cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+        model.updateScaleGizmoDrag(
+            ray: Ray(origin: SIMD3<Float>(-10,0,5), direction: SIMD3<Float>(0,0,-1)),
+            cameraDirection: SIMD3(0,0,-1))
+        XCTAssertNotNil(model.vertexScalePreviewMesh); XCTAssertNil(model.vertexScaleError)
+        model.updateScaleGizmoDrag(
+            ray: Ray(origin: SIMD3<Float>(2_000,0,5), direction: SIMD3<Float>(0,0,-1)),
+            cameraDirection: SIMD3(0,0,-1))
+        XCTAssertNotNil(model.vertexScalePreviewMesh); XCTAssertNil(model.vertexScaleError)
+
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table); _ = selection.selectAll()
+        var transaction = try VertexScaleGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            handle: .xAxis, projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        for invalid in [Float.nan, .infinity, 0, -1, 0.0001, 1_001] {
+            XCTAssertThrowsError(try VertexScaleGeometry.candidate(
+                sourceMesh: source, transaction: &transaction, factor: invalid))
+        }
+    }
+
     private func assertEqual(
         _ lhs: SIMD3<Float>, _ rhs: SIMD3<Float>, accuracy: Float = 0.000_01,
         file: StaticString = #filePath, line: UInt = #line

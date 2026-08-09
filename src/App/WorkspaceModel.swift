@@ -3705,8 +3705,10 @@ final class WorkspaceModel: ObservableObject {
     func updateScaleGizmoDrag(ray: Ray, cameraDirection: SIMD3<Float>) {
         if var transaction = vertexScaleTransaction {
             guard let session = scaleGizmoState.dragSession,
-                  let factor = ScaleGizmoGeometry.factor(
+                  let rawFactor = ScaleGizmoGeometry.factor(
                     session: session, ray: ray, cameraDirection: cameraDirection) else { return }
+            let factor = min(max(rawFactor, VertexScaleGeometry.minimumFactor),
+                             VertexScaleGeometry.maximumFactor)
             do {
                 guard let table = meshVertexTopologyTable,
                       transaction.matches(mesh: mesh, table: table, selection: vertexSelection,
@@ -3729,8 +3731,8 @@ final class WorkspaceModel: ObservableObject {
                 vertexScaleError = nil
                 status = candidate == nil ? "Vertex scale unchanged" : "Scaling selected vertices"
             } catch {
-                vertexScalePreviewMesh = nil; vertexScalePickingCache.invalidate()
                 vertexScaleError = error.localizedDescription
+                cancelScaleGizmoDrag()
             }
             return
         }
@@ -3814,46 +3816,69 @@ final class WorkspaceModel: ObservableObject {
         handle: ScaleGizmoHandle, ray: Ray, cameraDirection: SIMD3<Float>,
         referenceLength: Float
     ) throws -> PreparedVertexScaleDrag {
-        guard interactionMode == .vertexSelect,
-              let table = meshVertexTopologyTable,
-              isVertexSelectionInteractionEnabled,
+        guard ray.origin.allFinite, ray.direction.allFinite,
+              cameraDirection.allFinite, referenceLength.isFinite, referenceLength > 0,
+              simd_length_squared(ray.direction) > 1e-12,
+              interactionMode == .vertexSelect,
+              let table = meshVertexTopologyTable, vertexSelection.matches(table),
+              vertexSelection.selectedCount > 0, !isTopologyEditRunning,
+              !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress,
               !isRecoveryPromptPresented else { throw VertexScaleError.preparationFailed }
         guard !vertexScaleFailureInjector.shouldFail(.sourceSnapshot) else {
             throw VertexScaleError.preparationFailed
         }
+        var expectedMesh = mesh
+        if let strokeBefore { _ = expectedMesh.updatePositions(strokeBefore) }
+        let expectedTransform = scaleGizmoState.dragSession?.startTransform ?? objectTransform
+        var expectedGeneration = projectMutationGeneration
+        if let panelTransformBefore,
+           TransformCommand(before: panelTransformBefore, after: objectTransform) != nil {
+            expectedGeneration.advance()
+        }
         let transaction = try VertexScaleGeometry.begin(
-            mesh: mesh, table: table, selection: vertexSelection,
-            transform: objectTransform, handle: handle,
+            mesh: expectedMesh, table: table, selection: vertexSelection,
+            transform: expectedTransform, handle: handle,
             projectSessionID: workspaceSessionID,
-            projectGeneration: projectMutationGeneration,
+            projectGeneration: expectedGeneration,
             failureInjector: vertexScaleFailureInjector)
         guard let session = ScaleGizmoGeometry.beginSession(
-            handle: handle, ray: ray, transform: objectTransform,
+            handle: handle, ray: ray, transform: expectedTransform,
             cameraDirection: cameraDirection, referenceLength: referenceLength,
             originOverride: transaction.pivotWorld),
-              !vertexScaleFailureInjector.shouldFail(.commitBoundary) else {
+              !vertexScaleFailureInjector.shouldFail(.beginCommitBoundary) else {
             throw VertexScaleError.preparationFailed
         }
         return PreparedVertexScaleDrag(
             transaction: transaction, gizmoSession: session, activeHandle: handle,
-            startHover: vertexHover, expectedMeshRevision: mesh.runtime.revision,
-            expectedTransform: objectTransform.sanitized(),
-            expectedProjectGeneration: projectMutationGeneration,
+            startHover: vertexHover, expectedMeshRevision: expectedMesh.runtime.revision,
+            expectedTransform: expectedTransform.sanitized(),
+            expectedProjectGeneration: expectedGeneration,
             expectedSelectionVersion: vertexSelection.version)
     }
 
     private func commitPreparedVertexScaleDrag(_ prepared: PreparedVertexScaleDrag) {
-        guard prepared.expectedMeshRevision == mesh.runtime.revision,
-              prepared.expectedTransform == objectTransform.sanitized(),
-              prepared.expectedProjectGeneration == projectMutationGeneration,
-              prepared.expectedSelectionVersion == vertexSelection.version else { return }
-        commitTransformPanelTransaction(); cancelStroke(); cancelAllGizmoDrags()
+        commitTransformPanelTransaction(); cancelStroke(); cancelScaleGizmoDrag()
+        assert(mesh.runtime.revision == prepared.expectedMeshRevision)
+        assert(mesh.runtime.topologyID == prepared.transaction.topologyID)
+        assert(mesh.runtime.topologyRevision == prepared.transaction.topologyRevision)
+        assert(objectTransform.sanitized() == prepared.expectedTransform)
+        assert(projectMutationGeneration == prepared.expectedProjectGeneration)
+        assert(vertexSelection.version == prepared.expectedSelectionVersion)
+        assert(workspaceSessionID == prepared.transaction.projectSessionID)
+        assert(prepared.transaction.vertexIDs.enumerated().allSatisfy { offset, vertexID in
+            mesh.vertices.indices.contains(Int(vertexID))
+                && mesh.vertices[Int(vertexID)].position == prepared.transaction.startLocalPositions[offset]
+        })
         vertexScaleTransaction = prepared.transaction
         vertexScaleStartHover = prepared.startHover
         vertexScalePreviewMesh = nil; vertexScalePickingCache.invalidate()
         vertexScaleError = nil
+        vertexHover = vertexHover.updating(nil)
         scaleGizmoState.activeHandle = prepared.activeHandle
         scaleGizmoState.dragSession = prepared.gizmoSession
+        status = "Scale Selected Vertices"
     }
 
     func updateScaleGizmoHover(ray: Ray?, scale: Float) {
@@ -4190,6 +4215,28 @@ final class WorkspaceModel: ObservableObject {
         strokeBefore = [strokeVertexID: before]
         vertexHover = vertexHover.updating(hoverVertexID)
         status = "Prepared conflict state"
+    }
+    func installVertexScaleBeginConflictsForTesting(
+        hoverVertexID: MeshVertexID = 1,
+        strokeVertexID: Int = 0,
+        strokeDelta: SIMD3<Float> = SIMD3<Float>(0.05, 0, 0),
+        panelTranslationDelta: SIMD3<Float> = SIMD3<Float>(0.2, 0, 0)
+    ) {
+        precondition(interactionMode == .vertexSelect)
+        precondition(mesh.vertices.indices.contains(strokeVertexID))
+        panelTransformBefore = objectTransform
+        objectTransform.translation += panelTranslationDelta
+        let ray = Ray(origin: objectTransform.translation + SIMD3<Float>(1, 0, 5),
+                      direction: SIMD3<Float>(0, 0, -1))
+        scaleGizmoState.dragSession = ScaleGizmoGeometry.beginSession(
+            handle: .xAxis, ray: ray, transform: objectTransform,
+            cameraDirection: SIMD3<Float>(0, 0, -1), referenceLength: 1)
+        scaleGizmoState.activeHandle = .xAxis
+        let before = mesh.vertices[strokeVertexID].position
+        _ = mesh.updatePositions([strokeVertexID: before + strokeDelta])
+        strokeBefore = [strokeVertexID: before]
+        vertexHover = vertexHover.updating(hoverVertexID)
+        status = "Prepared scale conflict state"
     }
     #endif
 
