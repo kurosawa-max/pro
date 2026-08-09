@@ -226,7 +226,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
                                      origin: gizmoOrigin, scale: gizmoWorldScale, state: gizmoState)
             case .rotate:
                 rotationGizmoRenderer.encode(encoder: encoder, viewProjection: viewProjection,
-                                             origin: objectTransform.translation, scale: gizmoWorldScale,
+                                             origin: gizmoOrigin, scale: gizmoWorldScale,
                                              state: rotationGizmoState)
             case .scale:
                 scaleGizmoRenderer.encode(encoder: encoder, viewProjection: viewProjection,

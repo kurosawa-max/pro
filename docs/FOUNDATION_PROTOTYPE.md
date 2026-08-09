@@ -1,5 +1,7 @@
 # Foundation Prototype 実装仕様
 
+選択頂点Transform foundationはworld-space MoveとX／Y／Z Rotateを提供する。Rotateは選択local AABB中心をpivotとし、multi-turn angleを開始位置へ絶対適用する非破壊previewを使う。ObjectTransform、topology、selection、formatVersion 1は変更しない。Scale、local axis、snap、数値入力は未実装である。
+
 **Status:** Implemented prototype  
 **Target:** iPadOS 17+  
 **Xcode target:** `Forge3D`

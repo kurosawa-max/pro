@@ -586,3 +586,9 @@ Pickingはworld Rayをobject-localへ変換し、current CPU BVHのnearest visib
 Vertex SelectとMove Gizmoの組み合わせでは、Translation Gizmoのoriginを選択頂点のobject-local AABB中心をworldへ変換した位置へ上書きする。world deltaはinverse model matrixへ`w = 0`で渡し、非一様scaleを含むlocal deltaへ変換する。GeometryCoreのtransactionはtopology identity、vertex revision、topology fingerprint、sorted vertex IDs、開始位置、sanitized Transformを固定し、previewを常に開始位置から絶対評価する。
 
 Preview meshは`WorkspaceModel.mesh`と分離され、Rendererだけが`renderedMesh`として参照する。したがってpreview中のproject bytes、history、dirty generation、Autosave、Recovery、STLはcommitted meshを参照し続ける。commit時だけvertex changesを統合historyへ1件recordする。indicesとtopology runtime identityは維持され、Rendererはvertex bufferのみ更新する。selection overlayは既存mesh vertex bufferと既存selected-ID bufferを再利用する。
+
+## Selected Vertex Rotation runtime boundary
+
+Vertex SelectとRotate Gizmoの組み合わせでは、Rotation Gizmo originを選択頂点のobject-local AABB中心をworldへ変換した位置へ上書きする。既存world-axis ringとmulti-turn angle unwrapを共有し、各pointer updateは開始world positionへaccumulated angleを絶対適用する。stored local Floatを再びworldへ通したrender-space結果を検証し、非一様scaleや大座標で安全に表現できない場合はmutation前に拒否する。
+
+専用transactionはruntime mesh／selection／workspace identity、開始local位置、local／world pivot、Transform、axisを固定する。Geometryはlocal pivot-relative offsetをmodel／inverse model matrixへ`w=0`で通すためabsolute Object translationから独立し、world pivotはGizmo UIだけに使う。Preview mesh／BVHはproject stateから分離し、commit前にcommitted BVHをprepareする。Preview／commitいずれのBVH preparation失敗もWorkspace install前に停止し、次のdragで再試行する。角度は開始snapshotへ絶対適用し、0および整数full-turnはno-opとする。成功はsemantic `vertexRotate` command 1件で、topology、indices、ObjectTransform、selection、project formatVersion 1を維持する。詳細は`VERTEX_ROTATE.md`を参照する。

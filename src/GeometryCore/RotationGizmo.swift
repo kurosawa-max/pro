@@ -63,10 +63,16 @@ enum RotationGizmoGeometry {
 
     static func beginSession(handle: RotationGizmoHandle, ray: Ray,
                              transform: ObjectTransform) -> RotationDragSession? {
-        let origin = transform.translation, axis = handle.axis
+        beginSession(handle: handle, ray: ray, origin: transform.translation,
+                     startTransform: transform)
+    }
+
+    static func beginSession(handle: RotationGizmoHandle, ray: Ray,
+                             origin: SIMD3<Float>, startTransform: ObjectTransform) -> RotationDragSession? {
+        let axis = handle.axis
         guard let intersection = intersect(ray: ray, planePoint: origin, planeNormal: axis),
               let vector = normalized(intersection.point - origin) else { return nil }
-        return RotationDragSession(handle: handle, startTransform: transform, origin: origin, axis: axis,
+        return RotationDragSession(handle: handle, startTransform: startTransform, origin: origin, axis: axis,
                                    startIntersection: intersection.point, startVector: vector,
                                    lastRawAngle: 0, accumulatedAngle: 0)
     }

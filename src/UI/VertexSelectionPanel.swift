@@ -35,6 +35,8 @@ struct VertexSelectionPanel: View {
                     .font(.caption2)
                 Text("In Move mode, drag the world-space gizmo to preview and commit one non-topology vertex move. Cancel leaves the project unchanged.")
                     .font(.caption2)
+                Text("In Rotate mode, drag a world-axis ring around the selected bounds center. Multi-turn rotation is supported and remains a vertex-only edit.")
+                    .font(.caption2)
                 Text(hoverDescription).font(.caption2)
                     .accessibilityLabel(hoverDescription)
                 if let error = model.vertexSelectionError {
@@ -44,6 +46,10 @@ struct VertexSelectionPanel: View {
                 if let error = model.vertexTranslateError {
                     Text(error).foregroundStyle(.red)
                         .accessibilityLabel("Selected vertex move error: \(error)")
+                }
+                if let error = model.vertexRotateError {
+                    Text(error).foregroundStyle(.red)
+                        .accessibilityLabel("Selected vertex rotation error: \(error)")
                 }
             }
             .padding(10)
