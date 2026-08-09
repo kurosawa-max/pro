@@ -175,4 +175,4 @@ Vertex Select中のMove Gizmoは、選択頂点local AABB中心をworld-space pi
 
 ## Selected Vertex Rotation foundation
 
-Vertex Select中のRotate Gizmoは同じselected bounds centerをpivotとし、world X／Y／Z ringと既存multi-turn unwrapを使う。開始world位置へaccumulated angleを絶対適用し、render-space Float往復を検証した別mesh previewを表示する。commitはsemantic vertex rotation command 1件で、topology、indices、ObjectTransform、selectionを維持する。Scale、local axis、snap、soft selection、数値入力は未実装。
+Vertex Select中のRotate Gizmoは同じselected bounds centerをpivotとし、world X／Y／Z ringと既存multi-turn unwrapを使う。開始local位置のpivot-relative offsetをmodel／inverse model matrixへ`w=0`で通し、accumulated angleをworld vectorへ絶対適用して、translationから独立した別mesh previewを表示する。commitはsemantic vertex rotation command 1件で、topology、indices、ObjectTransform、selectionを維持する。Scale、local axis、snap、soft selection、数値入力は未実装。
