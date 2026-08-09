@@ -10,13 +10,17 @@ Pivotはselected vertexのobject-local AABB中心であり、centroidではな�
 
 Geometry transactionはabsolute world vertex positionを保持しない。`pivotWorld`はGizmo描画、hit test、drag、camera-relative sizingだけに使用する。このためObject translationが非常に大きくてもcandidate local positionはtranslationから独立する。rotationとnon-uniform ObjectTransform scaleがある場合も、単純なlocal-axis scaleへ置き換えない。
 
+Local AABB centerは`minimum * 0.5 + maximum * 0.5`のcomponent-wise midpointで求め、同符号の巨大finite boundsでも加算overflowを避ける。Round-trip検証はlocal／world offsetとerror vectorのmaximum absolute componentを使い、Object translationやabsolute world pivotをtoleranceへ含めない。
+
 ## Factor contract
 
-Factorはdrag開始snapshotに対するabsolute valueである。各previewはimmutableな開始local positionsから再生成する。`1`はsemantic no-op、許容範囲は`0.001...1000`で、zero、negative、NaN、Infinity、範囲外およびfinite candidateを作れない値をGeometryCore境界で拒否する。negative scale、mirror、pivot crossingは未対応である。
+Factorはdrag開始snapshotに対するabsolute valueである。各previewはimmutableな開始local positionsから再生成する。Pointer interactionのfinite raw factorは`0.001...1000`へclampし、support範囲端のpreviewを継続する。一方、GeometryCoreへ直接渡したzero、negative、NaN、Infinity、範囲外およびfinite candidateを作れない値は拒否する。`1`はsemantic no-opであり、negative scale、mirror、pivot crossingは未対応である。
 
 ## Transaction and atomicity
 
 `VertexScaleTransaction`はworkspace session、project generation、topology ID／revision／fingerprint、vertex revision、source counts、selection version／count、sorted vertex IDs、開始local positions、local／world pivot、sanitized Transform、handleを固定する。pointer update中にselection bitsetを再走査しない。
+
+Beginはactive Sculptのcancel後mesh、Transform-panel commit後generation、ordinary Scale cancel後Transformをside-effectなしで先にprojectする。TransactionとScale sessionをこのpost-conflict stateへbindし、late begin failure boundaryを通過した場合だけ既存conflictを解消する。解消後のmesh／Transform／generation／selection／workspace identityと開始位置を検証してからtransactionをinstallするため、prepared begin failureは既存interactionを変更せず再試行できる。
 
 Preview meshとpreview Picking BVHはcommitted workspaceから分離する。Commitは最終candidate、history command、committed Picking BVHをinstall前に準備し、その後の境界をnonthrowing mutationとして扱う。失敗またはcancelではpreview、preview BVH、transactionだけを破棄し、committed mesh、Transform、selection、history、dirty generation、Autosave、Recoveryを変更しない。working-memory preflightの上限は768 MiBである。
 

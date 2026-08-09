@@ -598,3 +598,5 @@ Vertex SelectとRotate Gizmoの組み合わせでは、Rotation Gizmo originを�
 Vertex SelectとScale Gizmoの組み合わせでは、選択頂点のobject-local AABB中心をpivotにし、既存X／Y／Z／uniform handleのabsolute factorを再利用する。開始local positionのpivot-relative offsetをmodel matrixへ`w=0`で渡し、world component scale後にinverse model matrixへ`w=0`で戻すため、Object translationから独立し、rotationとnon-uniform scaleを含むTransformでもworld-axis semanticsを維持する。
 
 専用transactionとpreview mesh／BVHはcommitted projectから分離し、commit前にcandidate、history command、Picking BVHを準備する。成功時だけsemantic `vertexScale` commandを統合historyへ1件記録する。position-only変更のためvertex bufferだけが更新され、indices、topology identity、selection ID buffer、ObjectTransform、project formatVersion 1は維持される。詳細は`VERTEX_SCALE.md`を参照する。
+
+Prepared beginはactive Sculpt cancel後mesh、Transform-panel commit後generation、ordinary Scale cancel後Transformを先に投影し、そのstateへtransaction／sessionをbindする。Late begin failureまではside effectを起こさず、成功後だけconflictを解消して期待stateを検証する。Pointer由来factorは`0.001...1000`へclampするが、GeometryCore direct inputは範囲外を拒否する。AABB midpointとround-trip magnitude／errorはcomponent-wise overflow-safe演算を用いる。
