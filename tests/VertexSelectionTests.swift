@@ -1106,6 +1106,68 @@ final class VertexSelectionTests: XCTestCase {
             sourceMesh: source, transaction: &transaction, accumulatedAngle: .nan))
     }
 
+    func testVertexRotateRejectsZeroTinyAndOverflowingFiniteAxes() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        XCTAssertTrue(try selection.apply(.replace, vertexIDs: [0, 1]))
+        let axes = [
+            SIMD3<Float>.zero,
+            SIMD3(VertexRotateGeometry.minimumAxisLength * 0.5, 0, 0),
+            SIMD3(Float.greatestFiniteMagnitude, Float.greatestFiniteMagnitude, 0)
+        ]
+        for axis in axes {
+            XCTAssertThrowsError(try VertexRotateGeometry.begin(
+                mesh: source, table: table, selection: selection, transform: .identity,
+                axis: axis, projectSessionID: UUID(), projectGeneration: MutationGeneration())) {
+                XCTAssertEqual($0 as? VertexRotateError, .invalidAxis)
+            }
+        }
+    }
+
+    func testVertexRotateNormalizesValidNonUnitAxisBeforeCandidateEvaluation() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        XCTAssertTrue(try selection.apply(.replace, vertexIDs: [0, 1, 2]))
+        var unit = try VertexRotateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            axis: SIMD3(1, 0, 0), projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        var nonUnit = try VertexRotateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            axis: SIMD3(2, 0, 0), projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        XCTAssertEqual(nonUnit.axis, SIMD3<Float>(1, 0, 0))
+        let unitResult = try XCTUnwrap(VertexRotateGeometry.candidate(
+            sourceMesh: source, transaction: &unit, accumulatedAngle: .pi / 3))
+        let nonUnitResult = try XCTUnwrap(VertexRotateGeometry.candidate(
+            sourceMesh: source, transaction: &nonUnit, accumulatedAngle: .pi / 3))
+        XCTAssertEqual(unitResult.vertices, nonUnitResult.vertices)
+    }
+
+    func testVertexRotateInvalidAxisBeginLeavesWorkspaceAndProjectAtomic() throws {
+        let model = WorkspaceModel()
+        model.setInteractionMode(.vertexSelect)
+        model.selectAllVertices()
+        let mesh = model.mesh, transform = model.objectTransform, selection = model.vertexSelection
+        let generation = model.projectMutationGeneration
+        let history = (model.undoCount, model.redoCount)
+        let project = try model.projectData()
+        let table = try XCTUnwrap(model.meshVertexTopologyTable)
+
+        XCTAssertThrowsError(try VertexRotateGeometry.begin(
+            mesh: model.mesh, table: table, selection: model.vertexSelection,
+            transform: model.objectTransform,
+            axis: SIMD3(Float.greatestFiniteMagnitude, Float.greatestFiniteMagnitude, 0),
+            projectSessionID: UUID(), projectGeneration: model.projectMutationGeneration)) {
+            XCTAssertEqual($0 as? VertexRotateError, .invalidAxis)
+        }
+        XCTAssertEqual(model.mesh, mesh)
+        XCTAssertEqual(model.objectTransform, transform)
+        XCTAssertEqual(model.vertexSelection, selection)
+        XCTAssertEqual(model.projectMutationGeneration, generation)
+        XCTAssertEqual(model.undoCount, history.0)
+        XCTAssertEqual(model.redoCount, history.1)
+        XCTAssertEqual(try model.projectData(), project)
+    }
+
     func testVertexRotateTransactionRejectsEveryRuntimeIdentityChangeAndNonRewindingRestoration() throws {
         var source = quad()
         let table = try MeshVertexTopologyTable.build(mesh: source)

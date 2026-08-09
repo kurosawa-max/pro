@@ -41,7 +41,7 @@ struct VertexRotateTransaction: Equatable {
 }
 
 enum VertexRotateError: Error, Equatable, LocalizedError {
-    case emptySelection, staleSource, invalidTransform, nonFiniteAngle
+    case emptySelection, staleSource, invalidTransform, invalidAxis, nonFiniteAngle
     case precisionLoss, workingMemoryLimitExceeded, allocationOverflow, preparationFailed
 
     var errorDescription: String? {
@@ -49,6 +49,7 @@ enum VertexRotateError: Error, Equatable, LocalizedError {
         case .emptySelection: "Select at least one vertex before rotating."
         case .staleSource: "The selected vertices changed before the rotation completed."
         case .invalidTransform: "The object transform cannot be inverted safely."
+        case .invalidAxis: "The rotation axis is invalid."
         case .nonFiniteAngle: "The requested rotation is outside the supported numeric range."
         case .precisionLoss: "The rotation cannot be represented safely at the current scale and position."
         case .workingMemoryLimitExceeded: "The rotation would exceed the working-memory limit."
@@ -73,6 +74,7 @@ struct VertexRotateFailureInjector {
 
 enum VertexRotateGeometry {
     static let maximumWorkingBytes = 768 * 1_024 * 1_024
+    static let minimumAxisLength: Float = 0.000_01
 
     static func begin(mesh: EditableMesh, table: MeshVertexTopologyTable,
                       selection: VertexSelection, transform: ObjectTransform,
@@ -90,7 +92,14 @@ enum VertexRotateGeometry {
         }
         let safeTransform = transform.sanitized()
         guard safeTransform.isFinite, matrixIsFinite(safeTransform.inverseModelMatrix),
-              axis.allFinite, simd_length_squared(axis) > 0 else { throw VertexRotateError.invalidTransform }
+              matrixIsFinite(safeTransform.modelMatrix) else { throw VertexRotateError.invalidTransform }
+        let axisLengthSquared = simd_length_squared(axis)
+        guard axis.allFinite, axisLengthSquared.isFinite,
+              axisLengthSquared > minimumAxisLength * minimumAxisLength else {
+            throw VertexRotateError.invalidAxis
+        }
+        let normalizedAxis = axis / sqrt(axisLengthSquared)
+        guard normalizedAxis.allFinite else { throw VertexRotateError.invalidAxis }
         var minimum = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
         var maximum = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
         var local: [SIMD3<Float>] = []
@@ -114,7 +123,7 @@ enum VertexRotateGeometry {
             projectGeneration: projectGeneration, vertexIDs: ids,
             startLocalPositions: local,
             pivotLocal: pivotLocal, pivotWorld: pivotWorld,
-            transform: safeTransform, axis: simd_normalize(axis))
+            transform: safeTransform, axis: normalizedAxis)
     }
 
     static func candidate(sourceMesh: EditableMesh, transaction: inout VertexRotateTransaction,
