@@ -1002,17 +1002,20 @@ final class AutosaveRecoveryTests: XCTestCase {
         let committed = model.mesh
         await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
         await waitUntil { await coordinator.successfulWriteCount == 1 }
-        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, committed)
+        let committedRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(committedRecovery, committed)
 
         model.undo()
         await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
         await waitUntil { await coordinator.successfulWriteCount == 2 }
-        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, original)
+        let undoRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(undoRecovery, original)
 
         model.redo()
         await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
         await waitUntil { await coordinator.successfulWriteCount == 3 }
-        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, committed)
+        let redoRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(redoRecovery, committed)
     }
 
     private func makeSnapshot(name: String, sessionID: UUID = UUID(), capturedAt: Date = Date(),
