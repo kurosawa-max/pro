@@ -1524,6 +1524,155 @@ final class VertexSelectionTests: XCTestCase {
         model.redo(); XCTAssertNotEqual(model.mesh, beforeRotate)
     }
 
+    func testVertexScaleAxesExpandAndContractFromLocalBoundsPivot() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table); _ = selection.selectAll()
+        for handle in [ScaleGizmoHandle.xAxis, .yAxis, .zAxis, .uniform] {
+            for factor: Float in [0.5, 2] {
+                var transaction = try VertexScaleGeometry.begin(
+                    mesh: source, table: table, selection: selection, transform: .identity,
+                    handle: handle, projectSessionID: UUID(), projectGeneration: MutationGeneration())
+                let result = try XCTUnwrap(VertexScaleGeometry.candidate(
+                    sourceMesh: source, transaction: &transaction, factor: factor))
+                XCTAssertEqual(transaction.pivotLocal, SIMD3<Float>(0.5, 0.5, 0))
+                let before = source.vertices[0].position - transaction.pivotLocal
+                let after = result.vertices[0].position - transaction.pivotLocal
+                if handle == .xAxis || handle == .uniform { XCTAssertEqual(after.x, before.x * factor) }
+                if handle == .yAxis || handle == .uniform { XCTAssertEqual(after.y, before.y * factor) }
+                if handle == .zAxis || handle == .uniform { XCTAssertEqual(after.z, before.z * factor) }
+            }
+        }
+    }
+
+    func testVertexScalePivotIsAABBCenterNotCentroidAndOrderIndependent() throws {
+        let source = mesh([SIMD3(0,0,0), SIMD3(10,0,0), SIMD3(10,2,0)], [0,1,2])
+        let table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table)
+        _ = try selection.apply(.replace, vertexIDs: [2,0,1])
+        let transaction = try VertexScaleGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            handle: .uniform, projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        XCTAssertEqual(transaction.pivotLocal, SIMD3<Float>(5,1,0))
+        XCTAssertNotEqual(transaction.pivotLocal, SIMD3<Float>(20.0 / 3, 2.0 / 3, 0))
+        XCTAssertEqual(transaction.vertexIDs, [0,1,2])
+    }
+
+    func testVertexScaleIsTranslationIndependentWithRotationAndNonUniformScale() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table); _ = selection.selectAll()
+        let rotation = ObjectTransform.rotation(degrees: SIMD3<Float>(20, 35, -15))
+        let transforms = [
+            ObjectTransform(rotation: rotation, scale: SIMD3<Float>(2, 0.5, 4)),
+            ObjectTransform(translation: SIMD3<Float>(100_000_000, -100_000_000, 50_000_000),
+                            rotation: rotation, scale: SIMD3<Float>(2, 0.5, 4))
+        ]
+        var results: [EditableMesh] = []
+        for transform in transforms {
+            var transaction = try VertexScaleGeometry.begin(
+                mesh: source, table: table, selection: selection, transform: transform,
+                handle: .xAxis, projectSessionID: UUID(), projectGeneration: MutationGeneration())
+            results.append(try XCTUnwrap(VertexScaleGeometry.candidate(
+                sourceMesh: source, transaction: &transaction, factor: 2)))
+        }
+        for index in source.vertices.indices {
+            assertEqual(results[0].vertices[index].position, results[1].vertices[index].position)
+        }
+    }
+
+    func testVertexScaleUsesAbsoluteFactorAndPreservesUnselectedTopology() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table); _ = try selection.apply(.replace, vertexIDs: [0,1])
+        var transaction = try VertexScaleGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            handle: .xAxis, projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        for factor: Float in [1.1, 1.5, 0.8] {
+            _ = try VertexScaleGeometry.candidate(sourceMesh: source, transaction: &transaction, factor: factor)
+        }
+        let result = try XCTUnwrap(VertexScaleGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, factor: 2))
+        var oneShot = try VertexScaleGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            handle: .xAxis, projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        XCTAssertEqual(result, try VertexScaleGeometry.candidate(
+            sourceMesh: source, transaction: &oneShot, factor: 2))
+        XCTAssertEqual(result.vertices[2], source.vertices[2]); XCTAssertEqual(result.vertices[3], source.vertices[3])
+        XCTAssertEqual(result.indices, source.indices)
+        XCTAssertEqual(result.runtime.topologyID, source.runtime.topologyID)
+        XCTAssertEqual(result.runtime.topologyRevision, source.runtime.topologyRevision)
+    }
+
+    func testVertexScaleFactorOneIsExactNoOpAndInvalidFactorsAreRejected() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table); _ = selection.selectAll()
+        var transaction = try VertexScaleGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            handle: .uniform, projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        XCTAssertNil(try VertexScaleGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, factor: 1))
+        for factor in [Float.nan, .infinity, -.infinity, 0, -1, 0.0001, 1_001] {
+            XCTAssertThrowsError(try VertexScaleGeometry.candidate(
+                sourceMesh: source, transaction: &transaction, factor: factor)) {
+                XCTAssertEqual($0 as? VertexScaleError, .invalidFactor)
+            }
+        }
+    }
+
+    func testVertexScaleTransactionRejectsSelectionTransformAndMeshChanges() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table); _ = selection.selectAll()
+        let session = UUID(), generation = MutationGeneration()
+        let transaction = try VertexScaleGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            handle: .uniform, projectSessionID: session, projectGeneration: generation)
+        XCTAssertTrue(transaction.matches(mesh: source, table: table, selection: selection,
+                                          transform: .identity, projectSessionID: session,
+                                          projectGeneration: generation))
+        _ = try selection.apply(.toggle, vertexID: 0); _ = try selection.apply(.toggle, vertexID: 0)
+        XCTAssertFalse(transaction.matches(mesh: source, table: table, selection: selection,
+                                           transform: .identity, projectSessionID: session,
+                                           projectGeneration: generation))
+        XCTAssertFalse(transaction.matches(mesh: source, table: table, selection: selection,
+                                           transform: ObjectTransform(translation: SIMD3(1,0,0)),
+                                           projectSessionID: session, projectGeneration: generation))
+        XCTAssertFalse(transaction.matches(mesh: source, table: table, selection: selection,
+                                           transform: .identity, projectSessionID: UUID(),
+                                           projectGeneration: generation))
+    }
+
+    func testVertexScaleFailureBoundariesAreAtomicAndMemoryEstimateIsBounded() throws {
+        let source = quad(), table = try MeshVertexTopologyTable.build(mesh: source)
+        var selection = try VertexSelection(table: table); _ = selection.selectAll()
+        XCTAssertThrowsError(try VertexScaleGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            handle: .uniform, projectSessionID: UUID(), projectGeneration: MutationGeneration(),
+            memoryLimit: 1)) { XCTAssertEqual($0 as? VertexScaleError, .workingMemoryLimitExceeded) }
+        for point in [VertexScaleFailurePoint.candidateAllocation, .candidatePostUpdate] {
+            var transaction = try VertexScaleGeometry.begin(
+                mesh: source, table: table, selection: selection, transform: .identity,
+                handle: .uniform, projectSessionID: UUID(), projectGeneration: MutationGeneration())
+            XCTAssertThrowsError(try VertexScaleGeometry.candidate(
+                sourceMesh: source, transaction: &transaction, factor: 2,
+                failureInjector: .init { $0 == point }))
+            XCTAssertEqual(source, quad())
+        }
+        XCTAssertThrowsError(try VertexScaleGeometry.estimatedPeakBytes(
+            vertexCount: Int.max, indexCount: Int.max, selectedCount: Int.max))
+    }
+
+    func testScaleGizmoFactorIsSharedByObjectAndSelectedVertexPaths() throws {
+        let start = Ray(origin: SIMD3<Float>(1,0,5), direction: SIMD3(0,0,-1))
+        let current = Ray(origin: SIMD3<Float>(2,0,5), direction: SIMD3(0,0,-1))
+        let session = try XCTUnwrap(ScaleGizmoGeometry.beginSession(
+            handle: .xAxis, ray: start, transform: .identity,
+            cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+        let factor = try XCTUnwrap(ScaleGizmoGeometry.factor(
+            session: session, ray: current, cameraDirection: SIMD3(0,0,-1)))
+        let objectScale = try XCTUnwrap(ScaleGizmoGeometry.scale(
+            session: session, ray: current, cameraDirection: SIMD3(0,0,-1)))
+        XCTAssertEqual(objectScale, try XCTUnwrap(ScaleGizmoGeometry.applyFactor(
+            startScale: session.startScale, handle: .xAxis, factor: factor)))
+    }
+
     private func assertEqual(
         _ lhs: SIMD3<Float>, _ rhs: SIMD3<Float>, accuracy: Float = 0.000_01,
         file: StaticString = #filePath, line: UInt = #line

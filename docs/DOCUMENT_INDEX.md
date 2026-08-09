@@ -15,6 +15,7 @@
 - `VERTEX_SELECTION.md` — mesh vertex identity、dense bitset、BVH visible picking、point overlay
 - `VERTEX_TRANSLATE.md` — selected local positionsのworld-axis移動、非破壊preview、1操作1Undo
 - `VERTEX_ROTATE.md` — selected local positionsのworld-axis回転、multi-turn preview、1操作1Undo
+- `VERTEX_SCALE.md` — selected local positionsのworld-axis／uniform scale、非破壊preview、1操作1Undo
 - `EDGE_BEVEL.md` — isolated manifold edgeのworld-mm chamfer、support face split、atomic install
 - `FACE_EXTRUDE.md` — manifold face patchのworld-mm extrusion、preview、atomic topology install、Undo
 - `FACE_INSET.md` — planar convex single-loop face patchのconstant-width world-mm inset、preview、atomic install

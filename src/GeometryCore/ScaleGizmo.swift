@@ -79,11 +79,11 @@ enum ScaleGizmoGeometry {
 
     static func beginSession(handle: ScaleGizmoHandle, ray: Ray,
                              transform: ObjectTransform, cameraDirection: SIMD3<Float>,
-                             referenceLength: Float) -> ScaleDragSession? {
+                             referenceLength: Float, originOverride: SIMD3<Float>? = nil) -> ScaleDragSession? {
         guard ray.origin.allFinite, ray.direction.allFinite,
               simd_length_squared(ray.direction) > epsilon,
               referenceLength.isFinite, referenceLength > epsilon else { return nil }
-        let origin = transform.translation
+        let origin = originOverride ?? transform.translation
         if let axis = handle.axis {
             guard let point = TranslationGizmoGeometry.axisConstraintPoint(
                 ray: ray, origin: origin, axis: axis, cameraDirection: cameraDirection) else { return nil }
@@ -108,6 +108,12 @@ enum ScaleGizmoGeometry {
 
     static func scale(session: ScaleDragSession, ray: Ray,
                       cameraDirection: SIMD3<Float>) -> SIMD3<Float>? {
+        guard let factor = factor(session: session, ray: ray, cameraDirection: cameraDirection) else { return nil }
+        return applyFactor(startScale: session.startScale, handle: session.handle, factor: factor)
+    }
+
+    static func factor(session: ScaleDragSession, ray: Ray,
+                       cameraDirection: SIMD3<Float>) -> Float? {
         guard ray.origin.allFinite, ray.direction.allFinite,
               simd_length_squared(ray.direction) > epsilon else { return nil }
         let signedDistance: Float
@@ -130,8 +136,7 @@ enum ScaleGizmoGeometry {
         let factor = normalizedDistance.isFinite
             ? 1 + normalizedDistance
             : (signedDistance >= 0 ? Float.greatestFiniteMagnitude : -Float.greatestFiniteMagnitude)
-        return applyFactor(startScale: session.startScale,
-                           handle: session.handle, factor: factor)
+        return factor
     }
 
     static func applyFactor(startScale: SIMD3<Float>, handle: ScaleGizmoHandle,
