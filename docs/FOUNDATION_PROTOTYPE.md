@@ -219,3 +219,7 @@ Vertex Select modeはcurrent mesh vertex IDのruntime-only dense bitset、Replac
 ## Selected Vertex Translation
 
 Vertex Select modeで選択が存在し、Move Gizmoが有効な場合、world-axis gizmoで選択頂点を移動できる。pivotは選択頂点のobject-local AABB中心、保存位置はobject-localである。drag中は別mesh previewのみを描画し、終了時に1回だけ統合Undo履歴へcommitする。Cancelとno-opはproject状態を変更しない。project formatVersionは1のままで、preview／selection／transactionは保存しない。詳細は`VERTEX_TRANSLATE.md`を参照。
+
+## Selected Vertex Scale
+
+Vertex Select modeでScale Gizmoを使うと、選択頂点のlocal AABB中心をpivotにworld X／Y／Zまたはuniform factorを適用する。開始local offsetをmodel／inverse model matrixへ`w=0`で通し、absolute factorを毎回開始snapshotへ適用するため、大きなObject translationとnon-uniform Transformから独立する。Previewはproject／STL／Autosaveへ含めず、意味のあるcommitだけを統合historyへ1件記録する。formatVersionは1のままである。詳細は`VERTEX_SCALE.md`を参照。
