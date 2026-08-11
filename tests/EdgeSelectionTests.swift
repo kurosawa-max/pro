@@ -677,7 +677,7 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
         let transform = ObjectTransform(
             translation: SIMD3<Float>(1_000_000, -2_000_000, 3_000_000),
-            rotation: simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(0, 0, 1)),
+            rotation: simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(0, 0, 1)).vector,
             scale: SIMD3<Float>(2, 3, 4))
         var transaction = try EdgeTranslateGeometry.begin(
             mesh: source, table: table, selection: selection, transform: transform,
