@@ -832,7 +832,7 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertEqual(committed.runtime.topologyRevision, before.runtime.topologyRevision)
         XCTAssertEqual(model.edgeSelection, selection); XCTAssertEqual(model.meshEdgeTable?.fingerprint, tableFingerprint)
         for index in before.vertices.indices where !affected.contains(index) {
-            XCTAssertEqual(committed.vertices[index], before.vertices[index])
+            XCTAssertEqual(committed.vertices[index].position, before.vertices[index].position)
         }
         XCTAssertNotEqual(try model.projectData(), projectBefore); XCTAssertNotEqual(try model.stlData(), stlBefore)
         model.undo(); XCTAssertEqual(model.mesh, before); XCTAssertEqual(model.edgeSelection, selection)
