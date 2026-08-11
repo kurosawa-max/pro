@@ -887,6 +887,36 @@ final class AutosaveRecoveryTests: XCTestCase {
     }
 
     @MainActor
+    func testSelectedEdgeTranslateAutosavePreviewCancelCommitUndoRedoOrdering() async throws {
+        let environment = try makeStorageEnvironment(); defer { environment.cleanup() }
+        let scheduler = ManualAutosaveDelayScheduler()
+        let coordinator = ProjectAutosaveCoordinator(storage: environment.storage, scheduler: scheduler)
+        let model = WorkspaceModel(autosaveCoordinator: coordinator)
+        await model.inspectRecoveryOnLaunch(); model.setInteractionMode(.edgeSelect)
+        XCTAssertTrue(model.applyEdgeSelectionHit(0))
+        let original = model.mesh
+        let start = Ray(origin: SIMD3<Float>(0.3,0.3,5), direction: SIMD3<Float>(0,0,-1))
+        let end = Ray(origin: SIMD3<Float>(0.8,0.6,5), direction: SIMD3<Float>(0,0,-1))
+        XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start, cameraDirection: SIMD3(0,0,-1)))
+        model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1))
+        XCTAssertNotNil(model.edgeTranslatePreviewMesh)
+        XCTAssertTrue(await model.requestImmediateAutosave()); XCTAssertEqual(await coordinator.successfulWriteCount, 0)
+        model.cancelTranslationGizmoDrag(); XCTAssertEqual(await coordinator.successfulWriteCount, 0)
+        XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start, cameraDirection: SIMD3(0,0,-1)))
+        model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1)); model.endTranslationGizmoDrag()
+        let committed = model.mesh
+        await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 1 }
+        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, committed)
+        model.undo(); await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 2 }
+        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, original)
+        model.redo(); await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 3 }
+        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, committed)
+    }
+
+    @MainActor
     func testSelectedVertexTranslateLateBeginFailureSchedulesNoAutosaveOrRecovery() async throws {
         let environment = try makeStorageEnvironment()
         defer { environment.cleanup() }
