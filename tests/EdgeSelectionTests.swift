@@ -1075,9 +1075,13 @@ final class EdgeSelectionTests: XCTestCase {
         let transaction = try EdgeRotateGeometry.begin(mesh: source, table: table, selection: selection,
             transform: transform, axis: SIMD3(0,0,1), projectSessionID: UUID(), projectGeneration: MutationGeneration())
         let expectedLocal = SIMD3<Float>(3,3,2)
-        let centroid = (source.vertices[0].position + source.vertices[1].position + source.vertices[2].position) / 3
-        let midpointAverage = ((source.vertices[0].position + source.vertices[1].position) * 0.5
-            + (source.vertices[1].position + source.vertices[2].position) * 0.5) * 0.5
+        let position0: SIMD3<Float> = source.vertices[0].position
+        let position1: SIMD3<Float> = source.vertices[1].position
+        let position2: SIMD3<Float> = source.vertices[2].position
+        let centroid: SIMD3<Float> = (position0 + position1 + position2) / 3
+        let midpoint01: SIMD3<Float> = (position0 + position1) * 0.5
+        let midpoint12: SIMD3<Float> = (position1 + position2) * 0.5
+        let midpointAverage: SIMD3<Float> = (midpoint01 + midpoint12) * 0.5
         XCTAssertNotEqual(expectedLocal, centroid); XCTAssertNotEqual(expectedLocal, midpointAverage)
         XCTAssertNotEqual(expectedLocal, .zero); XCTAssertEqual(transaction.pivotLocal, expectedLocal)
         XCTAssertEqual(transaction.pivotWorld, transform.worldPosition(fromLocal: expectedLocal))
@@ -1093,7 +1097,7 @@ final class EdgeSelectionTests: XCTestCase {
         var selection = try EdgeSelection(table: table); XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
         var transaction = try EdgeRotateGeometry.begin(mesh: source, table: table, selection: selection,
             transform: .identity, axis: SIMD3(0,0,1), projectSessionID: UUID(), projectGeneration: MutationGeneration())
-        let first = try XCTUnwrap(EdgeRotateGeometry.candidate(sourceMesh: source, transaction: &transaction, accumulatedAngle: .pi / 4))
+        _ = try XCTUnwrap(EdgeRotateGeometry.candidate(sourceMesh: source, transaction: &transaction, accumulatedAngle: .pi / 4))
         let second = try XCTUnwrap(EdgeRotateGeometry.candidate(sourceMesh: source, transaction: &transaction, accumulatedAngle: .pi / 2))
         var fresh = try EdgeRotateGeometry.begin(mesh: source, table: table, selection: selection,
             transform: .identity, axis: SIMD3(0,0,1), projectSessionID: UUID(), projectGeneration: MutationGeneration())
