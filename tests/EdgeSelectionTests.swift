@@ -898,6 +898,82 @@ final class EdgeSelectionTests: XCTestCase {
         }
     }
 
+    func testWorkspaceEdgeTranslateSourceSnapshotFailureIsAtomicAndRetryable() throws {
+        var failSnapshot = true
+        let model = WorkspaceModel(edgeTranslateFailureInjector: .init {
+            $0 == .sourceSnapshot && failSnapshot
+        })
+        model.setInteractionMode(.edgeSelect)
+        XCTAssertTrue(model.applyEdgeSelectionHit(0))
+        let before = model.mesh
+        let selection = model.edgeSelection
+        let generation = model.projectMutationGeneration
+        let ray = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertFalse(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: ray, cameraDirection: SIMD3(0, 0, -1)))
+        XCTAssertEqual(model.mesh, before)
+        XCTAssertEqual(model.edgeSelection, selection)
+        XCTAssertEqual(model.projectMutationGeneration, generation)
+        XCTAssertEqual(model.undoCount, 0)
+        XCTAssertNil(model.edgeTranslatePreviewMesh)
+        XCTAssertFalse(model.edgeTranslateTransactionActiveForTesting)
+        failSnapshot = false
+        XCTAssertTrue(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: ray, cameraDirection: SIMD3(0, 0, -1)))
+        model.cancelTranslationGizmoDrag()
+    }
+
+    func testWorkspaceEdgeTranslateRendererUploadsOnlyVerticesAndZeroDeltaSkips() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), device: device)
+        let profiler = PerformanceProfiler()
+        guard let renderer = MetalRenderer(view: view, profiler: profiler) else {
+            throw XCTSkip("Renderer unavailable")
+        }
+        let model = WorkspaceModel()
+        model.setInteractionMode(.edgeSelect)
+        XCTAssertTrue(model.applyEdgeSelectionHit(0))
+        let table = try XCTUnwrap(model.meshEdgeTable)
+        renderer.update(mesh: model.mesh)
+        _ = renderer.updateEdgeSelection(
+            mesh: model.mesh, table: table, selection: model.edgeSelection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        let before = profiler.snapshot()
+        let selectedUploads = renderer.edgeSelectionOverlaySelectedUploadCount
+        let hoverUploads = renderer.edgeSelectionOverlayHoverUploadCount
+        let start = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))
+        let end = Ray(origin: SIMD3<Float>(0.8, 0.6, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertTrue(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: start, cameraDirection: SIMD3(0, 0, -1)))
+        model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0, 0, -1))
+        model.endTranslationGizmoDrag()
+        renderer.update(mesh: model.mesh)
+        _ = renderer.updateEdgeSelection(
+            mesh: model.mesh, table: try XCTUnwrap(model.meshEdgeTable),
+            selection: model.edgeSelection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        let committed = profiler.snapshot()
+        XCTAssertEqual(committed[.vertexUpload].sampleCount, before[.vertexUpload].sampleCount + 1)
+        XCTAssertEqual(committed[.indexUpload].sampleCount, before[.indexUpload].sampleCount)
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedUploadCount, selectedUploads)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverUploadCount, hoverUploads)
+
+        XCTAssertTrue(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: start, cameraDirection: SIMD3(0, 0, -1)))
+        model.updateTranslationGizmoDrag(ray: start, cameraDirection: SIMD3(0, 0, -1))
+        model.endTranslationGizmoDrag()
+        renderer.update(mesh: model.mesh)
+        _ = renderer.updateEdgeSelection(
+            mesh: model.mesh, table: try XCTUnwrap(model.meshEdgeTable),
+            selection: model.edgeSelection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        let noOp = profiler.snapshot()
+        XCTAssertEqual(noOp[.vertexUpload].sampleCount, committed[.vertexUpload].sampleCount)
+        XCTAssertEqual(noOp[.indexUpload].sampleCount, committed[.indexUpload].sampleCount)
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedUploadCount, selectedUploads)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverUploadCount, hoverUploads)
+    }
+
     private func makeInstrumentedEdgeRenderer() throws -> (
         MetalRenderer, EditableMesh, MeshEdgeTable, FaultInjectingEdgePairAllocator
     ) {
