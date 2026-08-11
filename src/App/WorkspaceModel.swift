@@ -3747,7 +3747,7 @@ final class WorkspaceModel: ObservableObject {
         guard let session = RotationGizmoGeometry.beginSession(
             handle: handle, ray: ray, origin: transaction.pivotWorld,
             startTransform: expectedTransform),
-              !edgeRotateFailureInjector.shouldFail(.commitBoundary) else {
+              !edgeRotateFailureInjector.shouldFail(.beginCommitBoundary) else {
             throw EdgeRotateError.preparationFailed
         }
         return PreparedEdgeRotateDrag(
@@ -3848,7 +3848,7 @@ final class WorkspaceModel: ObservableObject {
                     throw EdgeRotateError.staleSource
                 }
                 let candidate = try EdgeRotateGeometry.candidate(
-                    sourceMesh: edgeRotatePreviewMesh ?? mesh, transaction: &transaction,
+                    sourceMesh: mesh, transaction: &transaction,
                     accumulatedAngle: update.accumulatedAngle, profiler: profiler,
                     failureInjector: edgeRotateFailureInjector)
                 if let candidate {
@@ -4602,6 +4602,30 @@ final class WorkspaceModel: ObservableObject {
         }
         hoveredEdgeID = 0
         status = "Prepared edge conflict state"
+    }
+    func installEdgeRotateBeginConflictsForTesting(
+        sculpt: Bool, transformPanel: Bool, objectRotate: Bool,
+        strokeVertexID: Int = 0
+    ) {
+        precondition(interactionMode == .edgeSelect)
+        if transformPanel {
+            panelTransformBefore = objectTransform
+            objectTransform.translation += SIMD3<Float>(0.2, 0, 0)
+        }
+        if objectRotate {
+            let ray = Ray(origin: objectTransform.translation + SIMD3<Float>(1, 0, 5),
+                          direction: SIMD3<Float>(0, 0, -1))
+            rotationGizmoState.dragSession = RotationGizmoGeometry.beginSession(
+                handle: .zAxis, ray: ray, transform: objectTransform)
+            rotationGizmoState.activeHandle = .zAxis
+        }
+        if sculpt {
+            let before = mesh.vertices[strokeVertexID].position
+            _ = mesh.updatePositions([strokeVertexID: before + SIMD3<Float>(0.05, 0, 0)])
+            strokeBefore = [strokeVertexID: before]
+        }
+        hoveredEdgeID = 0
+        status = "Prepared edge rotation conflict state"
     }
     var vertexTranslateTransactionActiveForTesting: Bool { vertexTranslateTransaction != nil }
     var vertexRotateTransactionActiveForTesting: Bool { vertexRotateTransaction != nil }

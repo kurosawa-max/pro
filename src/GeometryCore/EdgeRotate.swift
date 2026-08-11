@@ -64,8 +64,10 @@ enum EdgeRotateError: Error, Equatable, LocalizedError {
 
 enum EdgeRotateFailurePoint: Hashable {
     case sourceSnapshot, selectedPositionCopy, candidateAllocation
+    case candidateValidation, normalRebuild, rendererPreparation
     case roundTripValidation, candidatePostUpdate
-    case previewBVHPreparation, commitBVHPreparation, commitBoundary
+    case previewBVHPreparation, beginCommitBoundary
+    case commitBVHPreparation, commitBoundary
 }
 
 struct EdgeRotateFailureInjector {
@@ -197,8 +199,11 @@ enum EdgeRotateGeometry {
         }
         var candidate = sourceMesh
         let mutations = candidate.updatePositions(updates, profiler: profiler)
-        guard mutations.count <= updates.count,
-              !failureInjector.shouldFail(.candidatePostUpdate) else {
+        guard !failureInjector.shouldFail(.normalRebuild),
+              mutations.count <= updates.count,
+              !failureInjector.shouldFail(.candidateValidation),
+              !failureInjector.shouldFail(.candidatePostUpdate),
+              !failureInjector.shouldFail(.rendererPreparation) else {
             throw EdgeRotateError.preparationFailed
         }
         return candidate

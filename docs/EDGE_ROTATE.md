@@ -6,7 +6,7 @@ Selected Edge Rotate is a vertex-only edit of the endpoints of the current edge 
 
 Drag begin binds topology identity and revision, edge-table fingerprint, vertex revision, source counts, edge-selection version, sanitized object transform, project session, and project generation. Selected edge IDs are captured once. Their endpoint IDs are deduplicated and sorted, so pointer updates do not scan the selection bitset.
 
-The pivot is the affected endpoints' start-position local AABB center, computed as `minimum * 0.5 + maximum * 0.5`. Every preview is rebuilt from start positions: subtract the pivot, transform the offset with model-matrix `w = 0`, rotate it around world X/Y/Z, transform it back with inverse-model-matrix `w = 0`, and restore the pivot. This is translation-independent and supports rotation with non-uniform object scale.
+The pivot is the affected endpoints' start-position local AABB center, computed as `minimum * 0.5 + maximum * 0.5`. Every pointer update reconstructs from the stable committed or projected source plus the current absolute angle. The previous preview mesh is never used as the source of the next preview, so the result and vertex revision are deterministic with respect to pointer sample count. Each reconstruction subtracts the pivot, transforms the offset with model-matrix `w = 0`, rotates it around world X/Y/Z, transforms it back with inverse-model-matrix `w = 0`, and restores the pivot. This is translation-independent and supports rotation with non-uniform object scale.
 
 The existing rotation session provides an unwrapped multi-turn angle. Full-turn-equivalent angles are no-ops. Finite, normalized-axis, inverse-transform, and render-space round-trip checks reject unsafe candidates.
 

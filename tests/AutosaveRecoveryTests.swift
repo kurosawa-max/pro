@@ -937,12 +937,15 @@ final class AutosaveRecoveryTests: XCTestCase {
         XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start))
         model.updateRotationGizmoDrag(ray: end)
         XCTAssertNotNil(model.edgeRotatePreviewMesh)
+        let previewScheduleCount = await scheduler.waiterCount
+        XCTAssertEqual(previewScheduleCount, 0)
         let previewAutosave = await model.requestImmediateAutosave()
         let previewWriteCount = await coordinator.successfulWriteCount
         XCTAssertTrue(previewAutosave); XCTAssertEqual(previewWriteCount, 0)
         model.cancelRotationGizmoDrag()
         let cancelWriteCount = await coordinator.successfulWriteCount
-        XCTAssertEqual(cancelWriteCount, 0)
+        let cancelScheduleCount = await scheduler.waiterCount
+        XCTAssertEqual(cancelWriteCount, 0); XCTAssertEqual(cancelScheduleCount, 0)
         XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start))
         model.updateRotationGizmoDrag(ray: end); model.endRotationGizmoDrag()
         let committed = model.mesh
