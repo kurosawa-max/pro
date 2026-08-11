@@ -817,8 +817,13 @@ final class EdgeSelectionTests: XCTestCase {
         model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1))
         XCTAssertNotNil(model.edgeTranslatePreviewMesh); XCTAssertNotEqual(model.renderedMesh, model.mesh)
         XCTAssertEqual(model.mesh, before); XCTAssertEqual(model.objectTransform, transform)
-        XCTAssertEqual(model.edgeSelection, selection); XCTAssertEqual(try model.projectData(), projectBefore)
-        XCTAssertEqual(try model.stlData(), stlBefore)
+        XCTAssertEqual(model.edgeSelection, selection)
+        XCTAssertThrowsError(try model.projectData()) {
+            XCTAssertEqual($0 as? WorkspaceError, .activeEditInProgress)
+        }
+        XCTAssertThrowsError(try model.stlData()) {
+            XCTAssertEqual($0 as? WorkspaceError, .activeEditInProgress)
+        }
         model.endTranslationGizmoDrag()
         let committed = model.mesh
         XCTAssertNil(model.edgeTranslatePreviewMesh); XCTAssertFalse(model.edgeTranslateTransactionActiveForTesting)
