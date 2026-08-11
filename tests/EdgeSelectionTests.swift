@@ -818,9 +818,7 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertNotNil(model.edgeTranslatePreviewMesh); XCTAssertNotEqual(model.renderedMesh, model.mesh)
         XCTAssertEqual(model.mesh, before); XCTAssertEqual(model.objectTransform, transform)
         XCTAssertEqual(model.edgeSelection, selection)
-        XCTAssertThrowsError(try model.projectData()) {
-            XCTAssertEqual($0 as? WorkspaceError, .activeEditInProgress)
-        }
+        XCTAssertEqual(try model.projectData(), projectBefore)
         XCTAssertThrowsError(try model.stlData()) {
             XCTAssertEqual($0 as? WorkspaceError, .activeEditInProgress)
         }
