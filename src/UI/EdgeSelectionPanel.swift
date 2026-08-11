@@ -20,6 +20,9 @@ struct EdgeSelectionPanel: View {
             Text("\(model.selectedEdgeCount) selected of \(model.totalEdgeCount)")
                 .font(.caption.monospacedDigit())
                 .accessibilityLabel("Selected edges \(model.selectedEdgeCount), total edges \(model.totalEdgeCount)")
+            Text("Affected vertices \(model.selectedEdgeAffectedVertexCount)")
+                .font(.caption.monospacedDigit())
+                .accessibilityLabel("Affected vertices \(model.selectedEdgeAffectedVertexCount)")
             if let table = model.meshEdgeTable {
                 Text("Boundary \(table.boundaryEdgeCount) · Manifold \(table.manifoldEdgeCount) · Non-manifold \(table.nonManifoldEdgeCount)")
                     .font(.caption2)
@@ -59,6 +62,7 @@ struct EdgeSelectionPanel: View {
             Text("Picks an edge of the nearest visible triangle within 14 points.")
             Text("Silhouette-only, hidden, through, loop, and ring selection are not included.")
             Text("Runtime only; topology changes clear edge selection.")
+            Text("Move uses the world-space gizmo; empty selection never moves the object.")
             if let error = model.edgeSelectionError {
                 Text(error).foregroundStyle(.red).accessibilityLabel("Edge selection error: \(error)")
             }

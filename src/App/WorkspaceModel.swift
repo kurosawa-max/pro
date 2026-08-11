@@ -49,6 +49,9 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var meshEdgeTable: MeshEdgeTable?
     @Published private(set) var hoveredEdgeID: Int?
     @Published private(set) var edgeSelectionError: String?
+    @Published private(set) var selectedEdgeAffectedVertexCount = 0
+    @Published private(set) var edgeTranslatePreviewMesh: EditableMesh?
+    @Published private(set) var edgeTranslateError: String?
     @Published private(set) var vertexSelectionOperation = VertexSelectionOperation.replace
     @Published private(set) var vertexSelection = VertexSelection.unavailable(mesh: .icosphere())
     @Published private(set) var meshVertexTopologyTable: MeshVertexTopologyTable?
@@ -155,6 +158,11 @@ final class WorkspaceModel: ObservableObject {
         transform: ObjectTransform, world: SIMD3<Float>
     )?
     private let vertexTranslateFailureInjector: VertexTranslateFailureInjector
+    private var edgeTranslateTransaction: EdgeTranslateTransaction?
+    private var edgeTranslateStartHover: Int?
+    private let edgeTranslatePickingCache = MeshBVHCache()
+    private var edgeTranslatePivotCache: (meshRevision: UInt64, selectionVersion: EdgeSelectionVersion, transform: ObjectTransform, world: SIMD3<Float>)?
+    private let edgeTranslateFailureInjector: EdgeTranslateFailureInjector
     private var vertexRotateTransaction: VertexRotateTransaction?
     private var vertexRotateStartHover: VertexHoverState?
     private let vertexRotatePickingCache = MeshBVHCache()
@@ -224,11 +232,13 @@ final class WorkspaceModel: ObservableObject {
 
     init(autosaveCoordinator: ProjectAutosaveCoordinator = ProjectAutosaveCoordinator(),
          pickingCache: MeshBVHCache = MeshBVHCache(),
+         edgeTranslateFailureInjector: EdgeTranslateFailureInjector = EdgeTranslateFailureInjector(),
          vertexTranslateFailureInjector: VertexTranslateFailureInjector = VertexTranslateFailureInjector(),
          vertexRotateFailureInjector: VertexRotateFailureInjector = VertexRotateFailureInjector(),
          vertexScaleFailureInjector: VertexScaleFailureInjector = VertexScaleFailureInjector()) {
         self.autosaveCoordinator = autosaveCoordinator
         self.pickingCache = pickingCache
+        self.edgeTranslateFailureInjector = edgeTranslateFailureInjector
         self.vertexTranslateFailureInjector = vertexTranslateFailureInjector
         self.vertexRotateFailureInjector = vertexRotateFailureInjector
         self.vertexScaleFailureInjector = vertexScaleFailureInjector
@@ -638,8 +648,24 @@ final class WorkspaceModel: ObservableObject {
         let expectedProjectGeneration: MutationGeneration
         let expectedSelectionVersion: VertexSelectionVersion
     }
+    private struct PreparedEdgeTranslateDrag {
+        let transaction: EdgeTranslateTransaction
+        let gizmoSession: TranslationDragSession
+        let activeHandle: TranslationGizmoHandle
+        let startHover: Int?
+    }
     var renderedMesh: EditableMesh {
-        vertexScalePreviewMesh ?? vertexRotatePreviewMesh ?? vertexTranslatePreviewMesh ?? mesh
+        edgeTranslatePreviewMesh ?? vertexScalePreviewMesh ?? vertexRotatePreviewMesh ?? vertexTranslatePreviewMesh ?? mesh
+    }
+    var edgeTranslatePivotWorld: SIMD3<Float>? {
+        if let transaction = edgeTranslateTransaction { return transaction.pivotWorld + transaction.worldDelta }
+        guard interactionMode == .edgeSelect, gizmoMode == .translate, let table = meshEdgeTable else { return nil }
+        let safeTransform = objectTransform.sanitized()
+        if let cached = edgeTranslatePivotCache, cached.meshRevision == mesh.runtime.revision,
+           cached.selectionVersion == edgeSelection.version, cached.transform == safeTransform { return cached.world }
+        guard let world = try? EdgeTranslateGeometry.pivot(mesh: mesh, table: table, selection: edgeSelection, transform: safeTransform).world else { return nil }
+        edgeTranslatePivotCache = (mesh.runtime.revision, edgeSelection.version, safeTransform, world)
+        return world
     }
     var vertexTranslatePivotWorld: SIMD3<Float>? {
         if let transaction = vertexTranslateTransaction {
@@ -678,7 +704,7 @@ final class WorkspaceModel: ObservableObject {
         return world
     }
     var selectedVertexGizmoOriginWorld: SIMD3<Float>? {
-        vertexTranslatePivotWorld ?? vertexRotatePivotWorld ?? vertexScalePivotWorld
+        edgeTranslatePivotWorld ?? vertexTranslatePivotWorld ?? vertexRotatePivotWorld ?? vertexScalePivotWorld
     }
     var vertexScalePivotWorld: SIMD3<Float>? {
         if let transaction = vertexScaleTransaction { return transaction.pivotWorld }
@@ -885,6 +911,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { return }
         #endif
+        if edgeTranslateTransaction != nil { cancelTranslationGizmoDrag() }
         edgeSelectionOperation = operation
         edgeSelectionError = nil
     }
@@ -3199,7 +3226,7 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { return nil }
         #endif
-        let origin = vertexTranslatePivotWorld ?? objectTransform.translation
+        let origin = edgeTranslatePivotWorld ?? vertexTranslatePivotWorld ?? objectTransform.translation
         return TranslationGizmoGeometry.hit(ray: ray, origin: origin, scale: scale)
     }
 
@@ -3210,6 +3237,13 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { return false }
         #endif
+        if interactionMode == .edgeSelect {
+            guard edgeSelection.selectedCount > 0,
+                  let prepared = try? prepareEdgeTranslateDrag(handle: handle, ray: ray,
+                                                               cameraDirection: cameraDirection) else { return false }
+            commitPreparedEdgeTranslateDrag(prepared)
+            return true
+        }
         if interactionMode != .vertexSelect {
             guard !isGizmoDragging else { return false }
             guard let session = TranslationGizmoGeometry.beginSession(
@@ -3231,6 +3265,51 @@ final class WorkspaceModel: ObservableObject {
             handle: handle, ray: ray, cameraDirection: cameraDirection) else { return false }
         commitPreparedVertexTranslateDrag(prepared)
         return true
+    }
+
+    private func prepareEdgeTranslateDrag(handle: TranslationGizmoHandle, ray: Ray,
+                                          cameraDirection: SIMD3<Float>) throws -> PreparedEdgeTranslateDrag {
+        guard ray.origin.allFinite, ray.direction.allFinite, cameraDirection.allFinite,
+              simd_length_squared(ray.direction) > 1e-12,
+              let table = meshEdgeTable, edgeSelection.matches(table), edgeSelection.selectedCount > 0,
+              !isTopologyEditRunning, !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented,
+              !edgeTranslateFailureInjector.shouldFail(.sourceSnapshot) else {
+            throw EdgeTranslateError.preparationFailed
+        }
+        let transaction = try EdgeTranslateGeometry.begin(
+            mesh: mesh, table: table, selection: edgeSelection, transform: objectTransform,
+            projectSessionID: workspaceSessionID, projectGeneration: projectMutationGeneration,
+            failureInjector: edgeTranslateFailureInjector)
+        guard let session = TranslationGizmoGeometry.beginSession(
+            handle: handle, ray: ray, transform: ObjectTransform(translation: transaction.pivotWorld),
+            cameraDirection: cameraDirection),
+              !edgeTranslateFailureInjector.shouldFail(.commitBoundary) else {
+            throw EdgeTranslateError.preparationFailed
+        }
+        return PreparedEdgeTranslateDrag(transaction: transaction, gizmoSession: session,
+                                         activeHandle: handle, startHover: hoveredEdgeID)
+    }
+
+    private func commitPreparedEdgeTranslateDrag(_ prepared: PreparedEdgeTranslateDrag) {
+        commitTransformPanelTransaction()
+        cancelStroke()
+        cancelTranslationGizmoDrag()
+        guard let table = meshEdgeTable,
+              prepared.transaction.matches(mesh: mesh, table: table, selection: edgeSelection,
+                                           transform: objectTransform,
+                                           projectSessionID: workspaceSessionID,
+                                           projectGeneration: projectMutationGeneration) else { return }
+        edgeTranslateTransaction = prepared.transaction
+        edgeTranslateStartHover = prepared.startHover
+        edgeTranslatePreviewMesh = nil
+        edgeTranslatePickingCache.invalidate()
+        edgeTranslateError = nil
+        hoveredEdgeID = nil
+        translationGizmoState.activeHandle = prepared.activeHandle
+        translationGizmoState.dragSession = prepared.gizmoSession
+        status = "Move Selected Edges"
     }
 
     private func prepareVertexTranslateDrag(
@@ -3314,6 +3393,32 @@ final class WorkspaceModel: ObservableObject {
         guard let session = translationGizmoState.dragSession,
               let translation = TranslationGizmoGeometry.translation(session: session, ray: ray,
                                                                       cameraDirection: cameraDirection) else { return }
+        if var transaction = edgeTranslateTransaction {
+            do {
+                guard let table = meshEdgeTable,
+                      transaction.matches(mesh: mesh, table: table, selection: edgeSelection,
+                                          transform: objectTransform, projectSessionID: workspaceSessionID,
+                                          projectGeneration: projectMutationGeneration) else {
+                    throw EdgeTranslateError.staleSource
+                }
+                let candidate = try EdgeTranslateGeometry.candidate(
+                    sourceMesh: edgeTranslatePreviewMesh ?? mesh, transaction: &transaction,
+                    worldDelta: translation - session.startTransform.translation,
+                    profiler: profiler, failureInjector: edgeTranslateFailureInjector)
+                if let candidate {
+                    guard edgeTranslatePickingCache.index(for: candidate) != nil else {
+                        throw EdgeTranslateError.preparationFailed
+                    }
+                } else { edgeTranslatePickingCache.invalidate() }
+                edgeTranslatePreviewMesh = candidate
+                edgeTranslateTransaction = transaction
+                edgeTranslateError = nil
+            } catch {
+                edgeTranslateError = error.localizedDescription
+                cancelTranslationGizmoDrag()
+            }
+            return
+        }
         if var transaction = vertexTranslateTransaction {
             do {
                 guard let table = meshVertexTopologyTable,
@@ -3352,6 +3457,42 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func endTranslationGizmoDrag() {
+        if let transaction = edgeTranslateTransaction {
+            let candidate = edgeTranslatePreviewMesh
+            translationGizmoState.dragSession = nil; translationGizmoState.activeHandle = nil
+            edgeTranslateTransaction = nil; edgeTranslatePreviewMesh = nil
+            edgeTranslatePickingCache.invalidate()
+            guard let candidate else { edgeTranslateStartHover = nil; status = "Edge move unchanged"; return }
+            guard let table = meshEdgeTable,
+                  transaction.matches(mesh: mesh, table: table, selection: edgeSelection,
+                                      transform: objectTransform, projectSessionID: workspaceSessionID,
+                                      projectGeneration: projectMutationGeneration) else {
+                edgeTranslateError = EdgeTranslateError.staleSource.localizedDescription
+                hoveredEdgeID = edgeTranslateStartHover; edgeTranslateStartHover = nil
+                status = "Edge move cancelled"; return
+            }
+            let changes = transaction.vertexIDs.enumerated().compactMap { offset, id -> VertexChange? in
+                let index = Int(id), before = transaction.startPositions[offset]
+                let after = candidate.vertices[index].position
+                return before == after ? nil : VertexChange(index: index, before: before, after: after)
+            }
+            guard !changes.isEmpty else { edgeTranslateStartHover = nil; status = "Edge move unchanged"; return }
+            guard let command = EdgeTranslateCommand(topologyID: transaction.topologyID,
+                                                     topologyRevision: transaction.topologyRevision,
+                                                     changes: changes),
+                  let preparedPicking = try? pickingCache.makeIndex(for: candidate) else {
+                edgeTranslateError = EdgeTranslateError.preparationFailed.localizedDescription
+                hoveredEdgeID = edgeTranslateStartHover; edgeTranslateStartHover = nil
+                status = "Edge move cancelled"; return
+            }
+            mesh = candidate
+            pickingCache.install(preparedPicking, for: mesh)
+            sculptSpatialIndex.didUpdate(changes.map { VertexMutation(index: $0.index, before: $0.before, after: $0.after) }, mesh: mesh)
+            record(.edgeTranslate(command))
+            hoveredEdgeID = nil; edgeTranslateStartHover = nil; edgeTranslateError = nil
+            status = "Moved \(transaction.selectedEdgeIDs.count) edges (\(changes.count) vertices)"
+            return
+        }
         if let transaction = vertexTranslateTransaction {
             let candidate = vertexTranslatePreviewMesh
             translationGizmoState.dragSession = nil
@@ -3417,6 +3558,13 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func cancelTranslationGizmoDrag() {
+        if edgeTranslateTransaction != nil {
+            edgeTranslateTransaction = nil; edgeTranslatePreviewMesh = nil
+            edgeTranslatePickingCache.invalidate()
+            hoveredEdgeID = edgeTranslateStartHover; edgeTranslateStartHover = nil
+            translationGizmoState.dragSession = nil; translationGizmoState.activeHandle = nil
+            return
+        }
         if vertexTranslateTransaction != nil {
             vertexTranslateTransaction = nil
             vertexTranslatePreviewMesh = nil
@@ -3912,6 +4060,14 @@ final class WorkspaceModel: ObservableObject {
             })
             let mutations = mesh.updatePositions(positions, profiler: profiler)
             sculptSpatialIndex.didUpdate(mutations, mesh: mesh)
+        case .edgeTranslate(let translation):
+            guard translation.topologyID == mesh.runtime.topologyID,
+                  translation.topologyRevision == mesh.runtime.topologyRevision else { return }
+            let positions = Dictionary(uniqueKeysWithValues: translation.changes.map {
+                ($0.index, useAfter ? $0.after : $0.before)
+            })
+            let mutations = mesh.updatePositions(positions, profiler: profiler)
+            sculptSpatialIndex.didUpdate(mutations, mesh: mesh)
         case .vertexTranslate(let translation):
             guard translation.topologyID == mesh.runtime.topologyID,
                   translation.topologyRevision == mesh.runtime.topologyRevision else { return }
@@ -4019,7 +4175,10 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func rebuildEdgeSelectionForCurrentTopology() {
+        if edgeTranslateTransaction != nil { cancelTranslationGizmoDrag() }
+        edgeTranslatePivotCache = nil
         hoveredEdgeID = nil
+        selectedEdgeAffectedVertexCount = 0
         edgeOverlaySelectedError = nil
         edgeOverlayHoverError = nil
         do {
@@ -4108,7 +4267,12 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func commitEdgeSelection(_ updated: EdgeSelection) {
+        if edgeTranslateTransaction != nil { cancelTranslationGizmoDrag() }
         edgeSelection = updated
+        edgeTranslatePivotCache = nil
+        selectedEdgeAffectedVertexCount = (try? meshEdgeTable.map {
+            try EdgeTranslateGeometry.affectedVertexIDs(table: $0, selection: updated).count
+        }) ?? 0
         edgeSelectionError = nil
         status = "Selected \(updated.selectedCount) of \(updated.edgeCount) edges"
     }

@@ -655,6 +655,65 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertEqual(MemoryLayout<EdgeSelectionOverlayUniforms>.stride, 160)
     }
 
+    func testEdgeTranslateDeduplicatesEndpointsAndUsesLocalAABBCenter() throws {
+        let source = twoTriangleQuad()
+        let table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table)
+        let first = try XCTUnwrap(table.edgeIDByKey[try XCTUnwrap(MeshEdgeKey(0, 2))])
+        let second = try XCTUnwrap(table.edgeIDByKey[try XCTUnwrap(MeshEdgeKey(0, 1))])
+        XCTAssertTrue(try selection.apply(.add, edgeID: first))
+        XCTAssertTrue(try selection.apply(.add, edgeID: second))
+        XCTAssertEqual(try EdgeTranslateGeometry.affectedVertexIDs(table: table, selection: selection), [0, 1, 2])
+        let pivot = try EdgeTranslateGeometry.pivot(
+            mesh: source, table: table, selection: selection, transform: .identity)
+        XCTAssertEqual(pivot.local, SIMD3<Float>(0.5, 0.5, 0))
+        XCTAssertEqual(pivot.world, pivot.local)
+    }
+
+    func testEdgeTranslateUsesAbsoluteStartPositionsAndWorldDirectionVector() throws {
+        let source = twoTriangleQuad()
+        let table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table)
+        XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
+        let transform = ObjectTransform(
+            translation: SIMD3<Float>(1_000_000, -2_000_000, 3_000_000),
+            rotation: simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(0, 0, 1)),
+            scale: SIMD3<Float>(2, 3, 4))
+        var transaction = try EdgeTranslateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: transform,
+            projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        let first = try XCTUnwrap(try EdgeTranslateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, worldDelta: SIMD3<Float>(3, 0, 0)))
+        let second = try XCTUnwrap(try EdgeTranslateGeometry.candidate(
+            sourceMesh: first, transaction: &transaction, worldDelta: SIMD3<Float>(6, 0, 0)))
+        for (offset, id) in transaction.vertexIDs.enumerated() {
+            XCTAssertEqual(second.vertices[Int(id)].position,
+                           transaction.startPositions[offset] + transaction.localDelta)
+        }
+        XCTAssertEqual(transaction.worldDelta, SIMD3<Float>(6, 0, 0))
+        XCTAssertTrue(second.vertices.allSatisfy { $0.position.allFinite && $0.normal.allFinite })
+    }
+
+    func testEdgeTranslateStaleSelectionNoOpAndMemoryPreflight() throws {
+        let source = twoTriangleQuad()
+        let table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table)
+        XCTAssertThrowsError(try EdgeTranslateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            projectSessionID: UUID(), projectGeneration: MutationGeneration())) {
+            XCTAssertEqual($0 as? EdgeTranslateError, .emptySelection)
+        }
+        XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
+        var transaction = try EdgeTranslateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        XCTAssertNil(try EdgeTranslateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, worldDelta: .zero))
+        XCTAssertThrowsError(try EdgeTranslateGeometry.estimatedPeakBytes(
+            vertexCount: Int.max, indexCount: Int.max,
+            selectedEdgeCount: Int.max, affectedVertexCount: Int.max))
+    }
+
     private func makeInstrumentedEdgeRenderer() throws -> (
         MetalRenderer, EditableMesh, MeshEdgeTable, FaultInjectingEdgePairAllocator
     ) {

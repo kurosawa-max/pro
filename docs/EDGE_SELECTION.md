@@ -1,5 +1,9 @@
 # Edge Selection
 
+Selected edges can be moved with the Move gizmo through the vertex-only [Selected Edge Translation](EDGE_TRANSLATE.md) transaction. It preserves the canonical edge table and Edge Selection; an empty selection does not fall back to object translation.
+
+Selected edges can be moved with the Move gizmo through the vertex-only [Selected Edge Translation](EDGE_TRANSLATE.md) transaction. It preserves the canonical edge table and Edge Selection; an empty selection does not fall back to object translation.
+
 Edge Selection is a runtime-only foundation for selecting topological edges of the current `EditableMesh`. It does not mutate mesh geometry or topology and does not participate in project persistence, Undo/Redo, dirty state, Autosave, or Recovery.
 
 ## Identity and deterministic table
