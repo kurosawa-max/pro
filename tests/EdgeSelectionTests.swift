@@ -1023,6 +1023,71 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertEqual(transaction.pivotLocal, minimum * 0.5 + maximum * 0.5)
     }
 
+    func testWorkspaceEdgeRotateRendererUploadsOnlyVerticesAndZeroAngleSkips() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), device: device)
+        let profiler = PerformanceProfiler()
+        guard let renderer = MetalRenderer(view: view, profiler: profiler) else { throw XCTSkip("Renderer unavailable") }
+        let model = WorkspaceModel(); model.setInteractionMode(.edgeSelect)
+        XCTAssertTrue(model.applyEdgeSelectionHit(0)); model.setGizmoMode(.rotate)
+        renderer.update(mesh: model.mesh)
+        _ = renderer.updateEdgeSelection(mesh: model.mesh, table: try XCTUnwrap(model.meshEdgeTable),
+            selection: model.edgeSelection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        let before = profiler.snapshot()
+        let selectedUploads = renderer.edgeSelectionOverlaySelectedUploadCount
+        let hoverUploads = renderer.edgeSelectionOverlayHoverUploadCount
+        let start = Ray(origin: SIMD3<Float>(1,0,5), direction: SIMD3(0,0,-1))
+        let end = Ray(origin: SIMD3<Float>(0,1,5), direction: SIMD3(0,0,-1))
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start))
+        model.updateRotationGizmoDrag(ray: end); model.endRotationGizmoDrag()
+        renderer.update(mesh: model.mesh)
+        _ = renderer.updateEdgeSelection(mesh: model.mesh, table: try XCTUnwrap(model.meshEdgeTable),
+            selection: model.edgeSelection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        let committed = profiler.snapshot()
+        XCTAssertEqual(committed[.vertexUpload].sampleCount, before[.vertexUpload].sampleCount + 1)
+        XCTAssertEqual(committed[.indexUpload].sampleCount, before[.indexUpload].sampleCount)
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedUploadCount, selectedUploads)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverUploadCount, hoverUploads)
+
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start))
+        model.updateRotationGizmoDrag(ray: start); model.endRotationGizmoDrag()
+        renderer.update(mesh: model.mesh)
+        let noOp = profiler.snapshot()
+        XCTAssertEqual(noOp[.vertexUpload].sampleCount, committed[.vertexUpload].sampleCount)
+        XCTAssertEqual(noOp[.indexUpload].sampleCount, committed[.indexUpload].sampleCount)
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedUploadCount, selectedUploads)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverUploadCount, hoverUploads)
+    }
+
+    func testEdgeRotatePivotUsesEndpointAABBCenterTransformedToWorld() throws {
+        let source = mesh([SIMD3(-4,1,2), SIMD3(1,8,-1), SIMD3(10,-2,5)], [0,1,2])
+        let table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table)
+        let ab = try XCTUnwrap(table.edgeIDByKey[try XCTUnwrap(MeshEdgeKey(0,1))])
+        let bc = try XCTUnwrap(table.edgeIDByKey[try XCTUnwrap(MeshEdgeKey(1,2))])
+        XCTAssertTrue(try selection.apply(.replace, edgeID: ab)); XCTAssertTrue(try selection.apply(.add, edgeID: bc))
+        let transform = ObjectTransform(
+            translation: SIMD3(20,-30,40),
+            rotation: ObjectTransform.rotation(degrees: SIMD3(20,-35,15)),
+            scale: SIMD3(2,0.5,3))
+        let transaction = try EdgeRotateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: transform, axis: SIMD3(0,0,1), projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        let expectedLocal = SIMD3<Float>(3,3,2)
+        let centroid = (source.vertices[0].position + source.vertices[1].position + source.vertices[2].position) / 3
+        let midpointAverage = ((source.vertices[0].position + source.vertices[1].position) * 0.5
+            + (source.vertices[1].position + source.vertices[2].position) * 0.5) * 0.5
+        XCTAssertNotEqual(expectedLocal, centroid); XCTAssertNotEqual(expectedLocal, midpointAverage)
+        XCTAssertNotEqual(expectedLocal, .zero); XCTAssertEqual(transaction.pivotLocal, expectedLocal)
+        XCTAssertEqual(transaction.pivotWorld, transform.worldPosition(fromLocal: expectedLocal))
+
+        let model = WorkspaceModel(); model.mesh = source; model.setInteractionMode(.edgeSelect)
+        XCTAssertTrue(model.applyEdgeSelectionHit(ab)); model.setEdgeSelectionOperation(.add)
+        XCTAssertTrue(model.applyEdgeSelectionHit(bc)); model.updateTransform(transform); model.setGizmoMode(.rotate)
+        XCTAssertEqual(model.edgeRotatePivotWorld, transaction.pivotWorld)
+    }
+
     func testEdgeRotateIsAbsoluteFromStartAndPreservesUnselectedVertices() throws {
         let source = twoTriangleQuad(), table = try MeshEdgeTable.build(mesh: source)
         var selection = try EdgeSelection(table: table); XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
@@ -1086,6 +1151,30 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertTrue(candidate.vertices.allSatisfy { $0.position.allFinite && $0.normal.allFinite })
     }
 
+    func testEdgeRotateUsesRotationGizmoUnwrapAcrossMultiTurnBoundary() throws {
+        var raw: Float = 0, accumulated: Float = 0
+        for degrees in [170, -170, -90] as [Float] {
+            let update = try XCTUnwrap(RotationGizmoGeometry.unwrap(
+                rawAngle: degrees * .pi / 180, lastRawAngle: raw,
+                accumulatedAngle: accumulated))
+            raw = update.rawAngle; accumulated = update.accumulatedAngle
+        }
+        XCTAssertEqual(accumulated, Float(270) * .pi / 180, accuracy: 0.000_1)
+        let source = twoTriangleQuad(), table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table); XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
+        var transaction = try EdgeRotateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, axis: SIMD3(0,0,1), projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        let candidate = try XCTUnwrap(EdgeRotateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, accumulatedAngle: accumulated))
+        let rotation = simd_quatf(angle: accumulated, axis: SIMD3<Float>(0,0,1))
+        for (offset, id) in transaction.vertexIDs.enumerated() {
+            let expected = transaction.pivotLocal
+                + rotation.act(transaction.startLocalPositions[offset] - transaction.pivotLocal)
+            XCTAssertEqual(candidate.vertices[Int(id)].position.x, expected.x, accuracy: 0.000_01)
+            XCTAssertEqual(candidate.vertices[Int(id)].position.y, expected.y, accuracy: 0.000_01)
+        }
+    }
+
     func testEdgeRotateRejectsEmptyInvalidAndOversizedInputs() throws {
         let source = twoTriangleQuad(), table = try MeshEdgeTable.build(mesh: source)
         var selection = try EdgeSelection(table: table)
@@ -1098,6 +1187,23 @@ final class EdgeSelectionTests: XCTestCase {
             transform: .identity, axis: SIMD3(0,0,1), projectSessionID: UUID(), projectGeneration: MutationGeneration(), memoryLimit: 1))
         XCTAssertThrowsError(try EdgeRotateGeometry.estimatedPeakBytes(vertexCount: Int.max, indexCount: Int.max,
             selectedEdgeCount: Int.max, affectedVertexCount: Int.max))
+    }
+
+    func testEdgeRotateMemoryExactBoundaryAndConservativeEndpointPreflight() throws {
+        let source = twoTriangleQuad(), table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table); XCTAssertTrue(selection.selectAll())
+        let maximumAffected = min(source.vertices.count, selection.selectedCount * 2)
+        let required = try EdgeRotateGeometry.estimatedPeakBytes(
+            vertexCount: source.vertices.count, indexCount: source.indices.count,
+            selectedEdgeCount: selection.selectedCount, affectedVertexCount: maximumAffected)
+        XCTAssertNoThrow(try EdgeRotateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, axis: SIMD3(0,0,1), projectSessionID: UUID(),
+            projectGeneration: MutationGeneration(), memoryLimit: required))
+        XCTAssertThrowsError(try EdgeRotateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, axis: SIMD3(0,0,1), projectSessionID: UUID(),
+            projectGeneration: MutationGeneration(), memoryLimit: required - 1)) {
+                XCTAssertEqual($0 as? EdgeRotateError, .workingMemoryLimitExceeded)
+            }
     }
 
     func testEdgeRotateEndpointDedupeForSingleDisjointSharedAndChainSelections() throws {
@@ -1130,6 +1236,55 @@ final class EdgeSelectionTests: XCTestCase {
             transform: .identity, projectSessionID: session, projectGeneration: generation))
     }
 
+    func testEdgeRotateTransactionRejectsEveryRuntimeBindingIndependently() throws {
+        let source = twoTriangleQuad(), table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table); XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
+        let session = UUID(), generation = MutationGeneration()
+        let base = try EdgeRotateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, axis: SIMD3(0,0,1), projectSessionID: session, projectGeneration: generation)
+        func copy(topologyID: UUID? = nil, topologyRevision: UInt64? = nil,
+                  fingerprint: UInt64? = nil, vertexRevision: UInt64? = nil,
+                  vertexCount: Int? = nil, indexCount: Int? = nil,
+                  selectionVersion: EdgeSelectionVersion? = nil, selectedCount: Int? = nil,
+                  transform: ObjectTransform? = nil, projectSessionID: UUID? = nil,
+                  projectGeneration: MutationGeneration? = nil) -> EdgeRotateTransaction {
+            EdgeRotateTransaction(
+                id: base.id, topologyID: topologyID ?? base.topologyID,
+                topologyRevision: topologyRevision ?? base.topologyRevision,
+                edgeTableFingerprint: fingerprint ?? base.edgeTableFingerprint,
+                sourceVertexRevision: vertexRevision ?? base.sourceVertexRevision,
+                sourceVertexCount: vertexCount ?? base.sourceVertexCount,
+                sourceIndexCount: indexCount ?? base.sourceIndexCount,
+                selectionVersion: selectionVersion ?? base.selectionVersion,
+                selectedEdgeCount: selectedCount ?? base.selectedEdgeCount,
+                affectedVertexCount: base.affectedVertexCount,
+                selectedEdgeIDs: base.selectedEdgeIDs, vertexIDs: base.vertexIDs,
+                startLocalPositions: base.startLocalPositions, pivotLocal: base.pivotLocal,
+                pivotWorld: base.pivotWorld, transform: transform ?? base.transform,
+                axis: base.axis, projectSessionID: projectSessionID ?? base.projectSessionID,
+                projectGeneration: projectGeneration ?? base.projectGeneration)
+        }
+        func matches(_ value: EdgeRotateTransaction) -> Bool {
+            value.matches(mesh: source, table: table, selection: selection, transform: .identity,
+                          projectSessionID: session, projectGeneration: generation)
+        }
+        XCTAssertTrue(matches(base))
+        XCTAssertFalse(matches(copy(topologyID: UUID())))
+        XCTAssertFalse(matches(copy(topologyRevision: base.topologyRevision + 1)))
+        XCTAssertFalse(matches(copy(fingerprint: base.edgeTableFingerprint &+ 1)))
+        XCTAssertFalse(matches(copy(vertexRevision: base.sourceVertexRevision + 1)))
+        XCTAssertFalse(matches(copy(vertexCount: base.sourceVertexCount + 1)))
+        XCTAssertFalse(matches(copy(indexCount: base.sourceIndexCount + 3)))
+        XCTAssertFalse(matches(copy(selectionVersion: EdgeSelectionVersion(identity: UUID()))))
+        XCTAssertFalse(matches(copy(selectedCount: base.selectedEdgeCount + 1)))
+        XCTAssertFalse(matches(copy(transform: ObjectTransform(translation: SIMD3(1,0,0)))))
+        XCTAssertFalse(matches(copy(transform: ObjectTransform(rotation: ObjectTransform.rotation(degrees: SIMD3(0,10,0))))))
+        XCTAssertFalse(matches(copy(transform: ObjectTransform(scale: SIMD3(2,1,1)))))
+        XCTAssertFalse(matches(copy(projectSessionID: UUID())))
+        var changedGeneration = generation; changedGeneration.advance()
+        XCTAssertFalse(matches(copy(projectGeneration: changedGeneration)))
+    }
+
     func testEdgeRotateCandidateFailurePointsAreAtomic() throws {
         let source = twoTriangleQuad(), table = try MeshEdgeTable.build(mesh: source)
         var selection = try EdgeSelection(table: table); XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
@@ -1144,26 +1299,73 @@ final class EdgeSelectionTests: XCTestCase {
         }
     }
 
+    func testEdgeRotateSnapshotCopyAndRoundTripFailureInjectionRetries() throws {
+        let source = twoTriangleQuad(), table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table); XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
+        for point in [EdgeRotateFailurePoint.sourceSnapshot, .selectedPositionCopy] {
+            XCTAssertThrowsError(try EdgeRotateGeometry.begin(mesh: source, table: table,
+                selection: selection, transform: .identity, axis: SIMD3(0,0,1),
+                projectSessionID: UUID(), projectGeneration: MutationGeneration(),
+                failureInjector: .init { $0 == point }))
+            XCTAssertNoThrow(try EdgeRotateGeometry.begin(mesh: source, table: table,
+                selection: selection, transform: .identity, axis: SIMD3(0,0,1),
+                projectSessionID: UUID(), projectGeneration: MutationGeneration()))
+        }
+        var transaction = try EdgeRotateGeometry.begin(mesh: source, table: table,
+            selection: selection, transform: .identity, axis: SIMD3(0,0,1),
+            projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        XCTAssertThrowsError(try EdgeRotateGeometry.candidate(sourceMesh: source,
+            transaction: &transaction, accumulatedAngle: .pi / 4,
+            failureInjector: .init { $0 == .roundTripValidation })) {
+                XCTAssertEqual($0 as? EdgeRotateError, .precisionLoss)
+            }
+        XCTAssertNotNil(try EdgeRotateGeometry.candidate(sourceMesh: source,
+            transaction: &transaction, accumulatedAngle: .pi / 4))
+        XCTAssertEqual(source, twoTriangleQuad())
+    }
+
     func testWorkspaceEdgeRotatePreviewCommitUndoRedoCancelAndIsolation() throws {
         let model = WorkspaceModel(); model.setInteractionMode(.edgeSelect)
         XCTAssertTrue(model.applyEdgeSelectionHit(0)); model.setGizmoMode(.rotate)
         let original = model.mesh, selection = model.edgeSelection, transform = model.objectTransform
         let generation = model.projectMutationGeneration, project = try model.projectData()
+        let stlBefore = try model.stlData(), edgeFingerprint = model.meshEdgeTable?.fingerprint
+        let selectedIDs = model.edgeSelection.selectedEdgeIDs()
         let start = Ray(origin: SIMD3<Float>(1,0,5), direction: SIMD3(0,0,-1))
         let end = Ray(origin: SIMD3<Float>(0,1,5), direction: SIMD3(0,0,-1))
         XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start)); model.updateRotationGizmoDrag(ray: end)
         XCTAssertNotNil(model.edgeRotatePreviewMesh); XCTAssertNotEqual(model.renderedMesh, model.mesh)
+        XCTAssertTrue(model.edgeRotatePreviewPickingHasIndexForTesting)
+        XCTAssertEqual(model.edgeRotatePreviewPickingRevisionForTesting,
+                       model.edgeRotatePreviewMesh?.runtime.revision)
         XCTAssertEqual(model.mesh, original); XCTAssertEqual(model.objectTransform, transform)
         XCTAssertEqual(model.edgeSelection, selection); XCTAssertEqual(try model.projectData(), project)
+        XCTAssertThrowsError(try model.stlData()) {
+            XCTAssertEqual($0 as? WorkspaceError, .activeEditInProgress)
+        }
         model.cancelRotationGizmoDrag(); XCTAssertEqual(model.mesh, original); XCTAssertNil(model.edgeRotatePreviewMesh)
+        XCTAssertFalse(model.edgeRotatePreviewPickingHasIndexForTesting)
+        XCTAssertEqual(try model.stlData(), stlBefore)
         XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start))
         model.updateRotationGizmoDrag(ray: end); model.endRotationGizmoDrag()
         let committed = model.mesh
         XCTAssertNotEqual(committed, original); XCTAssertTrue(model.lastUndoIsEdgeRotateForTesting)
+        XCTAssertTrue(model.pickingCacheHasIndexForTesting)
+        XCTAssertEqual(model.pickingCacheTopologyIDForTesting, committed.runtime.topologyID)
+        XCTAssertFalse(model.edgeRotatePreviewPickingHasIndexForTesting)
         XCTAssertEqual(model.edgeSelection, selection); XCTAssertEqual(model.objectTransform, transform)
+        XCTAssertEqual(committed.runtime.topologyID, original.runtime.topologyID)
+        XCTAssertEqual(committed.runtime.topologyRevision, original.runtime.topologyRevision)
+        XCTAssertEqual(committed.indices, original.indices)
+        XCTAssertEqual(model.meshEdgeTable?.fingerprint, edgeFingerprint)
+        XCTAssertEqual(model.edgeSelection.version, selection.version)
+        XCTAssertEqual(model.edgeSelection.selectedEdgeIDs(), selectedIDs)
+        XCTAssertNotEqual(try model.projectData(), project); XCTAssertNotEqual(try model.stlData(), stlBefore)
         XCTAssertEqual(model.projectMutationGeneration.value, generation.value + 1)
         model.undo(); XCTAssertEqual(model.mesh, original); XCTAssertEqual(model.edgeSelection, selection)
+        XCTAssertEqual(try model.projectData(), project); XCTAssertEqual(try model.stlData(), stlBefore)
         model.redo(); XCTAssertEqual(model.mesh, committed); XCTAssertEqual(model.edgeSelection, selection)
+        XCTAssertNotEqual(try model.projectData(), project); XCTAssertNotEqual(try model.stlData(), stlBefore)
     }
 
     func testEmptyEdgeSelectionNeverFallsBackToObjectRotation() {
@@ -1172,6 +1374,29 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertFalse(model.beginRotationGizmoDrag(handle: .zAxis,
             ray: Ray(origin: SIMD3(1,0,5), direction: SIMD3(0,0,-1))))
         XCTAssertEqual(model.objectTransform, transform); XCTAssertFalse(model.isGizmoDragging)
+    }
+
+    func testRotationGizmoRoutesEdgeVertexAndOrdinaryModesWithoutCrossRouting() {
+        let ray = Ray(origin: SIMD3<Float>(1,0,5), direction: SIMD3(0,0,-1))
+        let edge = WorkspaceModel(); edge.setInteractionMode(.edgeSelect)
+        XCTAssertTrue(edge.applyEdgeSelectionHit(0)); edge.setGizmoMode(.rotate)
+        let edgeTransform = edge.objectTransform
+        XCTAssertTrue(edge.beginRotationGizmoDrag(handle: .zAxis, ray: ray))
+        XCTAssertTrue(edge.edgeRotateTransactionActiveForTesting)
+        XCTAssertFalse(edge.vertexRotateTransactionActiveForTesting)
+        XCTAssertEqual(edge.objectTransform, edgeTransform); edge.cancelRotationGizmoDrag()
+
+        let vertex = WorkspaceModel(); vertex.setInteractionMode(.vertexSelect)
+        XCTAssertTrue(vertex.applyVertexSelectionHit(0)); vertex.setGizmoMode(.rotate)
+        XCTAssertTrue(vertex.beginRotationGizmoDrag(handle: .zAxis, ray: ray))
+        XCTAssertTrue(vertex.vertexRotateTransactionActiveForTesting)
+        XCTAssertFalse(vertex.edgeRotateTransactionActiveForTesting); vertex.cancelRotationGizmoDrag()
+
+        let ordinary = WorkspaceModel(); ordinary.setGizmoMode(.rotate)
+        XCTAssertTrue(ordinary.beginRotationGizmoDrag(handle: .zAxis, ray: ray))
+        XCTAssertFalse(ordinary.edgeRotateTransactionActiveForTesting)
+        XCTAssertFalse(ordinary.vertexRotateTransactionActiveForTesting)
+        XCTAssertTrue(ordinary.rotationGizmoState.isDragging); ordinary.cancelRotationGizmoDrag()
     }
 
     func testWorkspaceEdgeRotateCommitFailureIsAtomicAndRetryable() throws {
@@ -1189,6 +1414,28 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start))
         model.updateRotationGizmoDrag(ray: end); model.endRotationGizmoDrag()
         XCTAssertNotEqual(model.mesh, original); XCTAssertTrue(model.lastUndoIsEdgeRotateForTesting)
+    }
+
+    func testWorkspaceEdgeRotateZeroAnglePreservesRedoAndAllRuntimeIdentity() throws {
+        let model = WorkspaceModel(); model.setInteractionMode(.edgeSelect)
+        XCTAssertTrue(model.applyEdgeSelectionHit(0)); model.setGizmoMode(.rotate)
+        let start = Ray(origin: SIMD3<Float>(1,0,5), direction: SIMD3(0,0,-1))
+        let end = Ray(origin: SIMD3<Float>(0,1,5), direction: SIMD3(0,0,-1))
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start))
+        model.updateRotationGizmoDrag(ray: end); model.endRotationGizmoDrag(); model.undo()
+        XCTAssertEqual(model.redoCount, 1)
+        let mesh = model.mesh, selection = model.edgeSelection
+        let generation = model.projectMutationGeneration, history = (model.undoCount, model.redoCount)
+        let dirty = model.isDirty, revision = model.mesh.runtime.revision
+        XCTAssertTrue(model.beginRotationGizmoDrag(handle: .zAxis, ray: start))
+        model.updateRotationGizmoDrag(ray: start); model.endRotationGizmoDrag()
+        XCTAssertEqual(model.mesh, mesh); XCTAssertEqual(model.mesh.runtime.revision, revision)
+        XCTAssertEqual(model.mesh.runtime.topologyID, mesh.runtime.topologyID)
+        XCTAssertEqual(model.mesh.runtime.topologyRevision, mesh.runtime.topologyRevision)
+        XCTAssertEqual(model.mesh.indices, mesh.indices); XCTAssertEqual(model.edgeSelection, selection)
+        XCTAssertEqual(model.edgeSelection.version, selection.version)
+        XCTAssertEqual(model.undoCount, history.0); XCTAssertEqual(model.redoCount, history.1)
+        XCTAssertEqual(model.projectMutationGeneration, generation); XCTAssertEqual(model.isDirty, dirty)
     }
 
     func testEdgeRotatePreparedBeginResolvesProjectedConflictsIndependently() {
