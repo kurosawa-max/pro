@@ -1,6 +1,6 @@
 # Foundation Prototype 実装仕様
 
-Edge Select supports vertex-only translation of selected edge endpoints with the Move gizmo. Edge rotation and edge scale are not part of this foundation.
+Edge Select supports vertex-only translation and world-axis rotation of selected edge endpoints through the existing gizmos. Both use isolated preview meshes and preserve topology, edge identity, and ObjectTransform. Edge scale is not part of this foundation.
 
 選択頂点Transform foundationはworld-space MoveとX／Y／Z Rotateを提供する。Rotateは選択local AABB中心をpivotとし、multi-turn angleを開始位置へ絶対適用する非破壊previewを使う。ObjectTransform、topology、selection、formatVersion 1は変更しない。Scale、local axis、snap、数値入力は未実装である。
 
