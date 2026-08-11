@@ -1,5 +1,7 @@
 # Forge3D 開発ロードマップ v0.1
 
+Selected Edge Translation foundation provides world-space Move, unique endpoint editing, preview/cancel/commit, unified Undo/Redo, and vertex-only renderer updates. Edge Rotate and Edge Scale remain unimplemented.
+
 ## Foundation Prototype status — 2026-07-10
 
 Swift ベースの縦切りとして、iPadOS Xcode target、Metal 球体表示、カメラ操作、CPU picking、Pencil 入力モデル、Draw/Smooth/Grab、ストローク単位 Undo/Redo、Foundation v1 保存、Binary STL、XCTest を実装した。

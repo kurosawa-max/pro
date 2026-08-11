@@ -1,5 +1,9 @@
 # Forge3D Document Index
 
+- `EDGE_TRANSLATE.md` — Selected Edge Translation contract
+
+- `EDGE_TRANSLATE.md` — Selected Edge Translation contract
+
 - `PROJECT_CONSTITUTION.md` — 最高位規則
 - `ARCHITECTURE.md` — 現在の全体設計
 - `ROADMAP.md` — 段階的な開発計画

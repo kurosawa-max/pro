@@ -655,6 +655,325 @@ final class EdgeSelectionTests: XCTestCase {
         XCTAssertEqual(MemoryLayout<EdgeSelectionOverlayUniforms>.stride, 160)
     }
 
+    func testEdgeTranslateDeduplicatesEndpointsAndUsesLocalAABBCenter() throws {
+        let source = twoTriangleQuad()
+        let table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table)
+        let first = try XCTUnwrap(table.edgeIDByKey[try XCTUnwrap(MeshEdgeKey(0, 2))])
+        let second = try XCTUnwrap(table.edgeIDByKey[try XCTUnwrap(MeshEdgeKey(0, 1))])
+        XCTAssertTrue(try selection.apply(.add, edgeID: first))
+        XCTAssertTrue(try selection.apply(.add, edgeID: second))
+        XCTAssertEqual(try EdgeTranslateGeometry.affectedVertexIDs(table: table, selection: selection), [0, 1, 2])
+        let pivot = try EdgeTranslateGeometry.pivot(
+            mesh: source, table: table, selection: selection, transform: .identity)
+        XCTAssertEqual(pivot.local, SIMD3<Float>(0.5, 0.5, 0))
+        XCTAssertEqual(pivot.world, pivot.local)
+    }
+
+    func testEdgeTranslateUsesAbsoluteStartPositionsAndWorldDirectionVector() throws {
+        let source = twoTriangleQuad()
+        let table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table)
+        XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
+        let transform = ObjectTransform(
+            translation: SIMD3<Float>(1_000_000, -2_000_000, 3_000_000),
+            rotation: simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(0, 0, 1)).vector,
+            scale: SIMD3<Float>(2, 3, 4))
+        var transaction = try EdgeTranslateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: transform,
+            projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        let first = try XCTUnwrap(try EdgeTranslateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, worldDelta: SIMD3<Float>(3, 0, 0)))
+        let second = try XCTUnwrap(try EdgeTranslateGeometry.candidate(
+            sourceMesh: first, transaction: &transaction, worldDelta: SIMD3<Float>(6, 0, 0)))
+        for (offset, id) in transaction.vertexIDs.enumerated() {
+            XCTAssertEqual(second.vertices[Int(id)].position,
+                           transaction.startPositions[offset] + transaction.localDelta)
+        }
+        XCTAssertEqual(transaction.worldDelta, SIMD3<Float>(6, 0, 0))
+        XCTAssertTrue(second.vertices.allSatisfy { $0.position.allFinite && $0.normal.allFinite })
+    }
+
+    func testEdgeTranslateStaleSelectionNoOpAndMemoryPreflight() throws {
+        let source = twoTriangleQuad()
+        let table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table)
+        XCTAssertThrowsError(try EdgeTranslateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            projectSessionID: UUID(), projectGeneration: MutationGeneration())) {
+            XCTAssertEqual($0 as? EdgeTranslateError, .emptySelection)
+        }
+        XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
+        var transaction = try EdgeTranslateGeometry.begin(
+            mesh: source, table: table, selection: selection, transform: .identity,
+            projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        XCTAssertNil(try EdgeTranslateGeometry.candidate(
+            sourceMesh: source, transaction: &transaction, worldDelta: .zero))
+        XCTAssertThrowsError(try EdgeTranslateGeometry.estimatedPeakBytes(
+            vertexCount: Int.max, indexCount: Int.max,
+            selectedEdgeCount: Int.max, affectedVertexCount: Int.max))
+    }
+
+    func testEdgeTranslateRepeatedIdenticalUpdateRemainsAbsoluteFromStart() throws {
+        let source = twoTriangleQuad(), table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table); XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
+        var transaction = try EdgeTranslateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, projectSessionID: UUID(), projectGeneration: MutationGeneration())
+        let delta = SIMD3<Float>(0.4, -0.2, 0.1)
+        let first = try XCTUnwrap(try EdgeTranslateGeometry.candidate(sourceMesh: source, transaction: &transaction, worldDelta: delta))
+        let second = try XCTUnwrap(try EdgeTranslateGeometry.candidate(sourceMesh: source, transaction: &transaction, worldDelta: delta))
+        let third = try XCTUnwrap(try EdgeTranslateGeometry.candidate(sourceMesh: source, transaction: &transaction, worldDelta: delta))
+        XCTAssertEqual(first, second); XCTAssertEqual(second, third)
+    }
+
+    func testEdgeTranslateUpdateSequenceEqualsFreshFinalDelta() throws {
+        let source = twoTriangleQuad(), table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table); XCTAssertTrue(selection.selectAll())
+        let session = UUID(), generation = MutationGeneration()
+        var sequenced = try EdgeTranslateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, projectSessionID: session, projectGeneration: generation)
+        for delta in [SIMD3<Float>(0.1,0,0), SIMD3(0.2,0.1,0), SIMD3(0.4,0.3,-0.2)] {
+            _ = try EdgeTranslateGeometry.candidate(sourceMesh: source, transaction: &sequenced, worldDelta: delta)
+        }
+        var fresh = try EdgeTranslateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, projectSessionID: session, projectGeneration: generation)
+        let final = SIMD3<Float>(0.4,0.3,-0.2)
+        XCTAssertEqual(try EdgeTranslateGeometry.candidate(sourceMesh: source, transaction: &sequenced, worldDelta: final),
+                       try EdgeTranslateGeometry.candidate(sourceMesh: source, transaction: &fresh, worldDelta: final))
+    }
+
+    func testEdgeTranslateChangedThenRestoredSelectionRemainsStale() throws {
+        let source = twoTriangleQuad(), table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table); XCTAssertTrue(try selection.apply(.replace, edgeID: 0))
+        let session = UUID(), generation = MutationGeneration()
+        let transaction = try EdgeTranslateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, projectSessionID: session, projectGeneration: generation)
+        XCTAssertTrue(try selection.apply(.add, edgeID: 1)); XCTAssertTrue(try selection.apply(.remove, edgeID: 1))
+        XCTAssertEqual(selection.selectedEdgeIDs(), [0])
+        XCTAssertFalse(transaction.matches(mesh: source, table: table, selection: selection,
+            transform: .identity, projectSessionID: session, projectGeneration: generation))
+    }
+
+    func testEdgeTranslateMemoryExactBoundaryAndConservativePreflight() throws {
+        let source = twoTriangleQuad(), table = try MeshEdgeTable.build(mesh: source)
+        var selection = try EdgeSelection(table: table); XCTAssertTrue(selection.selectAll())
+        let required = try EdgeTranslateGeometry.estimatedPeakBytes(vertexCount: source.vertices.count,
+            indexCount: source.indices.count, selectedEdgeCount: selection.selectedCount,
+            affectedVertexCount: source.vertices.count)
+        XCTAssertNoThrow(try EdgeTranslateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, projectSessionID: UUID(), projectGeneration: MutationGeneration(), memoryLimit: required))
+        XCTAssertThrowsError(try EdgeTranslateGeometry.begin(mesh: source, table: table, selection: selection,
+            transform: .identity, projectSessionID: UUID(), projectGeneration: MutationGeneration(), memoryLimit: required - 1))
+    }
+
+    func testEdgeTranslatePreparedBeginResolvesEachConflictIndependently() throws {
+        for conflicts in [(true,false,false), (false,true,false), (false,false,true)] {
+            let model = WorkspaceModel(); model.setInteractionMode(.edgeSelect); XCTAssertTrue(model.applyEdgeSelectionHit(0))
+            model.installEdgeTranslateBeginConflictsForTesting(sculpt: conflicts.0, transformPanel: conflicts.1, objectMove: conflicts.2)
+            let ray = Ray(origin: SIMD3<Float>(0.3,0.3,5), direction: SIMD3<Float>(0,0,-1))
+            XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: ray, cameraDirection: SIMD3(0,0,-1)))
+            XCTAssertTrue(model.edgeTranslateTransactionActiveForTesting)
+            XCTAssertFalse(model.isStrokeActive); XCTAssertFalse(model.isTransformPanelEditing)
+            model.cancelTranslationGizmoDrag()
+        }
+    }
+
+    func testEdgeTranslateLateBeginFailurePreservesEachConflict() throws {
+        for conflicts in [(true,false,false), (false,true,false), (false,false,true)] {
+            let model = WorkspaceModel(edgeTranslateFailureInjector: .init { $0 == .beginCommitBoundary })
+            model.setInteractionMode(.edgeSelect); XCTAssertTrue(model.applyEdgeSelectionHit(0))
+            model.installEdgeTranslateBeginConflictsForTesting(sculpt: conflicts.0, transformPanel: conflicts.1, objectMove: conflicts.2)
+            let mesh = model.mesh, transform = model.objectTransform, selection = model.edgeSelection
+            let generation = model.projectMutationGeneration, status = model.status
+            let ray = Ray(origin: SIMD3<Float>(0.3,0.3,5), direction: SIMD3<Float>(0,0,-1))
+            XCTAssertFalse(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: ray, cameraDirection: SIMD3(0,0,-1)))
+            XCTAssertEqual(model.mesh, mesh); XCTAssertEqual(model.objectTransform, transform)
+            XCTAssertEqual(model.edgeSelection, selection); XCTAssertEqual(model.projectMutationGeneration, generation)
+            XCTAssertEqual(model.status, status); XCTAssertEqual(model.isStrokeActive, conflicts.0)
+            XCTAssertEqual(model.isTransformPanelEditing, conflicts.1)
+            XCTAssertEqual(model.translationGizmoState.isDragging, conflicts.2)
+        }
+    }
+
+    func testEmptyEdgeSelectionNeverFallsBackToObjectTranslation() {
+        let model = WorkspaceModel(); model.setInteractionMode(.edgeSelect); let transform = model.objectTransform
+        let ray = Ray(origin: SIMD3<Float>(0.3,0.3,5), direction: SIMD3<Float>(0,0,-1))
+        XCTAssertFalse(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: ray, cameraDirection: SIMD3(0,0,-1)))
+        XCTAssertEqual(model.objectTransform, transform); XCTAssertFalse(model.isGizmoDragging)
+    }
+
+    func testWorkspaceEdgeTranslatePreviewCommitUndoRedoAndIsolation() throws {
+        let model = WorkspaceModel(); model.setInteractionMode(.edgeSelect)
+        XCTAssertTrue(model.applyEdgeSelectionHit(0))
+        let before = model.mesh, transform = model.objectTransform, selection = model.edgeSelection
+        let tableFingerprint = try XCTUnwrap(model.meshEdgeTable).fingerprint
+        let projectBefore = try model.projectData(), stlBefore = try model.stlData()
+        let generation = model.projectMutationGeneration
+        let affected = Set(try EdgeTranslateGeometry.affectedVertexIDs(
+            table: XCTUnwrap(model.meshEdgeTable), selection: selection).map(Int.init))
+        let start = Ray(origin: SIMD3<Float>(0.3,0.3,5), direction: SIMD3<Float>(0,0,-1))
+        let end = Ray(origin: SIMD3<Float>(0.8,0.6,5), direction: SIMD3<Float>(0,0,-1))
+        XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start, cameraDirection: SIMD3(0,0,-1)))
+        model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1))
+        XCTAssertNotNil(model.edgeTranslatePreviewMesh); XCTAssertNotEqual(model.renderedMesh, model.mesh)
+        XCTAssertEqual(model.mesh, before); XCTAssertEqual(model.objectTransform, transform)
+        XCTAssertEqual(model.edgeSelection, selection)
+        XCTAssertEqual(try model.projectData(), projectBefore)
+        XCTAssertThrowsError(try model.stlData()) {
+            XCTAssertEqual($0 as? WorkspaceError, .activeEditInProgress)
+        }
+        model.endTranslationGizmoDrag()
+        let committed = model.mesh
+        XCTAssertNil(model.edgeTranslatePreviewMesh); XCTAssertFalse(model.edgeTranslateTransactionActiveForTesting)
+        XCTAssertTrue(model.lastUndoIsEdgeTranslateForTesting); XCTAssertEqual(model.undoCount, 1)
+        XCTAssertEqual(model.projectMutationGeneration.value, generation.value + 1)
+        XCTAssertTrue(model.isDirty); XCTAssertEqual(committed.indices, before.indices)
+        XCTAssertEqual(committed.runtime.topologyID, before.runtime.topologyID)
+        XCTAssertEqual(committed.runtime.topologyRevision, before.runtime.topologyRevision)
+        XCTAssertEqual(model.edgeSelection, selection); XCTAssertEqual(model.meshEdgeTable?.fingerprint, tableFingerprint)
+        for index in before.vertices.indices where !affected.contains(index) {
+            XCTAssertEqual(committed.vertices[index].position, before.vertices[index].position)
+        }
+        XCTAssertNotEqual(try model.projectData(), projectBefore); XCTAssertNotEqual(try model.stlData(), stlBefore)
+        model.undo(); XCTAssertEqual(model.mesh, before); XCTAssertEqual(model.edgeSelection, selection)
+        model.redo(); XCTAssertEqual(model.mesh, committed); XCTAssertEqual(model.edgeSelection, selection)
+    }
+
+    func testWorkspaceEdgeTranslateCancelAndZeroDeltaAreNoOps() throws {
+        let model = WorkspaceModel(); model.setInteractionMode(.edgeSelect); XCTAssertTrue(model.applyEdgeSelectionHit(0))
+        let before = model.mesh, transform = model.objectTransform, selection = model.edgeSelection
+        let generation = model.projectMutationGeneration, history = (model.undoCount, model.redoCount)
+        let start = Ray(origin: SIMD3<Float>(0.3,0.3,5), direction: SIMD3<Float>(0,0,-1))
+        let end = Ray(origin: SIMD3<Float>(0.8,0.6,5), direction: SIMD3<Float>(0,0,-1))
+        XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start, cameraDirection: SIMD3(0,0,-1)))
+        model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1)); XCTAssertNotNil(model.edgeTranslatePreviewMesh)
+        model.cancelTranslationGizmoDrag()
+        XCTAssertEqual(model.mesh, before); XCTAssertEqual(model.objectTransform, transform)
+        XCTAssertEqual(model.edgeSelection, selection); XCTAssertEqual(model.projectMutationGeneration, generation)
+        XCTAssertEqual(model.undoCount, history.0); XCTAssertEqual(model.redoCount, history.1)
+        XCTAssertNil(model.edgeTranslatePreviewMesh); XCTAssertFalse(model.edgeTranslateTransactionActiveForTesting)
+        XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start, cameraDirection: SIMD3(0,0,-1)))
+        model.updateTranslationGizmoDrag(ray: start, cameraDirection: SIMD3(0,0,-1)); model.endTranslationGizmoDrag()
+        XCTAssertEqual(model.mesh, before); XCTAssertEqual(model.projectMutationGeneration, generation)
+        XCTAssertEqual(model.undoCount, history.0); XCTAssertEqual(model.redoCount, history.1)
+    }
+
+    func testWorkspaceEdgeTranslatePreviewFailurePointsAreAtomic() throws {
+        for point in [EdgeTranslateFailurePoint.candidateAllocation, .normalRebuild,
+                      .candidateValidation, .rendererPreparation, .previewBVHPreparation] {
+            var active: EdgeTranslateFailurePoint? = point
+            let model = WorkspaceModel(edgeTranslateFailureInjector: .init { $0 == active })
+            model.setInteractionMode(.edgeSelect); XCTAssertTrue(model.applyEdgeSelectionHit(0))
+            let before = model.mesh, selection = model.edgeSelection, generation = model.projectMutationGeneration
+            let start = Ray(origin: SIMD3<Float>(0.3,0.3,5), direction: SIMD3<Float>(0,0,-1))
+            let end = Ray(origin: SIMD3<Float>(0.8,0.6,5), direction: SIMD3<Float>(0,0,-1))
+            XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start, cameraDirection: SIMD3(0,0,-1)))
+            model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1))
+            XCTAssertEqual(model.mesh, before); XCTAssertEqual(model.edgeSelection, selection)
+            XCTAssertEqual(model.projectMutationGeneration, generation); XCTAssertEqual(model.undoCount, 0)
+            XCTAssertNil(model.edgeTranslatePreviewMesh); XCTAssertFalse(model.edgeTranslateTransactionActiveForTesting)
+            active = nil
+            XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start, cameraDirection: SIMD3(0,0,-1)))
+            model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1)); model.endTranslationGizmoDrag()
+            XCTAssertEqual(model.undoCount, 1)
+        }
+    }
+
+    func testWorkspaceEdgeTranslateCommitFailurePointsAreAtomicAndRetryable() throws {
+        for point in [EdgeTranslateFailurePoint.commitBVHPreparation, .commitBoundary] {
+            var active: EdgeTranslateFailurePoint? = point
+            let model = WorkspaceModel(edgeTranslateFailureInjector: .init { $0 == active })
+            model.setInteractionMode(.edgeSelect); XCTAssertTrue(model.applyEdgeSelectionHit(0))
+            let before = model.mesh, selection = model.edgeSelection, generation = model.projectMutationGeneration
+            let start = Ray(origin: SIMD3<Float>(0.3,0.3,5), direction: SIMD3<Float>(0,0,-1))
+            let end = Ray(origin: SIMD3<Float>(0.8,0.6,5), direction: SIMD3<Float>(0,0,-1))
+            XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start, cameraDirection: SIMD3(0,0,-1)))
+            model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1)); model.endTranslationGizmoDrag()
+            XCTAssertEqual(model.mesh, before); XCTAssertEqual(model.edgeSelection, selection)
+            XCTAssertEqual(model.projectMutationGeneration, generation); XCTAssertEqual(model.undoCount, 0)
+            active = nil
+            XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start, cameraDirection: SIMD3(0,0,-1)))
+            model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1)); model.endTranslationGizmoDrag()
+            XCTAssertEqual(model.undoCount, 1)
+        }
+    }
+
+    func testWorkspaceEdgeTranslateSourceSnapshotFailureIsAtomicAndRetryable() throws {
+        var failSnapshot = true
+        let model = WorkspaceModel(edgeTranslateFailureInjector: .init {
+            $0 == .sourceSnapshot && failSnapshot
+        })
+        model.setInteractionMode(.edgeSelect)
+        XCTAssertTrue(model.applyEdgeSelectionHit(0))
+        let before = model.mesh
+        let selection = model.edgeSelection
+        let generation = model.projectMutationGeneration
+        let ray = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertFalse(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: ray, cameraDirection: SIMD3(0, 0, -1)))
+        XCTAssertEqual(model.mesh, before)
+        XCTAssertEqual(model.edgeSelection, selection)
+        XCTAssertEqual(model.projectMutationGeneration, generation)
+        XCTAssertEqual(model.undoCount, 0)
+        XCTAssertNil(model.edgeTranslatePreviewMesh)
+        XCTAssertFalse(model.edgeTranslateTransactionActiveForTesting)
+        failSnapshot = false
+        XCTAssertTrue(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: ray, cameraDirection: SIMD3(0, 0, -1)))
+        model.cancelTranslationGizmoDrag()
+    }
+
+    func testWorkspaceEdgeTranslateRendererUploadsOnlyVerticesAndZeroDeltaSkips() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), device: device)
+        let profiler = PerformanceProfiler()
+        guard let renderer = MetalRenderer(view: view, profiler: profiler) else {
+            throw XCTSkip("Renderer unavailable")
+        }
+        let model = WorkspaceModel()
+        model.setInteractionMode(.edgeSelect)
+        XCTAssertTrue(model.applyEdgeSelectionHit(0))
+        let table = try XCTUnwrap(model.meshEdgeTable)
+        renderer.update(mesh: model.mesh)
+        _ = renderer.updateEdgeSelection(
+            mesh: model.mesh, table: table, selection: model.edgeSelection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        let before = profiler.snapshot()
+        let selectedUploads = renderer.edgeSelectionOverlaySelectedUploadCount
+        let hoverUploads = renderer.edgeSelectionOverlayHoverUploadCount
+        let start = Ray(origin: SIMD3<Float>(0.3, 0.3, 5), direction: SIMD3<Float>(0, 0, -1))
+        let end = Ray(origin: SIMD3<Float>(0.8, 0.6, 5), direction: SIMD3<Float>(0, 0, -1))
+        XCTAssertTrue(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: start, cameraDirection: SIMD3(0, 0, -1)))
+        model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0, 0, -1))
+        model.endTranslationGizmoDrag()
+        renderer.update(mesh: model.mesh)
+        _ = renderer.updateEdgeSelection(
+            mesh: model.mesh, table: try XCTUnwrap(model.meshEdgeTable),
+            selection: model.edgeSelection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        let committed = profiler.snapshot()
+        XCTAssertEqual(committed[.vertexUpload].sampleCount, before[.vertexUpload].sampleCount + 1)
+        XCTAssertEqual(committed[.indexUpload].sampleCount, before[.indexUpload].sampleCount)
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedUploadCount, selectedUploads)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverUploadCount, hoverUploads)
+
+        XCTAssertTrue(model.beginTranslationGizmoDrag(
+            handle: .xyPlane, ray: start, cameraDirection: SIMD3(0, 0, -1)))
+        model.updateTranslationGizmoDrag(ray: start, cameraDirection: SIMD3(0, 0, -1))
+        model.endTranslationGizmoDrag()
+        renderer.update(mesh: model.mesh)
+        _ = renderer.updateEdgeSelection(
+            mesh: model.mesh, table: try XCTUnwrap(model.meshEdgeTable),
+            selection: model.edgeSelection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        let noOp = profiler.snapshot()
+        XCTAssertEqual(noOp[.vertexUpload].sampleCount, committed[.vertexUpload].sampleCount)
+        XCTAssertEqual(noOp[.indexUpload].sampleCount, committed[.indexUpload].sampleCount)
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedUploadCount, selectedUploads)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverUploadCount, hoverUploads)
+    }
+
     private func makeInstrumentedEdgeRenderer() throws -> (
         MetalRenderer, EditableMesh, MeshEdgeTable, FaultInjectingEdgePairAllocator
     ) {
