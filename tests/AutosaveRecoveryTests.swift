@@ -900,20 +900,27 @@ final class AutosaveRecoveryTests: XCTestCase {
         XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start, cameraDirection: SIMD3(0,0,-1)))
         model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1))
         XCTAssertNotNil(model.edgeTranslatePreviewMesh)
-        XCTAssertTrue(await model.requestImmediateAutosave()); XCTAssertEqual(await coordinator.successfulWriteCount, 0)
-        model.cancelTranslationGizmoDrag(); XCTAssertEqual(await coordinator.successfulWriteCount, 0)
+        let previewAutosave = await model.requestImmediateAutosave()
+        let previewWriteCount = await coordinator.successfulWriteCount
+        XCTAssertTrue(previewAutosave); XCTAssertEqual(previewWriteCount, 0)
+        model.cancelTranslationGizmoDrag()
+        let cancelWriteCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(cancelWriteCount, 0)
         XCTAssertTrue(model.beginTranslationGizmoDrag(handle: .xyPlane, ray: start, cameraDirection: SIMD3(0,0,-1)))
         model.updateTranslationGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1)); model.endTranslationGizmoDrag()
         let committed = model.mesh
         await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
         await waitUntil { await coordinator.successfulWriteCount == 1 }
-        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, committed)
+        let committedRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(committedRecovery, committed)
         model.undo(); await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
         await waitUntil { await coordinator.successfulWriteCount == 2 }
-        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, original)
+        let undoRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(undoRecovery, original)
         model.redo(); await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
         await waitUntil { await coordinator.successfulWriteCount == 3 }
-        XCTAssertEqual(try await coordinator.inspectRecovery().project.mesh, committed)
+        let redoRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(redoRecovery, committed)
     }
 
     @MainActor
