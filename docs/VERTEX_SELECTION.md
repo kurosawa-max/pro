@@ -28,4 +28,4 @@ Draw order is mesh, face overlay, edge overlay, vertex overlay, Diagnostics, the
 
 Selection, operation, hover, topology table, and renderer cache are not Codable. They do not change dirty state, Autosave, Recovery, Undo/Redo, metadata, serialized formatVersion 1 bytes, or STL output. Topology-changing Primitive, Subdivision, STL Import, Cleanup, modeling operations, Load, Recovery, and topology Undo/Redo clear selection. Sculpt, Transform, camera, Diagnostics, Save, Autosave, and tool-setting changes preserve it.
 
-Vertex transform, dissolve, weld, merge, topology editing, edge/face conversion, box/lasso/paint selection, through selection, soft selection, and multiple objects are not implemented.
+Selected Vertex Move, Rotate, and Scale are implemented as vertex-only preview transactions with unified Undo/Redo. Dissolve, weld, merge, topology editing, edge/face conversion, box/lasso/paint selection, through selection, soft selection, and multiple objects are not implemented.
