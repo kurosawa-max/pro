@@ -2,6 +2,8 @@
 
 Selected Edge Translation binds the canonical edge table and runtime selection version, snapshots sorted unique endpoints, and converts world deltas through the inverse model matrix as directions (`w = 0`). Preview owns a separate mesh and Picking BVH; commit preserves topology and selection identities and records a semantic workspace command.
 
+Selected Edge Rotation uses the same identity boundary and endpoint capture. It transforms start-position pivot-relative offsets through model and inverse-model matrices with `w = 0`, applies the accumulated world-axis angle absolutely, and commits after preparing the final Picking BVH. See `EDGE_ROTATE.md`.
+
 ## 1. 目的
 
 Forge3Dは、iPad Pro上で以下を一つの制作環境として提供する。

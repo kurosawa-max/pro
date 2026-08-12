@@ -1,6 +1,6 @@
 # Forge3D 開発ロードマップ v0.1
 
-Selected Edge Translation foundation provides world-space Move, unique endpoint editing, preview/cancel/commit, unified Undo/Redo, and vertex-only renderer updates. Edge Rotate and Edge Scale remain unimplemented.
+Selected Edge Translation and Rotation foundations provide world-space gizmo editing, unique endpoint capture, preview/cancel/commit, unified Undo/Redo, and vertex-only renderer updates. Edge Scale remains unimplemented.
 
 ## Foundation Prototype status — 2026-07-10
 
