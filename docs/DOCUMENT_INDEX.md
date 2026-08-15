@@ -2,6 +2,7 @@
 
 - `EDGE_TRANSLATE.md` — Selected Edge Translation contract
 - `EDGE_ROTATE.md` — Selected Edge Rotation contract
+- `EDGE_SCALE.md` — Selected Edge Scale contract
 - `EDGE_ROTATE.md` — Selected Edge Rotation contract
 
 - `EDGE_TRANSLATE.md` — Selected Edge Translation contract

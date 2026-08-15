@@ -4,6 +4,8 @@ Selected Edge Translation binds the canonical edge table and runtime selection v
 
 Selected Edge Rotation uses the same identity boundary and endpoint capture. It transforms start-position pivot-relative offsets through model and inverse-model matrices with `w = 0`, applies the accumulated world-axis angle absolutely, and commits after preparing the final Picking BVH. See `EDGE_ROTATE.md`.
 
+Selected Edge Scale completes the initial edge-transform foundation. It captures sorted unique edge endpoints once, uses their start-local AABB center as the pivot, and applies absolute world X/Y/Z or uniform scale through model/inverse-model direction transforms (`w = 0`). Preview, commit preparation, vertex-only history, selection preservation, and persistence isolation follow the same transaction boundary. See `EDGE_SCALE.md`.
+
 ## 1. 目的
 
 Forge3Dは、iPad Pro上で以下を一つの制作環境として提供する。

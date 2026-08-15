@@ -225,3 +225,7 @@ Vertex Select modeで選択が存在し、Move Gizmoが有効な場合、world-a
 ## Selected Vertex Scale
 
 Vertex Select modeでScale Gizmoを使うと、選択頂点のlocal AABB中心をpivotにworld X／Y／Zまたはuniform factorを適用する。開始local offsetをmodel／inverse model matrixへ`w=0`で通し、absolute factorを毎回開始snapshotへ適用するため、大きなObject translationとnon-uniform Transformから独立する。Previewはproject／STL／Autosaveへ含めず、意味のあるcommitだけを統合historyへ1件記録する。formatVersionは1のままである。詳細は`VERTEX_SCALE.md`を参照。
+
+## Selected Edge Scale
+
+Edge Select modeでScale Gizmoを使うと、選択edgeの重複を除いたendpointをlocal AABB中心のpivotからworld X／Y／Zまたはuniform factorで非破壊的に拡縮する。開始位置から絶対factorを再構成し、vertex-only revisionだけを更新するため、topology、edge identity、selectionを維持する。Preview、transaction、selectionはproject／STL／Autosaveへ含めず、意味のあるcommitだけを統合historyへ1件記録する。formatVersionは1のままである。詳細は`EDGE_SCALE.md`を参照。

@@ -1174,6 +1174,53 @@ final class AutosaveRecoveryTests: XCTestCase {
         XCTAssertEqual(redoRecovery, committed)
     }
 
+    @MainActor
+    func testSelectedEdgeScaleAutosavePreviewCancelCommitUndoRedoOrdering() async throws {
+        let environment = try makeStorageEnvironment()
+        defer { environment.cleanup() }
+        let scheduler = ManualAutosaveDelayScheduler()
+        let coordinator = ProjectAutosaveCoordinator(storage: environment.storage, scheduler: scheduler)
+        let model = WorkspaceModel(autosaveCoordinator: coordinator)
+        await model.inspectRecoveryOnLaunch()
+        model.setInteractionMode(.edgeSelect); model.selectAllEdges(); model.setGizmoMode(.scale)
+        let original = model.mesh
+        let start = Ray(origin: SIMD3<Float>(1,0,5), direction: SIMD3<Float>(0,0,-1))
+        let end = Ray(origin: SIMD3<Float>(1.5,0,5), direction: SIMD3<Float>(0,0,-1))
+
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+            cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+        model.updateScaleGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1))
+        XCTAssertNotNil(model.edgeScalePreviewMesh)
+        let previewAutosave = await model.requestImmediateAutosave()
+        XCTAssertTrue(previewAutosave)
+        let previewWriteCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(previewWriteCount, 0)
+        model.cancelScaleGizmoDrag()
+        let cancelWriteCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(cancelWriteCount, 0)
+
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+            cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+        model.updateScaleGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1)); model.endScaleGizmoDrag()
+        let committed = model.mesh
+        await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 1 }
+        let committedRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(committedRecovery, committed)
+
+        model.undo()
+        await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 2 }
+        let undoRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(undoRecovery, original)
+
+        model.redo()
+        await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 3 }
+        let redoRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(redoRecovery, committed)
+    }
+
     private func makeSnapshot(name: String, sessionID: UUID = UUID(), capturedAt: Date = Date(),
                               translation: SIMD3<Float> = .zero) throws -> ProjectAutosaveSnapshot {
         let project = ForgeProject(mesh: try PrimitiveMeshBuilder.cube(size: 20),
