@@ -54,6 +54,8 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var edgeTranslateError: String?
     @Published private(set) var edgeRotatePreviewMesh: EditableMesh?
     @Published private(set) var edgeRotateError: String?
+    @Published private(set) var edgeScalePreviewMesh: EditableMesh?
+    @Published private(set) var edgeScaleError: String?
     @Published private(set) var vertexSelectionOperation = VertexSelectionOperation.replace
     @Published private(set) var vertexSelection = VertexSelection.unavailable(mesh: .icosphere())
     @Published private(set) var meshVertexTopologyTable: MeshVertexTopologyTable?
@@ -170,6 +172,11 @@ final class WorkspaceModel: ObservableObject {
     private let edgeRotatePickingCache = MeshBVHCache()
     private var edgeRotatePivotCache: (meshRevision: UInt64, selectionVersion: EdgeSelectionVersion, transform: ObjectTransform, world: SIMD3<Float>)?
     private let edgeRotateFailureInjector: EdgeRotateFailureInjector
+    private var edgeScaleTransaction: EdgeScaleTransaction?
+    private var edgeScaleStartHover: Int?
+    private let edgeScalePickingCache = MeshBVHCache()
+    private var edgeScalePivotCache: (meshRevision: UInt64, selectionVersion: EdgeSelectionVersion, transform: ObjectTransform, world: SIMD3<Float>)?
+    private let edgeScaleFailureInjector: EdgeScaleFailureInjector
     private var vertexRotateTransaction: VertexRotateTransaction?
     private var vertexRotateStartHover: VertexHoverState?
     private let vertexRotatePickingCache = MeshBVHCache()
@@ -241,6 +248,7 @@ final class WorkspaceModel: ObservableObject {
          pickingCache: MeshBVHCache = MeshBVHCache(),
          edgeTranslateFailureInjector: EdgeTranslateFailureInjector = EdgeTranslateFailureInjector(),
          edgeRotateFailureInjector: EdgeRotateFailureInjector = EdgeRotateFailureInjector(),
+         edgeScaleFailureInjector: EdgeScaleFailureInjector = EdgeScaleFailureInjector(),
          vertexTranslateFailureInjector: VertexTranslateFailureInjector = VertexTranslateFailureInjector(),
          vertexRotateFailureInjector: VertexRotateFailureInjector = VertexRotateFailureInjector(),
          vertexScaleFailureInjector: VertexScaleFailureInjector = VertexScaleFailureInjector()) {
@@ -248,6 +256,7 @@ final class WorkspaceModel: ObservableObject {
         self.pickingCache = pickingCache
         self.edgeTranslateFailureInjector = edgeTranslateFailureInjector
         self.edgeRotateFailureInjector = edgeRotateFailureInjector
+        self.edgeScaleFailureInjector = edgeScaleFailureInjector
         self.vertexTranslateFailureInjector = vertexTranslateFailureInjector
         self.vertexRotateFailureInjector = vertexRotateFailureInjector
         self.vertexScaleFailureInjector = vertexScaleFailureInjector
@@ -668,6 +677,17 @@ final class WorkspaceModel: ObservableObject {
         let expectedProjectGeneration: MutationGeneration
         let expectedSelectionVersion: VertexSelectionVersion
     }
+    private struct PreparedEdgeScaleDrag {
+        let transaction: EdgeScaleTransaction
+        let gizmoSession: ScaleDragSession
+        let activeHandle: ScaleGizmoHandle
+        let startHover: Int?
+        let expectedMeshRevision: UInt64
+        let expectedTransform: ObjectTransform
+        let expectedProjectGeneration: MutationGeneration
+        let expectedSelectionVersion: EdgeSelectionVersion
+        let expectedEdgeTableFingerprint: UInt64
+    }
     private struct PreparedEdgeTranslateDrag {
         let transaction: EdgeTranslateTransaction
         let gizmoSession: TranslationDragSession
@@ -680,7 +700,7 @@ final class WorkspaceModel: ObservableObject {
         let expectedEdgeTableFingerprint: UInt64
     }
     var renderedMesh: EditableMesh {
-        edgeRotatePreviewMesh ?? edgeTranslatePreviewMesh ?? vertexScalePreviewMesh ?? vertexRotatePreviewMesh ?? vertexTranslatePreviewMesh ?? mesh
+        edgeScalePreviewMesh ?? edgeRotatePreviewMesh ?? edgeTranslatePreviewMesh ?? vertexScalePreviewMesh ?? vertexRotatePreviewMesh ?? vertexTranslatePreviewMesh ?? mesh
     }
     var edgeTranslatePivotWorld: SIMD3<Float>? {
         if let transaction = edgeTranslateTransaction { return transaction.pivotWorld + transaction.worldDelta }
@@ -744,7 +764,18 @@ final class WorkspaceModel: ObservableObject {
         return world
     }
     var selectedVertexGizmoOriginWorld: SIMD3<Float>? {
-        edgeTranslatePivotWorld ?? edgeRotatePivotWorld ?? vertexTranslatePivotWorld ?? vertexRotatePivotWorld ?? vertexScalePivotWorld
+        edgeTranslatePivotWorld ?? edgeRotatePivotWorld ?? edgeScalePivotWorld ?? vertexTranslatePivotWorld ?? vertexRotatePivotWorld ?? vertexScalePivotWorld
+    }
+    var edgeScalePivotWorld: SIMD3<Float>? {
+        if let transaction = edgeScaleTransaction { return transaction.pivotWorld }
+        guard interactionMode == .edgeSelect, gizmoMode == .scale, let table = meshEdgeTable else { return nil }
+        let safeTransform = objectTransform.sanitized()
+        if let cached = edgeScalePivotCache, cached.meshRevision == mesh.runtime.revision,
+           cached.selectionVersion == edgeSelection.version, cached.transform == safeTransform { return cached.world }
+        guard let world = try? EdgeTranslateGeometry.pivot(
+            mesh: mesh, table: table, selection: edgeSelection, transform: safeTransform).world else { return nil }
+        edgeScalePivotCache = (mesh.runtime.revision, edgeSelection.version, safeTransform, world)
+        return world
     }
     var vertexScalePivotWorld: SIMD3<Float>? {
         if let transaction = vertexScaleTransaction { return transaction.pivotWorld }
@@ -953,6 +984,7 @@ final class WorkspaceModel: ObservableObject {
         #endif
         if edgeTranslateTransaction != nil { cancelTranslationGizmoDrag() }
         if edgeRotateTransaction != nil { cancelRotationGizmoDrag() }
+        if edgeScaleTransaction != nil { cancelScaleGizmoDrag() }
         edgeSelectionOperation = operation
         edgeSelectionError = nil
     }
@@ -4040,7 +4072,7 @@ final class WorkspaceModel: ObservableObject {
         guard !isBenchmarkRunning else { return nil }
         #endif
         return ScaleGizmoGeometry.hit(
-            ray: ray, origin: vertexScalePivotWorld ?? objectTransform.translation, scale: scale)
+            ray: ray, origin: edgeScalePivotWorld ?? vertexScalePivotWorld ?? objectTransform.translation, scale: scale)
     }
 
     @discardableResult
@@ -4050,7 +4082,17 @@ final class WorkspaceModel: ObservableObject {
         #if DEBUG
         guard !isBenchmarkRunning else { return false }
         #endif
-        if interactionMode == .vertexSelect {
+        if interactionMode == .edgeSelect {
+            let mayReplaceOrdinaryScale = scaleGizmoState.isDragging
+                && edgeScaleTransaction == nil && vertexScaleTransaction == nil
+                && !translationGizmoState.isDragging && !rotationGizmoState.isDragging
+            guard !isGizmoDragging || mayReplaceOrdinaryScale,
+                  let prepared = try? prepareEdgeScaleDrag(
+                    handle: handle, ray: ray, cameraDirection: cameraDirection,
+                    referenceLength: referenceLength) else { return false }
+            commitPreparedEdgeScaleDrag(prepared)
+            return true
+        } else if interactionMode == .vertexSelect {
             let mayReplaceOrdinaryScale = scaleGizmoState.isDragging
                 && vertexScaleTransaction == nil
                 && !translationGizmoState.isDragging && !rotationGizmoState.isDragging
@@ -4071,7 +4113,40 @@ final class WorkspaceModel: ObservableObject {
         return true
     }
 
+    private func updateEdgeScaleGizmoDrag(ray: Ray, cameraDirection: SIMD3<Float>) {
+        guard var transaction = edgeScaleTransaction,
+              let session = scaleGizmoState.dragSession,
+              let rawFactor = ScaleGizmoGeometry.factor(
+                session: session, ray: ray, cameraDirection: cameraDirection) else { return }
+        let factor = min(max(rawFactor, EdgeScaleGeometry.minimumFactor), EdgeScaleGeometry.maximumFactor)
+        do {
+            guard let table = meshEdgeTable,
+                  transaction.matches(mesh: mesh, table: table, selection: edgeSelection,
+                                      transform: objectTransform,
+                                      projectSessionID: workspaceSessionID,
+                                      projectGeneration: projectMutationGeneration) else {
+                throw EdgeScaleError.staleSource
+            }
+            let candidate = try EdgeScaleGeometry.candidate(
+                sourceMesh: mesh, transaction: &transaction, factor: factor,
+                profiler: profiler, failureInjector: edgeScaleFailureInjector)
+            if let candidate {
+                guard !edgeScaleFailureInjector.shouldFail(.previewBVHPreparation),
+                      edgeScalePickingCache.index(for: candidate) != nil else {
+                    throw EdgeScaleError.preparationFailed
+                }
+            } else { edgeScalePickingCache.invalidate() }
+            edgeScalePreviewMesh = candidate; edgeScaleTransaction = transaction
+            edgeScaleError = nil
+            status = candidate == nil ? "Edge scale unchanged" : "Scaling selected edges"
+        } catch {
+            edgeScaleError = error.localizedDescription
+            cancelScaleGizmoDrag()
+        }
+    }
+
     func updateScaleGizmoDrag(ray: Ray, cameraDirection: SIMD3<Float>) {
+        if edgeScaleTransaction != nil { updateEdgeScaleGizmoDrag(ray: ray, cameraDirection: cameraDirection); return }
         if var transaction = vertexScaleTransaction {
             guard let session = scaleGizmoState.dragSession,
                   let rawFactor = ScaleGizmoGeometry.factor(
@@ -4116,7 +4191,51 @@ final class WorkspaceModel: ObservableObject {
         status = "Scale Gizmo"
     }
 
+    private func endEdgeScaleGizmoDrag() {
+        guard let transaction = edgeScaleTransaction else { return }
+        let candidate = edgeScalePreviewMesh
+        edgeScaleTransaction = nil; edgeScalePreviewMesh = nil; edgeScalePickingCache.invalidate()
+        scaleGizmoState.dragSession = nil; scaleGizmoState.activeHandle = nil
+        guard let candidate else { edgeScaleStartHover = nil; status = "Edge scale unchanged"; return }
+        guard let table = meshEdgeTable,
+              transaction.matches(mesh: mesh, table: table, selection: edgeSelection,
+                                  transform: objectTransform, projectSessionID: workspaceSessionID,
+                                  projectGeneration: projectMutationGeneration) else {
+            edgeScaleError = EdgeScaleError.staleSource.localizedDescription
+            hoveredEdgeID = edgeScaleStartHover; edgeScaleStartHover = nil
+            status = "Edge scale cancelled"; return
+        }
+        commitEdgeScaleCandidate(candidate, transaction: transaction)
+    }
+
+    private func commitEdgeScaleCandidate(_ candidate: EditableMesh,
+                                          transaction: EdgeScaleTransaction) {
+        let changes = transaction.vertexIDs.indices.compactMap { offset -> VertexChange? in
+            let index = Int(transaction.vertexIDs[offset])
+            let before = transaction.startLocalPositions[offset]
+            let after = candidate.vertices[index].position
+            return before == after ? nil : VertexChange(index: index, before: before, after: after)
+        }
+        guard let command = EdgeScaleCommand(topologyID: transaction.topologyID,
+            topologyRevision: transaction.topologyRevision, changes: changes),
+              !edgeScaleFailureInjector.shouldFail(.commitBVHPreparation),
+              let preparedBVH = try? pickingCache.makeIndex(for: candidate),
+              !edgeScaleFailureInjector.shouldFail(.commitBoundary) else {
+            edgeScaleError = EdgeScaleError.preparationFailed.localizedDescription
+            hoveredEdgeID = edgeScaleStartHover; edgeScaleStartHover = nil
+            status = "Edge scale cancelled"; return
+        }
+        mesh = candidate; pickingCache.install(preparedBVH, for: mesh)
+        sculptSpatialIndex.didUpdate(changes.map {
+            VertexMutation(index: $0.index, before: $0.before, after: $0.after)
+        }, mesh: mesh)
+        record(.edgeScale(command))
+        edgeScaleError = nil; hoveredEdgeID = nil; edgeScaleStartHover = nil
+        status = "Scaled \(changes.count) selected edge vertices"
+    }
+
     func endScaleGizmoDrag() {
+        if edgeScaleTransaction != nil { endEdgeScaleGizmoDrag(); return }
         if let transaction = vertexScaleTransaction {
             let candidate = vertexScalePreviewMesh
             vertexScaleTransaction = nil; vertexScalePreviewMesh = nil
@@ -4168,6 +4287,13 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func cancelScaleGizmoDrag() {
+        if edgeScaleTransaction != nil {
+            edgeScaleTransaction = nil; edgeScalePreviewMesh = nil
+            edgeScalePickingCache.invalidate()
+            hoveredEdgeID = edgeScaleStartHover; edgeScaleStartHover = nil
+            scaleGizmoState.dragSession = nil; scaleGizmoState.activeHandle = nil
+            return
+        }
         if vertexScaleTransaction != nil {
             vertexScaleTransaction = nil; vertexScalePreviewMesh = nil
             vertexScalePickingCache.invalidate()
@@ -4179,6 +4305,51 @@ final class WorkspaceModel: ObservableObject {
         if let session = scaleGizmoState.dragSession { objectTransform = session.startTransform }
         scaleGizmoState.dragSession = nil
         scaleGizmoState.activeHandle = nil
+    }
+
+    private func prepareEdgeScaleDrag(
+        handle: ScaleGizmoHandle, ray: Ray, cameraDirection: SIMD3<Float>,
+        referenceLength: Float
+    ) throws -> PreparedEdgeScaleDrag {
+        guard ray.origin.allFinite, ray.direction.allFinite, cameraDirection.allFinite,
+              referenceLength.isFinite, referenceLength > 0,
+              simd_length_squared(ray.direction) > 1e-12,
+              interactionMode == .edgeSelect, let table = meshEdgeTable,
+              edgeSelection.matches(table), edgeSelection.selectedCount > 0,
+              !isTopologyEditRunning, !isFaceSelectionProcessing, !isSTLImporting,
+              !isMeshDiagnosticsRunning, !isMeshCleanupRunning,
+              !isRecoveryOperationInProgress, !isRecoveryPromptPresented else {
+            throw EdgeScaleError.preparationFailed
+        }
+        guard !edgeScaleFailureInjector.shouldFail(.sourceSnapshot) else {
+            throw EdgeScaleError.preparationFailed
+        }
+        var expectedMesh = mesh
+        if let strokeBefore { _ = expectedMesh.updatePositions(strokeBefore) }
+        let expectedTransform = scaleGizmoState.dragSession?.startTransform ?? objectTransform
+        var expectedGeneration = projectMutationGeneration
+        if let panelTransformBefore,
+           TransformCommand(before: panelTransformBefore, after: objectTransform) != nil {
+            expectedGeneration.advance()
+        }
+        let transaction = try EdgeScaleGeometry.begin(
+            mesh: expectedMesh, table: table, selection: edgeSelection,
+            transform: expectedTransform, handle: handle,
+            projectSessionID: workspaceSessionID, projectGeneration: expectedGeneration,
+            failureInjector: edgeScaleFailureInjector)
+        guard let session = ScaleGizmoGeometry.beginSession(
+            handle: handle, ray: ray, transform: expectedTransform,
+            cameraDirection: cameraDirection, referenceLength: referenceLength,
+            originOverride: transaction.pivotWorld),
+              !edgeScaleFailureInjector.shouldFail(.beginCommitBoundary) else {
+            throw EdgeScaleError.preparationFailed
+        }
+        return PreparedEdgeScaleDrag(
+            transaction: transaction, gizmoSession: session, activeHandle: handle,
+            startHover: hoveredEdgeID, expectedMeshRevision: expectedMesh.runtime.revision,
+            expectedTransform: expectedTransform.sanitized(), expectedProjectGeneration: expectedGeneration,
+            expectedSelectionVersion: edgeSelection.version,
+            expectedEdgeTableFingerprint: table.fingerprint)
     }
 
     private func prepareVertexScaleDrag(
@@ -4225,6 +4396,29 @@ final class WorkspaceModel: ObservableObject {
             expectedTransform: expectedTransform.sanitized(),
             expectedProjectGeneration: expectedGeneration,
             expectedSelectionVersion: vertexSelection.version)
+    }
+
+    private func commitPreparedEdgeScaleDrag(_ prepared: PreparedEdgeScaleDrag) {
+        commitTransformPanelTransaction(); cancelStroke(); cancelScaleGizmoDrag()
+        assert(mesh.runtime.revision == prepared.expectedMeshRevision)
+        assert(mesh.runtime.topologyID == prepared.transaction.topologyID)
+        assert(mesh.runtime.topologyRevision == prepared.transaction.topologyRevision)
+        assert(objectTransform.sanitized() == prepared.expectedTransform)
+        assert(projectMutationGeneration == prepared.expectedProjectGeneration)
+        assert(edgeSelection.version == prepared.expectedSelectionVersion)
+        assert(meshEdgeTable?.fingerprint == prepared.expectedEdgeTableFingerprint)
+        assert(workspaceSessionID == prepared.transaction.projectSessionID)
+        assert(prepared.transaction.vertexIDs.enumerated().allSatisfy { offset, vertexID in
+            mesh.vertices.indices.contains(Int(vertexID))
+                && mesh.vertices[Int(vertexID)].position == prepared.transaction.startLocalPositions[offset]
+        })
+        edgeScaleTransaction = prepared.transaction
+        edgeScaleStartHover = prepared.startHover
+        edgeScalePreviewMesh = nil; edgeScalePickingCache.invalidate()
+        edgeScaleError = nil; hoveredEdgeID = nil
+        scaleGizmoState.activeHandle = prepared.activeHandle
+        scaleGizmoState.dragSession = prepared.gizmoSession
+        status = "Scale Selected Edges"
     }
 
     private func commitPreparedVertexScaleDrag(_ prepared: PreparedVertexScaleDrag) {
@@ -4293,6 +4487,14 @@ final class WorkspaceModel: ObservableObject {
             guard rotation.topologyID == mesh.runtime.topologyID,
                   rotation.topologyRevision == mesh.runtime.topologyRevision else { return }
             let positions = Dictionary(uniqueKeysWithValues: rotation.changes.map {
+                ($0.index, useAfter ? $0.after : $0.before)
+            })
+            let mutations = mesh.updatePositions(positions, profiler: profiler)
+            sculptSpatialIndex.didUpdate(mutations, mesh: mesh)
+        case .edgeScale(let scale):
+            guard scale.topologyID == mesh.runtime.topologyID,
+                  scale.topologyRevision == mesh.runtime.topologyRevision else { return }
+            let positions = Dictionary(uniqueKeysWithValues: scale.changes.map {
                 ($0.index, useAfter ? $0.after : $0.before)
             })
             let mutations = mesh.updatePositions(positions, profiler: profiler)
@@ -4627,6 +4829,31 @@ final class WorkspaceModel: ObservableObject {
         hoveredEdgeID = 0
         status = "Prepared edge rotation conflict state"
     }
+    func installEdgeScaleBeginConflictsForTesting(
+        sculpt: Bool, transformPanel: Bool, objectScale: Bool,
+        strokeVertexID: Int = 0
+    ) {
+        precondition(interactionMode == .edgeSelect)
+        if transformPanel {
+            panelTransformBefore = objectTransform
+            objectTransform.translation += SIMD3<Float>(0.2, 0, 0)
+        }
+        if objectScale {
+            let ray = Ray(origin: objectTransform.translation + SIMD3<Float>(1, 0, 5),
+                          direction: SIMD3<Float>(0, 0, -1))
+            scaleGizmoState.dragSession = ScaleGizmoGeometry.beginSession(
+                handle: .xAxis, ray: ray, transform: objectTransform,
+                cameraDirection: SIMD3<Float>(0, 0, -1), referenceLength: 1)
+            scaleGizmoState.activeHandle = .xAxis
+        }
+        if sculpt {
+            let before = mesh.vertices[strokeVertexID].position
+            _ = mesh.updatePositions([strokeVertexID: before + SIMD3<Float>(0.05, 0, 0)])
+            strokeBefore = [strokeVertexID: before]
+        }
+        hoveredEdgeID = 0
+        status = "Prepared edge scale conflict state"
+    }
     var vertexTranslateTransactionActiveForTesting: Bool { vertexTranslateTransaction != nil }
     var vertexRotateTransactionActiveForTesting: Bool { vertexRotateTransaction != nil }
     var vertexRotatePreviewPickingHasIndexForTesting: Bool { vertexRotatePickingCache.bvh != nil }
@@ -4642,6 +4869,14 @@ final class WorkspaceModel: ObservableObject {
     var lastUndoIsEdgeRotateForTesting: Bool {
         guard let command = history.undoStack.last else { return false }
         if case .edgeRotate = command { return true }
+        return false
+    }
+    var edgeScaleTransactionActiveForTesting: Bool { edgeScaleTransaction != nil }
+    var edgeScalePreviewPickingHasIndexForTesting: Bool { edgeScalePickingCache.bvh != nil }
+    var edgeScalePreviewPickingRevisionForTesting: UInt64? { edgeScalePickingCache.revision }
+    var lastUndoIsEdgeScaleForTesting: Bool {
+        guard let command = history.undoStack.last else { return false }
+        if case .edgeScale = command { return true }
         return false
     }
     var vertexScaleTransactionActiveForTesting: Bool { vertexScaleTransaction != nil }

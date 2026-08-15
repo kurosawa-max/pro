@@ -49,6 +49,21 @@ struct EdgeRotateCommand: Equatable {
     }
 }
 
+struct EdgeScaleCommand: Equatable {
+    let topologyID: UUID
+    let topologyRevision: UInt64
+    let changes: [VertexChange]
+
+    init?(topologyID: UUID, topologyRevision: UInt64, changes: [VertexChange]) {
+        guard !changes.isEmpty,
+              changes.allSatisfy({ $0.index >= 0 && $0.before.allFinite && $0.after.allFinite })
+        else { return nil }
+        self.topologyID = topologyID
+        self.topologyRevision = topologyRevision
+        self.changes = changes
+    }
+}
+
 struct VertexRotateCommand: Equatable {
     let topologyID: UUID
     let topologyRevision: UInt64
@@ -107,6 +122,7 @@ enum WorkspaceCommand: Equatable {
     case sculpt(StrokeCommand)
     case edgeTranslate(EdgeTranslateCommand)
     case edgeRotate(EdgeRotateCommand)
+    case edgeScale(EdgeScaleCommand)
     case vertexTranslate(VertexTranslateCommand)
     case vertexRotate(VertexRotateCommand)
     case vertexScale(VertexScaleCommand)

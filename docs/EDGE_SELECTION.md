@@ -1,6 +1,6 @@
 # Edge Selection
 
-Selected edges can be moved or rotated through the vertex-only [Selected Edge Translation](EDGE_TRANSLATE.md) and [Selected Edge Rotation](EDGE_ROTATE.md) transactions. They preserve the canonical edge table and Edge Selection; an empty selection never falls back to object transformation.
+Selected edges can be moved, rotated, or scaled through the vertex-only [Selected Edge Translation](EDGE_TRANSLATE.md), [Selected Edge Rotation](EDGE_ROTATE.md), and [Selected Edge Scale](EDGE_SCALE.md) transactions. They preserve the canonical edge table and Edge Selection; an empty selection never falls back to object transformation.
 
 Selected edges can be moved with the Move gizmo through the vertex-only [Selected Edge Translation](EDGE_TRANSLATE.md) transaction. It preserves the canonical edge table and Edge Selection; an empty selection does not fall back to object translation.
 

@@ -1174,6 +1174,215 @@ final class AutosaveRecoveryTests: XCTestCase {
         XCTAssertEqual(redoRecovery, committed)
     }
 
+    @MainActor
+    func testSelectedEdgeScaleAutosavePreviewCancelCommitUndoRedoOrdering() async throws {
+        let environment = try makeStorageEnvironment()
+        defer { environment.cleanup() }
+        let scheduler = ManualAutosaveDelayScheduler()
+        let coordinator = ProjectAutosaveCoordinator(storage: environment.storage, scheduler: scheduler)
+        let model = WorkspaceModel(autosaveCoordinator: coordinator)
+        await model.inspectRecoveryOnLaunch()
+        model.setInteractionMode(.edgeSelect); model.selectAllEdges(); model.setGizmoMode(.scale)
+        let original = model.mesh
+        let start = Ray(origin: SIMD3<Float>(1,0,5), direction: SIMD3<Float>(0,0,-1))
+        let end = Ray(origin: SIMD3<Float>(1.5,0,5), direction: SIMD3<Float>(0,0,-1))
+
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+            cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+        model.updateScaleGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1))
+        XCTAssertNotNil(model.edgeScalePreviewMesh)
+        let previewAutosave = await model.requestImmediateAutosave()
+        XCTAssertTrue(previewAutosave)
+        let previewWriteCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(previewWriteCount, 0)
+        model.cancelScaleGizmoDrag()
+        let cancelWriteCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(cancelWriteCount, 0)
+
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+            cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+        model.updateScaleGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1)); model.endScaleGizmoDrag()
+        let committed = model.mesh
+        await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 1 }
+        let committedRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(committedRecovery, committed)
+
+        model.undo()
+        await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 2 }
+        let undoRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(undoRecovery, original)
+
+        model.redo()
+        await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 3 }
+        let redoRecovery = try await coordinator.inspectRecovery().project.mesh
+        XCTAssertEqual(redoRecovery, committed)
+    }
+
+    @MainActor
+    func testSelectedEdgeScaleFactorOneSchedulesNoAutosaveAndPreservesRecoveryAndRedo() async throws {
+        let environment = try makeStorageEnvironment(); defer { environment.cleanup() }
+        let scheduler = ManualAutosaveDelayScheduler()
+        let coordinator = ProjectAutosaveCoordinator(storage: environment.storage, scheduler: scheduler)
+        guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), device: device)
+        let profiler = PerformanceProfiler()
+        guard let renderer = MetalRenderer(view: view, profiler: profiler) else {
+            throw XCTSkip("Renderer unavailable")
+        }
+        let model = WorkspaceModel(autosaveCoordinator: coordinator)
+        await model.inspectRecoveryOnLaunch(); model.setInteractionMode(.edgeSelect)
+        XCTAssertTrue(model.applyEdgeSelectionHit(0)); model.setGizmoMode(.scale)
+        let start = Ray(origin: SIMD3<Float>(1,0,5), direction: SIMD3(0,0,-1))
+        let end = Ray(origin: SIMD3<Float>(1.5,0,5), direction: SIMD3(0,0,-1))
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+            cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+        model.updateScaleGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1)); model.endScaleGizmoDrag()
+        await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 1 }
+        model.undo(); await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 2 }
+
+        let mesh = model.mesh, revision = model.mesh.runtime.revision, indices = model.mesh.indices
+        let topologyID = model.mesh.runtime.topologyID, topologyRevision = model.mesh.runtime.topologyRevision
+        let fingerprint = model.meshEdgeTable?.fingerprint, selection = model.edgeSelection
+        let selectedIDs = model.edgeSelection.selectedEdgeIDs(), history = (model.undoCount, model.redoCount)
+        let generation = model.projectMutationGeneration, dirty = model.isDirty
+        let descriptor = model.recoveryDescriptor, recovery = try await coordinator.inspectRecovery().project
+        let writes = await coordinator.successfulWriteCount, waiters = await scheduler.waiterCount
+        renderer.update(mesh: model.mesh)
+        _ = renderer.updateEdgeSelection(mesh: model.mesh, table: try XCTUnwrap(model.meshEdgeTable),
+            selection: model.edgeSelection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        let uploads = profiler.snapshot()
+        let selectedUploads = renderer.edgeSelectionOverlaySelectedUploadCount
+        let hoverUploads = renderer.edgeSelectionOverlayHoverUploadCount
+
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+            cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+        model.updateScaleGizmoDrag(ray: start, cameraDirection: SIMD3(0,0,-1)); model.endScaleGizmoDrag()
+        XCTAssertEqual(model.mesh, mesh); XCTAssertEqual(model.mesh.runtime.revision, revision)
+        XCTAssertEqual(model.mesh.indices, indices); XCTAssertEqual(model.mesh.runtime.topologyID, topologyID)
+        XCTAssertEqual(model.mesh.runtime.topologyRevision, topologyRevision)
+        XCTAssertEqual(model.meshEdgeTable?.fingerprint, fingerprint)
+        XCTAssertEqual(model.edgeSelection, selection); XCTAssertEqual(model.edgeSelection.version, selection.version)
+        XCTAssertEqual(model.edgeSelection.selectedEdgeIDs(), selectedIDs)
+        XCTAssertEqual(model.undoCount, history.0); XCTAssertEqual(model.redoCount, history.1)
+        XCTAssertGreaterThan(model.redoCount, 0)
+        XCTAssertEqual(model.projectMutationGeneration, generation); XCTAssertEqual(model.isDirty, dirty)
+        XCTAssertEqual(model.recoveryDescriptor, descriptor)
+        let finalRecovery = try await coordinator.inspectRecovery().project
+        let finalWrites = await coordinator.successfulWriteCount
+        let finalWaiters = await scheduler.waiterCount
+        XCTAssertEqual(finalRecovery, recovery)
+        XCTAssertEqual(finalWrites, writes); XCTAssertEqual(finalWaiters, waiters)
+        renderer.update(mesh: model.mesh)
+        _ = renderer.updateEdgeSelection(mesh: model.mesh, table: try XCTUnwrap(model.meshEdgeTable),
+            selection: model.edgeSelection, hoveredEdgeID: nil,
+            drawableSizePixels: CGSize(width: 100, height: 100), displayScale: 1)
+        let finalUploads = profiler.snapshot()
+        XCTAssertEqual(finalUploads[.vertexUpload].sampleCount, uploads[.vertexUpload].sampleCount)
+        XCTAssertEqual(finalUploads[.indexUpload].sampleCount, uploads[.indexUpload].sampleCount)
+        XCTAssertEqual(renderer.edgeSelectionOverlaySelectedUploadCount, selectedUploads)
+        XCTAssertEqual(renderer.edgeSelectionOverlayHoverUploadCount, hoverUploads)
+    }
+
+    @MainActor
+    func testSelectedEdgeScaleLateBeginFailureSchedulesNoAutosaveOrRecovery() async throws {
+        for conflicts in [(true,false,false), (false,true,false), (false,false,true)] {
+            let environment = try makeStorageEnvironment(); defer { environment.cleanup() }
+            let scheduler = ManualAutosaveDelayScheduler()
+            let coordinator = ProjectAutosaveCoordinator(storage: environment.storage, scheduler: scheduler)
+            var shouldFail = true
+            let model = WorkspaceModel(autosaveCoordinator: coordinator,
+                edgeScaleFailureInjector: .init { shouldFail && $0 == .beginCommitBoundary })
+            await model.inspectRecoveryOnLaunch(); model.setInteractionMode(.edgeSelect)
+            XCTAssertTrue(model.applyEdgeSelectionHit(0)); model.setGizmoMode(.scale)
+            model.beginTransformPanelTransaction(); model.updateTranslation(SIMD3(1,0,0))
+            model.commitTransformPanelTransaction()
+            await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+            await waitUntil { await coordinator.successfulWriteCount == 1 }
+            model.installEdgeScaleBeginConflictsForTesting(
+                sculpt: conflicts.0, transformPanel: conflicts.1, objectScale: conflicts.2)
+            let mesh = model.mesh, transform = model.objectTransform, selection = model.edgeSelection
+            let generation = model.projectMutationGeneration, dirty = model.isDirty
+            let history = (model.undoCount, model.redoCount), descriptor = model.recoveryDescriptor
+            let recovery = try await coordinator.inspectRecovery().project
+            let writes = await coordinator.successfulWriteCount, waiters = await scheduler.waiterCount
+            let ray = Ray(origin: model.objectTransform.translation + SIMD3<Float>(1,0,5),
+                          direction: SIMD3(0,0,-1))
+
+            XCTAssertFalse(model.beginScaleGizmoDrag(handle: .xAxis, ray: ray,
+                cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+            XCTAssertEqual(model.mesh, mesh); XCTAssertEqual(model.objectTransform, transform)
+            XCTAssertEqual(model.edgeSelection, selection); XCTAssertEqual(model.edgeSelection.version, selection.version)
+            XCTAssertEqual(model.projectMutationGeneration, generation); XCTAssertEqual(model.isDirty, dirty)
+            XCTAssertEqual(model.undoCount, history.0); XCTAssertEqual(model.redoCount, history.1)
+            XCTAssertEqual(model.recoveryDescriptor, descriptor)
+            let finalRecovery = try await coordinator.inspectRecovery().project
+            let finalWrites = await coordinator.successfulWriteCount
+            let finalWaiters = await scheduler.waiterCount
+            XCTAssertEqual(finalRecovery, recovery)
+            XCTAssertEqual(finalWrites, writes); XCTAssertEqual(finalWaiters, waiters)
+            XCTAssertEqual(model.isStrokeActive, conflicts.0)
+            XCTAssertEqual(model.isTransformPanelEditing, conflicts.1)
+            XCTAssertEqual(model.scaleGizmoState.isDragging, conflicts.2)
+            shouldFail = false
+            XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: ray,
+                cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+            model.cancelScaleGizmoDrag()
+        }
+    }
+
+    @MainActor
+    func testSelectedEdgeScaleCommitBoundaryFailurePreservesAutosaveRecoveryAndRetries() async throws {
+        let environment = try makeStorageEnvironment(); defer { environment.cleanup() }
+        let scheduler = ManualAutosaveDelayScheduler()
+        let coordinator = ProjectAutosaveCoordinator(storage: environment.storage, scheduler: scheduler)
+        var shouldFail = true
+        let model = WorkspaceModel(autosaveCoordinator: coordinator,
+            edgeScaleFailureInjector: .init { shouldFail && $0 == .commitBoundary })
+        await model.inspectRecoveryOnLaunch()
+        model.beginTransformPanelTransaction(); model.updateTranslation(SIMD3(1,0,0))
+        model.commitTransformPanelTransaction()
+        await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == 1 }
+        model.setInteractionMode(.edgeSelect); XCTAssertTrue(model.applyEdgeSelectionHit(0)); model.setGizmoMode(.scale)
+        let mesh = model.mesh, transform = model.objectTransform, selection = model.edgeSelection
+        let generation = model.projectMutationGeneration, dirty = model.isDirty
+        let history = (model.undoCount, model.redoCount), descriptor = model.recoveryDescriptor
+        let project = try model.projectData(), recovery = try await coordinator.inspectRecovery().project
+        let writes = await coordinator.successfulWriteCount, waiters = await scheduler.waiterCount
+        let start = Ray(origin: model.objectTransform.translation + SIMD3<Float>(1,0,5),
+                        direction: SIMD3(0,0,-1))
+        let end = Ray(origin: model.objectTransform.translation + SIMD3<Float>(1.5,0,5),
+                      direction: SIMD3(0,0,-1))
+
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+            cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+        model.updateScaleGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1)); model.endScaleGizmoDrag()
+        XCTAssertEqual(model.mesh, mesh); XCTAssertEqual(model.objectTransform, transform)
+        XCTAssertEqual(model.edgeSelection, selection); XCTAssertEqual(model.edgeSelection.version, selection.version)
+        XCTAssertEqual(model.undoCount, history.0); XCTAssertEqual(model.redoCount, history.1)
+        XCTAssertEqual(model.projectMutationGeneration, generation); XCTAssertEqual(model.isDirty, dirty)
+        XCTAssertEqual(try model.projectData(), project); XCTAssertEqual(model.recoveryDescriptor, descriptor)
+        let finalRecovery = try await coordinator.inspectRecovery().project
+        let finalWrites = await coordinator.successfulWriteCount
+        let finalWaiters = await scheduler.waiterCount
+        XCTAssertEqual(finalRecovery, recovery)
+        XCTAssertEqual(finalWrites, writes); XCTAssertEqual(finalWaiters, waiters)
+
+        shouldFail = false
+        XCTAssertTrue(model.beginScaleGizmoDrag(handle: .xAxis, ray: start,
+            cameraDirection: SIMD3(0,0,-1), referenceLength: 1))
+        model.updateScaleGizmoDrag(ray: end, cameraDirection: SIMD3(0,0,-1)); model.endScaleGizmoDrag()
+        XCTAssertNotEqual(model.mesh, mesh); XCTAssertEqual(model.undoCount, history.0 + 1)
+        await waitUntil { await scheduler.waiterCount == 1 }; await scheduler.releaseAll()
+        await waitUntil { await coordinator.successfulWriteCount == writes + 1 }
+    }
+
     private func makeSnapshot(name: String, sessionID: UUID = UUID(), capturedAt: Date = Date(),
                               translation: SIMD3<Float> = .zero) throws -> ProjectAutosaveSnapshot {
         let project = ForgeProject(mesh: try PrimitiveMeshBuilder.cube(size: 20),
