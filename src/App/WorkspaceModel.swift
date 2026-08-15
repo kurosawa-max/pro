@@ -4973,6 +4973,14 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    #if DEBUG
+    func waitForAutosaveCompletionForTesting() async {
+        let submissionTask = autosaveSubmissionTask
+        await submissionTask?.value
+        await autosaveCoordinator.waitForPendingAutosaveForTesting()
+    }
+    #endif
+
     func handleAutosaveResult(_ result: AutosaveScheduleResult) {
         switch result {
         case .started(let snapshot):
