@@ -738,19 +738,25 @@ final class FaceExtrudeTests: XCTestCase {
         let preview = try model.previewFaceExtrude(options: options())
         _ = try model.applyFaceExtrude(preview: preview)
         XCTAssertFalse(model.isFaceExtrudeSnapshotSafeForTesting)
-        await waitForWriteCount(1, coordinator: coordinator)
+        await model.waitForAutosaveCompletionForTesting()
+        var writeCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(writeCount, 1)
         var recovery = try await coordinator.inspectRecovery()
         XCTAssertEqual(recovery.project.mesh, model.mesh)
         XCTAssertEqual(recovery.descriptor.sourceGeneration, model.projectMutationGeneration)
 
         model.undo()
-        await waitForWriteCount(2, coordinator: coordinator)
+        await model.waitForAutosaveCompletionForTesting()
+        writeCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(writeCount, 2)
         recovery = try await coordinator.inspectRecovery()
         XCTAssertEqual(recovery.project.mesh, model.mesh)
         XCTAssertEqual(recovery.descriptor.sourceGeneration, model.projectMutationGeneration)
 
         model.redo()
-        await waitForWriteCount(3, coordinator: coordinator)
+        await model.waitForAutosaveCompletionForTesting()
+        writeCount = await coordinator.successfulWriteCount
+        XCTAssertEqual(writeCount, 3)
         recovery = try await coordinator.inspectRecovery()
         XCTAssertEqual(recovery.project.mesh, model.mesh)
         XCTAssertEqual(recovery.descriptor.sourceGeneration, model.projectMutationGeneration)
@@ -806,20 +812,6 @@ final class FaceExtrudeTests: XCTestCase {
         let offset = UInt32(source.vertices.count)
         return mesh(source.vertices.map(\.position) + positions,
                     source.indices + indices.map { $0 + offset })
-    }
-
-    private func waitForWriteCount(
-        _ expected: Int,
-        coordinator: ProjectAutosaveCoordinator,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) async {
-        for _ in 0..<10_000 {
-            if await coordinator.successfulWriteCount == expected { return }
-            await Task.yield()
-        }
-        let actual = await coordinator.successfulWriteCount
-        XCTAssertEqual(actual, expected, file: file, line: line)
     }
 
     private func assertExtrudeError(

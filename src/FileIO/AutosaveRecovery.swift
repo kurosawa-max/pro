@@ -431,6 +431,13 @@ actor ProjectAutosaveCoordinator {
         requestGeneration.advance()
     }
 
+    #if DEBUG
+    func waitForPendingAutosaveForTesting() async {
+        let task = pendingTask
+        await task?.value
+    }
+    #endif
+
     func inspectRecovery() throws -> InspectedRecovery { try storage.inspect() }
     func discardRecovery() throws { try storage.discard() }
     func discardSavedRecovery(sessionID: UUID, generation: MutationGeneration) throws {
